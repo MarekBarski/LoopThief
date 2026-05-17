@@ -4,7 +4,7 @@ import { ScreenFrame } from "./ScreenFrame";
 export function MainScreen() {
   return (
     <ScreenFrame title="MAIN" subtitle="Sequence hub and current project overview.">
-      <div className="grid h-full grid-cols-[1.2fr_0.8fr] gap-4">
+      <div className="grid h-full grid-cols-[1.25fr_0.75fr] gap-2">
         <Panel title="TRACKS">
           {["DRUMS", "BASS", "TEXTURE", "RESAMPLE"].map((track, index) => (
             <div key={track} className="flex items-center justify-between border-b border-zinc-800 py-3 last:border-b-0">
@@ -28,8 +28,8 @@ export function MainScreen() {
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-4">
-      <p className="mb-3 text-xs uppercase tracking-[0.3em] text-zinc-500">{title}</p>
+    <section className="border border-[#46533b] bg-black/20 p-3">
+      <p className="mb-3 text-[11px] uppercase tracking-[0.3em] text-[#9cab84]">{title}</p>
       {children}
     </section>
   );

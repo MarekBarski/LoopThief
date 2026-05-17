@@ -3,11 +3,11 @@ import { ScreenFrame } from "./ScreenFrame";
 export function StepScreen() {
   return (
     <ScreenFrame title="STEP" subtitle="Tracker-inspired sequencing placeholder.">
-      <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/70">
+      <div className="overflow-hidden border border-[#46533b] bg-black/20">
         {["NOTE", "VELOCITY", "FX", "CHANCE", "MICROSHIFT", "SWING"].map((column) => (
-          <div key={column} className="grid grid-cols-[160px_1fr] border-b border-zinc-800 last:border-b-0">
-            <span className="bg-zinc-900 px-4 py-3 text-sm tracking-[0.18em] text-zinc-400">{column}</span>
-            <span className="px-4 py-3 text-sm text-zinc-600">—</span>
+          <div key={column} className="grid grid-cols-[160px_1fr] border-b border-[#46533b] last:border-b-0">
+            <span className="bg-black/25 px-4 py-3 text-sm tracking-[0.18em] text-[#9cab84]">{column}</span>
+            <span className="px-4 py-3 text-sm text-[#667252]">—</span>
           </div>
         ))}
       </div>
