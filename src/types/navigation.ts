@@ -8,6 +8,13 @@ export const screens = [
   "MIX",
   "DISK",
   "SETTINGS",
+  "PAD_PLAY",
+  "UTILITY_16_LEVELS",
+  "UTILITY_TRACK_MUTE",
+  "UTILITY_PAD_MUTE",
+  "UTILITY_NEXT_SEQ",
+  "UTILITY_NOTE_REPEAT",
+  "COUNT_IN",
 ] as const;
 
 export type ScreenId = (typeof screens)[number];

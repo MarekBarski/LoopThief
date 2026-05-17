@@ -9,6 +9,8 @@ import { ProgramScreen } from "./ProgramScreen";
 import { RecordScreen } from "./RecordScreen";
 import { SettingsScreen } from "./SettingsScreen";
 import { StepScreen } from "./StepScreen";
+import { PadPlayScreen } from "./PadPlayScreen";
+import { NextSeqUtilityScreen, NoteRepeatUtilityScreen, PadMuteUtilityScreen, SixteenLevelsScreen, TrackMuteUtilityScreen } from "./UtilityScreens";
 
 export const screensById: Record<ScreenId, ComponentType> = {
   MAIN: MainScreen,
@@ -20,4 +22,10 @@ export const screensById: Record<ScreenId, ComponentType> = {
   MIX: MixScreen,
   DISK: DiskScreen,
   SETTINGS: SettingsScreen,
+  PAD_PLAY: PadPlayScreen,
+  UTILITY_16_LEVELS: SixteenLevelsScreen,
+  UTILITY_TRACK_MUTE: TrackMuteUtilityScreen,
+  UTILITY_PAD_MUTE: PadMuteUtilityScreen,
+  UTILITY_NEXT_SEQ: NextSeqUtilityScreen,
+  UTILITY_NOTE_REPEAT: NoteRepeatUtilityScreen,
 };

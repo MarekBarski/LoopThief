@@ -73,9 +73,9 @@ export function ProgramScreen() {
             </div>
 
             <div>
-              {currentPadMode === "16 LEVELS" && (
+              {currentPadMode === "STEP_INPUT" && (
                 <div className="border border-amber-300/50 bg-amber-200/10 px-[3%] py-[2.5%] text-amber-100">
-                  16 LEVELS MODE: BASE PAD {selectedAssignment.pad}
+                  STEP INPUT MODE: BASE PAD {selectedAssignment.pad}
                 </div>
               )}
             </div>

@@ -10,6 +10,10 @@ export function KeyboardShortcuts() {
   const tapTempo = useAppStore((state) => state.tapTempo);
   const triggerPad = useAppStore((state) => state.triggerPad);
   const nextPadBank = useAppStore((state) => state.nextPadBank);
+  const nextStepEvent = useAppStore((state) => state.nextStepEvent);
+  const previousStepEvent = useAppStore((state) => state.previousStepEvent);
+  const nextDiskItem = useAppStore((state) => state.nextDiskItem);
+  const previousDiskItem = useAppStore((state) => state.previousDiskItem);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -32,6 +36,26 @@ export function KeyboardShortcuts() {
         event.preventDefault();
         nextPadBank();
       }
+      if (useAppStore.getState().activeScreen === "STEP") {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          nextStepEvent();
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          previousStepEvent();
+        }
+      }
+      if (useAppStore.getState().activeScreen === "DISK") {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          nextDiskItem();
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          previousDiskItem();
+        }
+      }
 
       const padIndex = padKeys.indexOf(key);
       if (padIndex !== -1) {
@@ -41,7 +65,7 @@ export function KeyboardShortcuts() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [nextPadBank, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
+  }, [nextDiskItem, nextPadBank, nextStepEvent, previousDiskItem, previousStepEvent, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
 
   return null;
 }

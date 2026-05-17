@@ -1,5 +1,6 @@
 import { ScreenFrame } from "./ScreenFrame";
 import { useAppStore } from "../store/useAppStore";
+import { getPadModeDisplayLabel } from "../utils/padModeLabels";
 
 const softButtons = ["F1 SAMPLE", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 MIX", "F6 DISK"];
 
@@ -26,7 +27,7 @@ export function MainScreen() {
     ["PROGRAM", activeProgram],
     ["PAD BANK", padBank],
     ["SELECTED PAD", selectedPad],
-    ["PAD MODE", currentPadMode],
+    ["PAD MODE", getPadModeDisplayLabel(currentPadMode)],
     ["SWING", `${swing}%`],
     ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isSequenceRecording ? " / SEQ REC" : ""}`],
   ] as const;
