@@ -6,7 +6,7 @@ const padKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "q", "w", "e", "r"
 
 export function KeyboardShortcuts() {
   const togglePlay = useAppStore((state) => state.togglePlay);
-  const toggleRecording = useAppStore((state) => state.toggleRecording);
+  const toggleSequenceRecording = useAppStore((state) => state.toggleSequenceRecording);
   const tapTempo = useAppStore((state) => state.tapTempo);
   const triggerPad = useAppStore((state) => state.triggerPad);
   const nextPadBank = useAppStore((state) => state.nextPadBank);
@@ -26,7 +26,7 @@ export function KeyboardShortcuts() {
         event.preventDefault();
         togglePlay();
       }
-      if (key === "r") toggleRecording();
+      if (key === "r") toggleSequenceRecording();
       if (key === "t") tapTempo();
       if (event.key === "Tab") {
         event.preventDefault();
@@ -41,7 +41,7 @@ export function KeyboardShortcuts() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [nextPadBank, tapTempo, togglePlay, toggleRecording, triggerPad]);
+  }, [nextPadBank, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
 
   return null;
 }

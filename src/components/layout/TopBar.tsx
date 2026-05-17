@@ -4,7 +4,7 @@ export function TopBar() {
   const sequence = useAppStore((state) => state.sequence);
   const bpm = useAppStore((state) => state.bpm);
   const swing = useAppStore((state) => state.swing);
-  const isRecording = useAppStore((state) => state.isRecording);
+  const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
   const statusItems = [`SEQ ${sequence}`, `BPM ${bpm.toFixed(2)}`, "TC 1/16", `SWING ${swing}%`, "MEM", "AUDIO READY"];
 
   return (
@@ -16,8 +16,8 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-[0.5vw] text-[#dfd5c6]">
-        <span className={`h-[0.72vw] w-[0.72vw] min-h-[8px] min-w-[8px] ${isRecording ? "bg-red-500" : "bg-red-900"} shadow-[0_0_6px_rgba(220,38,38,0.55)]`} />
-        <span>{isRecording ? "REC ARM" : "REC OFF"}</span>
+        <span className={`h-[0.72vw] w-[0.72vw] min-h-[8px] min-w-[8px] ${isSequenceRecording ? "bg-red-500" : "bg-red-900"} shadow-[0_0_6px_rgba(220,38,38,0.55)]`} />
+        <span>{isSequenceRecording ? "SEQ REC" : "REC OFF"}</span>
       </div>
     </header>
   );

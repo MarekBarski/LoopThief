@@ -14,7 +14,7 @@ export function MainScreen() {
   const selectedPad = useAppStore((state) => state.selectedPad);
   const currentPadMode = useAppStore((state) => state.currentPadMode);
   const isPlaying = useAppStore((state) => state.isPlaying);
-  const isRecording = useAppStore((state) => state.isRecording);
+  const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
 
   const mainFields = [
     ["SEQ", sequence],
@@ -28,7 +28,7 @@ export function MainScreen() {
     ["SELECTED PAD", selectedPad],
     ["PAD MODE", currentPadMode],
     ["SWING", `${swing}%`],
-    ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isRecording ? " / REC" : ""}`],
+    ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isSequenceRecording ? " / SEQ REC" : ""}`],
   ] as const;
 
   return (

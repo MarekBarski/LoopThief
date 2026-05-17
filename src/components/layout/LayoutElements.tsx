@@ -29,12 +29,12 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const activeScreen = useAppStore((state) => state.activeScreen);
   const isPlaying = useAppStore((state) => state.isPlaying);
-  const isRecording = useAppStore((state) => state.isRecording);
+  const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
   const triggeredPads = useAppStore((state) => state.triggeredPads);
   const triggerPad = useAppStore((state) => state.triggerPad);
   const togglePlay = useAppStore((state) => state.togglePlay);
   const stopPlayback = useAppStore((state) => state.stopPlayback);
-  const toggleRecording = useAppStore((state) => state.toggleRecording);
+  const toggleSequenceRecording = useAppStore((state) => state.toggleSequenceRecording);
   const tapTempo = useAppStore((state) => state.tapTempo);
   const playStart = useAppStore((state) => state.playStart);
   const flashingButtons = useAppStore((state) => state.flashingButtons);
@@ -124,10 +124,10 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const active =
     element.type === "mode"
       ? element.label === activeScreen
-      : element.type === "padMode"
-        ? element.label === currentPadMode
-        : element.label === "REC"
-          ? isRecording
+        : element.type === "padMode"
+          ? element.label === currentPadMode
+          : element.label === "REC"
+          ? isSequenceRecording
           : element.label === "PLAY"
             ? isPlaying
             : Boolean(flashingButtons[element.id]);
@@ -148,7 +148,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
         if (element.type === "button" && element.label) {
           if (element.label === "PLAY") togglePlay();
           if (element.label === "STOP") stopPlayback();
-          if (element.label === "REC") toggleRecording();
+          if (element.label === "REC") toggleSequenceRecording();
           if (element.label === "STOP") flashButton(element.id);
           if (element.label === "TAP TEMPO") {
             tapTempo();
