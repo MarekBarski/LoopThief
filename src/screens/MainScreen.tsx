@@ -1,36 +1,60 @@
-import type { ReactNode } from "react";
 import { ScreenFrame } from "./ScreenFrame";
+import { useAppStore } from "../store/useAppStore";
+
+const softButtons = ["F1 SAMPLE", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 MIX", "F6 DISK"];
 
 export function MainScreen() {
+  const sequence = useAppStore((state) => state.sequence);
+  const bar = useAppStore((state) => state.bar);
+  const bpm = useAppStore((state) => state.bpm);
+  const swing = useAppStore((state) => state.swing);
+  const activeTrack = useAppStore((state) => state.activeTrack);
+  const activeProgram = useAppStore((state) => state.activeProgram);
+  const padBank = useAppStore((state) => state.padBank);
+  const selectedPad = useAppStore((state) => state.selectedPad);
+  const currentPadMode = useAppStore((state) => state.currentPadMode);
+  const isPlaying = useAppStore((state) => state.isPlaying);
+  const isRecording = useAppStore((state) => state.isRecording);
+
+  const mainFields = [
+    ["SEQ", sequence],
+    ["BAR", bar],
+    ["BPM", bpm.toFixed(2)],
+    ["TIME SIG", "4/4"],
+    ["TRACK", activeTrack],
+    ["TYPE", "DRUM"],
+    ["PROGRAM", activeProgram],
+    ["PAD BANK", padBank],
+    ["SELECTED PAD", selectedPad],
+    ["PAD MODE", currentPadMode],
+    ["SWING", `${swing}%`],
+    ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isRecording ? " / REC" : ""}`],
+  ] as const;
+
   return (
-    <ScreenFrame title="MAIN" subtitle="Sequence hub and current project overview.">
-      <div className="grid h-full grid-cols-[1.25fr_0.75fr] gap-2">
-        <Panel title="TRACKS">
-          {["DRUMS", "BASS", "TEXTURE", "RESAMPLE"].map((track, index) => (
-            <div key={track} className="flex items-center justify-between border-b border-zinc-800 py-3 last:border-b-0">
-              <span>{track}</span>
-              <span className="text-zinc-500">{index === 0 ? "ACTIVE" : "EMPTY"}</span>
+    <ScreenFrame title="MAIN" subtitle="MPC-style sequence control">
+      <div className="grid h-full grid-rows-[minmax(0,1fr)_44px] gap-[3%] pb-[1%]">
+        <div className="grid grid-cols-2 gap-x-[8%] gap-y-[5%] border border-[#46533b] bg-black/20 p-[3.4%]">
+          {mainFields.map(([label, value]) => (
+            <div key={label} className="grid grid-cols-[auto_1fr] gap-[6%] text-[clamp(11px,0.92vw,15px)] tracking-[0.16em]">
+              <span className="text-[#91a477]">{label}:</span>
+              <span className="text-[#eef6d8]">{value}</span>
             </div>
           ))}
-        </Panel>
-        <Panel title="CURRENT SEQUENCE">
-          <div className="grid gap-3 text-sm text-zinc-300">
-            <p>SEQ 01 · 4 BARS</p>
-            <p>PROGRAM: KIT A</p>
-            <p>SAMPLES: 00</p>
-            <p>PAD: A01</p>
-          </div>
-        </Panel>
+        </div>
+
+        <div className="grid grid-cols-6 gap-[1.4%] pt-[0.8%]">
+          {softButtons.map((button) => (
+            <button
+              key={button}
+              type="button"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+            >
+              {button}
+            </button>
+          ))}
+        </div>
       </div>
     </ScreenFrame>
-  );
-}
-
-function Panel({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="border border-[#46533b] bg-black/20 p-3">
-      <p className="mb-3 text-[11px] uppercase tracking-[0.3em] text-[#9cab84]">{title}</p>
-      {children}
-    </section>
   );
 }

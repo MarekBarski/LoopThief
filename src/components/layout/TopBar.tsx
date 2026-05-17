@@ -1,35 +1,24 @@
-export function TopBar() {
-  return (
-    <header className="flex items-center justify-between border-b-2 border-zinc-800 bg-[#171717] px-4 py-3">
-      <div className="flex items-center gap-5">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.38em] text-amber-500">LoopThief</p>
-          <h1 className="text-lg font-semibold tracking-[0.24em] text-zinc-100">PROJECT: UNTITLED</h1>
-        </div>
+import { useAppStore } from "../../store/useAppStore";
 
-        <div className="flex items-center gap-2 text-sm">
-          <StatusPill label="BPM" value="92.0" />
-          <StatusPill label="SWING" value="54%" />
-          <StatusPill label="CPU" value="03%" />
-        </div>
+export function TopBar() {
+  const sequence = useAppStore((state) => state.sequence);
+  const bpm = useAppStore((state) => state.bpm);
+  const swing = useAppStore((state) => state.swing);
+  const isRecording = useAppStore((state) => state.isRecording);
+  const statusItems = [`SEQ ${sequence}`, `BPM ${bpm.toFixed(2)}`, "TC 1/16", `SWING ${swing}%`, "MEM", "AUDIO READY"];
+
+  return (
+    <header className="flex h-full w-full items-center justify-between border border-black/60 bg-black/35 px-[1.4%] text-[clamp(10px,0.9vw,14px)] font-semibold uppercase tracking-[0.18em] text-[#d6d0c2] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
+      <div className="flex items-center gap-[1.1vw]">
+        {statusItems.map((item) => (
+          <span key={item}>{item}</span>
+        ))}
       </div>
 
-      <div className="flex items-center gap-2 text-sm">
-        <StatusPill label="AUDIO" value="READY" />
-        <StatusPill label="SAVE" value="CLEAN" />
-        <span className="border border-red-900 bg-red-950/80 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-red-300">
-          REC OFF
-        </span>
+      <div className="flex items-center gap-[0.5vw] text-[#dfd5c6]">
+        <span className={`h-[0.72vw] w-[0.72vw] min-h-[8px] min-w-[8px] ${isRecording ? "bg-red-500" : "bg-red-900"} shadow-[0_0_6px_rgba(220,38,38,0.55)]`} />
+        <span>{isRecording ? "REC ARM" : "REC OFF"}</span>
       </div>
     </header>
-  );
-}
-
-function StatusPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="border border-zinc-700 bg-zinc-950 px-3 py-1">
-      <span className="mr-2 text-zinc-500">{label}</span>
-      <span className="font-semibold text-zinc-100">{value}</span>
-    </div>
   );
 }

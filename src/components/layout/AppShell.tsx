@@ -1,31 +1,65 @@
-import { MascotPanel } from "../mascot/MascotPanel";
-import { ModeRail } from "../navigation/ModeRail";
-import { PadGrid } from "../pads/PadGrid";
-import { TransportStrip } from "../transport/TransportStrip";
-import { ScreenViewport } from "./ScreenViewport";
-import { TopBar } from "./TopBar";
+import { useEffect, useMemo, useRef, useState } from "react";
+import mainPanelBg from "../../../assets/ui/panels/main_panel_bg_1920_v2.png";
+import { useLayoutStore } from "../../store/useLayoutStore";
+import { LayoutEditorOverlay } from "./LayoutEditorOverlay";
+import { LayoutElements } from "./LayoutElements";
+
+export const CANVAS_WIDTH = 2859;
+export const CANVAS_HEIGHT = 1610;
 
 export function AppShell() {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  const setEditMode = useLayoutStore((state) => state.setEditMode);
+
+  useEffect(() => {
+    const updateScale = () => {
+      const availableWidth = window.innerWidth - 24;
+      const availableHeight = window.innerHeight - 24;
+      setScale(Math.min(availableWidth / CANVAS_WIDTH, availableHeight / CANVAS_HEIGHT, 1));
+    };
+
+    updateScale();
+    window.addEventListener("resize", updateScale);
+    return () => window.removeEventListener("resize", updateScale);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F2") {
+        event.preventDefault();
+        setEditMode(!useLayoutStore.getState().editMode);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [setEditMode]);
+
+  const shellStyle = useMemo(
+    () => ({
+      width: CANVAS_WIDTH,
+      height: CANVAS_HEIGHT,
+      transform: `scale(${scale})`,
+      transformOrigin: "center center",
+    }),
+    [scale],
+  );
+
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#211d19_0%,_#111111_40%,_#080808_100%)] p-3 text-zinc-100">
-      <section className="mx-auto flex min-h-[calc(100vh-1.5rem)] max-w-[1600px] flex-col overflow-hidden border-2 border-zinc-800 bg-[#101010] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03),0_24px_70px_rgba(0,0,0,0.7)]">
-        <TopBar />
-
-        <div className="grid flex-1 grid-cols-[148px_minmax(0,1fr)] gap-3 p-3">
-          <ModeRail />
-
-          <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_400px] gap-3">
-            <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_180px] gap-3">
-              <ScreenViewport />
-              <MascotPanel />
-            </div>
-
-            <div className="grid grid-cols-[minmax(0,1fr)_430px] gap-3">
-              <TransportStrip />
-              <PadGrid />
-            </div>
-          </div>
-        </div>
+    <main className="flex min-h-screen items-center justify-center overflow-hidden bg-[#050505] p-3 text-zinc-100">
+      <section
+        ref={canvasRef}
+        className="relative overflow-hidden"
+        style={shellStyle}
+      >
+        <img
+          src={mainPanelBg}
+          alt=""
+          className="pointer-events-none absolute left-0 top-0 h-[1610px] w-[2859px] select-none"
+          style={{ objectFit: "fill" }}
+        />
+        <LayoutElements />
+        <LayoutEditorOverlay canvasRef={canvasRef} />
       </section>
     </main>
   );

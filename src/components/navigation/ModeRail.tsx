@@ -1,31 +1,54 @@
+import buttonActive from "../../../assets/ui/buttons/button_active.png";
+import buttonIdle from "../../../assets/ui/buttons/button_idle.png";
+import { CANVAS_HEIGHT, CANVAS_WIDTH } from "../layout/AppShell";
 import { useAppStore } from "../../store/useAppStore";
 import { screens } from "../../types/navigation";
+
+const modeButtons = [
+  { label: "MAIN", y: 187 },
+  { label: "RECORD", y: 345 },
+  { label: "CHOP", y: 501 },
+  { label: "PROGRAM", y: 658 },
+  { label: "STEP", y: 814 },
+  { label: "PERFORMANCE", y: 972 },
+  { label: "MIX", y: 1128 },
+  { label: "DISK", y: 1285 },
+  { label: "SETTINGS", y: 1441 },
+] as const;
 
 export function ModeRail() {
   const activeScreen = useAppStore((state) => state.activeScreen);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
 
   return (
-    <nav className="flex flex-col gap-2 border-2 border-zinc-800 bg-[#151515] p-2">
-      <p className="px-1 pb-1 text-[11px] uppercase tracking-[0.32em] text-zinc-500">Modes</p>
-      {screens.map((screen) => {
-        const isActive = screen === activeScreen;
+    <>
+      {modeButtons.map((button) => {
+        const isActive = button.label === activeScreen;
 
         return (
           <button
-            key={screen}
+            key={button.label}
             type="button"
-            onClick={() => setActiveScreen(screen)}
-            className={`min-h-11 border px-3 py-2 text-left text-[12px] font-semibold tracking-[0.2em] transition ${
-              isActive
-                ? "border-amber-500 bg-amber-500 text-zinc-950 shadow-[inset_0_-2px_0_rgba(0,0,0,0.25)]"
-                : "border-zinc-700 bg-[#0a0a0a] text-zinc-300 hover:border-zinc-500 hover:bg-[#111111]"
-            }`}
+            onClick={() => setActiveScreen(button.label)}
+            className="absolute"
+            style={{
+              left: `${(102 / CANVAS_WIDTH) * 100}%`,
+              top: `${(button.y / CANVAS_HEIGHT) * 100}%`,
+              width: `${(215 / CANVAS_WIDTH) * 100}%`,
+              height: `${(109 / CANVAS_HEIGHT) * 100}%`,
+            }}
           >
-            {screen}
+            <img
+              src={isActive ? buttonActive : buttonIdle}
+              alt=""
+              className="h-full w-full object-contain"
+            />
+            <span className="absolute inset-0 flex items-center justify-center px-[8%] text-center text-[clamp(7px,0.72vw,11px)] font-semibold tracking-[0.14em] text-[#e2ddcf]">
+              {button.label}
+            </span>
           </button>
         );
       })}
-    </nav>
+    </>
   );
 }

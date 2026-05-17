@@ -1,0 +1,441 @@
+{
+  "elements": [
+    {
+      "id": "status",
+      "type": "status",
+      "x": 352,
+      "y": 48,
+      "w": 2064,
+      "h": 64
+    },
+    {
+      "id": "lcd",
+      "type": "lcd",
+      "x": 312,
+      "y": 112,
+      "w": 1208,
+      "h": 824
+    },
+    {
+      "id": "lcd-content",
+      "type": "lcdContent",
+      "x": 456,
+      "y": 264,
+      "w": 920,
+      "h": 512
+    },
+    {
+      "id": "mode-main",
+      "type": "mode",
+      "label": "MAIN",
+      "x": 76,
+      "y": 200,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-record",
+      "type": "mode",
+      "label": "RECORD",
+      "x": 76,
+      "y": 349,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-chop",
+      "type": "mode",
+      "label": "CHOP",
+      "x": 76,
+      "y": 498,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-program",
+      "type": "mode",
+      "label": "PROGRAM",
+      "x": 76,
+      "y": 647,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-step",
+      "type": "mode",
+      "label": "STEP",
+      "x": 76,
+      "y": 796,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-performance",
+      "type": "mode",
+      "label": "PERFORMANCE",
+      "x": 76,
+      "y": 945,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-mix",
+      "type": "mode",
+      "label": "MIX",
+      "x": 76,
+      "y": 1094,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-disk",
+      "type": "mode",
+      "label": "DISK",
+      "x": 76,
+      "y": 1243,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "mode-settings",
+      "type": "mode",
+      "label": "SETTINGS",
+      "x": 76,
+      "y": 1392,
+      "w": 215,
+      "h": 109
+    },
+    {
+      "id": "padmode-play",
+      "type": "padMode",
+      "label": "PLAY",
+      "x": 1552,
+      "y": 208,
+      "w": 108,
+      "h": 45
+    },
+    {
+      "id": "padmode-track-mute",
+      "type": "padMode",
+      "label": "TRACK MUTE",
+      "x": 1688,
+      "y": 208,
+      "w": 120,
+      "h": 45
+    },
+    {
+      "id": "padmode-16-levels",
+      "type": "padMode",
+      "label": "16 LEVELS",
+      "x": 1552,
+      "y": 282.6666666666667,
+      "w": 108,
+      "h": 45
+    },
+    {
+      "id": "padmode-pad-mute",
+      "type": "padMode",
+      "label": "PAD MUTE",
+      "x": 1688,
+      "y": 282.6666666666667,
+      "w": 120,
+      "h": 45
+    },
+    {
+      "id": "padmode-full-level",
+      "type": "padMode",
+      "label": "FULL LEVEL",
+      "x": 1552,
+      "y": 357.33333333333337,
+      "w": 108,
+      "h": 45
+    },
+    {
+      "id": "padmode-next-seq",
+      "type": "padMode",
+      "label": "NEXT SEQ",
+      "x": 1688,
+      "y": 357.33333333333337,
+      "w": 120,
+      "h": 45
+    },
+    {
+      "id": "padmode-note-repeat",
+      "type": "padMode",
+      "label": "NOTE REPEAT",
+      "x": 1552,
+      "y": 432,
+      "w": 108,
+      "h": 45
+    },
+    {
+      "id": "padmode-step",
+      "type": "padMode",
+      "label": "STEP",
+      "x": 1688,
+      "y": 432,
+      "w": 120,
+      "h": 45
+    },
+    {
+      "id": "wait-pad",
+      "type": "button",
+      "label": "WAIT PAD",
+      "x": 392,
+      "y": 1008,
+      "w": 202,
+      "h": 81
+    },
+    {
+      "id": "count-in",
+      "type": "button",
+      "label": "COUNT IN",
+      "x": 608,
+      "y": 1008,
+      "w": 202,
+      "h": 81
+    },
+    {
+      "id": "tap-tempo",
+      "type": "button",
+      "label": "TAP TEMPO",
+      "x": 1168,
+      "y": 1064,
+      "w": 279,
+      "h": 103
+    },
+    {
+      "id": "rec",
+      "type": "button",
+      "label": "REC",
+      "x": 400,
+      "y": 1432,
+      "w": 192,
+      "h": 96
+    },
+    {
+      "id": "overdub",
+      "type": "button",
+      "label": "OVERDUB",
+      "x": 602,
+      "y": 1432,
+      "w": 192,
+      "h": 96
+    },
+    {
+      "id": "stop",
+      "type": "button",
+      "label": "STOP",
+      "x": 804,
+      "y": 1432,
+      "w": 192,
+      "h": 96
+    },
+    {
+      "id": "play",
+      "type": "button",
+      "label": "PLAY",
+      "x": 1006,
+      "y": 1432,
+      "w": 192,
+      "h": 96
+    },
+    {
+      "id": "play-start",
+      "type": "button",
+      "label": "PLAY START",
+      "x": 1208,
+      "y": 1432,
+      "w": 192,
+      "h": 96
+    },
+    {
+      "id": "pad-01",
+      "type": "pad",
+      "label": "P01",
+      "x": 1560,
+      "y": 672,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-02",
+      "type": "pad",
+      "label": "P02",
+      "x": 1779,
+      "y": 672,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-03",
+      "type": "pad",
+      "label": "P03",
+      "x": 2000,
+      "y": 672,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-04",
+      "type": "pad",
+      "label": "P04",
+      "x": 2219,
+      "y": 672,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-05",
+      "type": "pad",
+      "label": "P05",
+      "x": 1560,
+      "y": 882.6666666666666,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-06",
+      "type": "pad",
+      "label": "P06",
+      "x": 1779,
+      "y": 882.6666666666666,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-07",
+      "type": "pad",
+      "label": "P07",
+      "x": 2000,
+      "y": 882.6666666666666,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-08",
+      "type": "pad",
+      "label": "P08",
+      "x": 2219,
+      "y": 882.6666666666666,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-09",
+      "type": "pad",
+      "label": "P09",
+      "x": 1560,
+      "y": 1093.3333333333333,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-10",
+      "type": "pad",
+      "label": "P10",
+      "x": 1779,
+      "y": 1093.3333333333333,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-11",
+      "type": "pad",
+      "label": "P11",
+      "x": 2000,
+      "y": 1093.3333333333333,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-12",
+      "type": "pad",
+      "label": "P12",
+      "x": 2219,
+      "y": 1093.3333333333333,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-13",
+      "type": "pad",
+      "label": "P13",
+      "x": 1560,
+      "y": 1304,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-14",
+      "type": "pad",
+      "label": "P14",
+      "x": 1779,
+      "y": 1304,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-15",
+      "type": "pad",
+      "label": "P15",
+      "x": 2000,
+      "y": 1304,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "pad-16",
+      "type": "pad",
+      "label": "P16",
+      "x": 2219,
+      "y": 1304,
+      "w": 190,
+      "h": 159
+    },
+    {
+      "id": "bank-a",
+      "type": "bank",
+      "label": "A",
+      "x": 1856,
+      "y": 592,
+      "w": 32,
+      "h": 45
+    },
+    {
+      "id": "bank-b",
+      "type": "bank",
+      "label": "B",
+      "x": 1925.3333333333333,
+      "y": 592,
+      "w": 32,
+      "h": 45
+    },
+    {
+      "id": "bank-c",
+      "type": "bank",
+      "label": "C",
+      "x": 1994.6666666666667,
+      "y": 592,
+      "w": 32,
+      "h": 45
+    },
+    {
+      "id": "bank-d",
+      "type": "bank",
+      "label": "D",
+      "x": 2064,
+      "y": 592,
+      "w": 32,
+      "h": 45
+    },
+    {
+      "id": "mascot",
+      "type": "mascot",
+      "x": 856,
+      "y": 984,
+      "w": 260,
+      "h": 430
+    }
+  ]
+}
