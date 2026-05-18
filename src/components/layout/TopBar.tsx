@@ -16,7 +16,16 @@ export function TopBar() {
   const lastSixteenLevelsValue = useAppStore((state) => state.lastSixteenLevelsValue);
   const lastPerformanceMessage = useAppStore((state) => state.lastPerformanceMessage);
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
-  const statusItems = [`SEQ ${sequence}`, `BPM ${bpm.toFixed(2)}`, `TC ${timingCorrect}`, `SWING ${swing}%`, "MEM", "AUDIO READY"];
+  const audioStatus = useAppStore((state) => state.audioStatus);
+  const lastAudioMessage = useAppStore((state) => state.lastAudioMessage);
+  const statusItems = [
+    `SEQ ${sequence}`,
+    `BPM ${bpm.toFixed(2)}`,
+    `TC ${timingCorrect}`,
+    `SWING ${swing}%`,
+    "MEM",
+    audioStatus === "ERROR" ? "AUDIO ERROR" : audioStatus === "READY" ? "AUDIO READY" : "AUDIO IDLE",
+  ];
 
   return (
     <header className="flex h-full w-full items-center justify-between border border-black/60 bg-black/35 px-[1.4%] text-[clamp(10px,0.9vw,14px)] font-semibold uppercase tracking-[0.18em] text-[#d6d0c2] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
@@ -33,6 +42,7 @@ export function TopBar() {
           </span>
         )}
         {lastPerformanceMessage && <span className="text-amber-200">{lastPerformanceMessage}</span>}
+        {lastAudioMessage && <span className="text-amber-200">{lastAudioMessage}</span>}
         {noteRepeatEnabled && <span className="text-amber-200">NR {noteRepeatRate}</span>}
         {sixteenLevelsEnabled && (
           <span className="text-amber-200">

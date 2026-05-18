@@ -1,10 +1,29 @@
 import { create } from "zustand";
 import type { ScreenId } from "../types/navigation";
+import { samplerEngine } from "../audio/samplerEngine";
 
 type PadBank = "A" | "B" | "C" | "D";
+type ChopMarkerSelection = "sampleStart" | "sampleEnd" | "loopStart" | "loopEnd" | `slice:${number}` | null;
+type RecordedSample = {
+  name: string;
+  durationMs: number;
+  waveform: number[];
+  editState?: SampleEditState;
+};
+type SampleEditState = {
+  sampleStart: number;
+  sampleEnd: number;
+  loopEnabled: boolean;
+  loopStart: number;
+  loopEnd: number;
+  loopBars: number;
+  sliceMarkers: number[];
+};
 
 type AppState = {
   activeScreen: ScreenId;
+  audioStatus: "IDLE" | "READY" | "ERROR";
+  lastAudioMessage: string;
   sequence: string;
   sequences: Sequence[];
   currentSequence: string;
@@ -83,8 +102,21 @@ type AppState = {
   freeMemory: string;
   sampleName: string;
   inputGain: number;
-  recordedSamples: Array<{ name: string; durationMs: number; waveform: number[] }>;
+  recordedSamples: RecordedSample[];
   chopSelectedSampleIndex: number;
+  waveformZoom: number;
+  waveformOffset: number;
+  chopEditMode: "TRIM" | "LOOP" | "CHOP";
+  chopSliceMode: "AUTO" | "MANUAL";
+  autoSliceCount: number;
+  selectedMarker: ChopMarkerSelection;
+  sampleStart: number;
+  sampleEnd: number;
+  loopEnabled: boolean;
+  loopStart: number;
+  loopEnd: number;
+  loopBars: number;
+  sliceMarkers: number[];
   chopMarkers: number[];
   selectedSlice: number;
   chopCursor: number;
@@ -185,10 +217,30 @@ type AppState = {
   selectSlice: (slice: number) => void;
   nextSlice: () => void;
   previousSlice: () => void;
+  setSelectedMarker: (marker: ChopMarkerSelection) => void;
+  setChopEditMode: (mode: AppState["chopEditMode"]) => void;
+  setChopSliceMode: (mode: AppState["chopSliceMode"]) => void;
+  setAutoSliceCount: (count: number) => void;
+  enableLoopMode: () => void;
+  adjustLoopBars: (delta: number) => void;
+  enterChopMode: () => void;
+  autoChop: () => void;
+  setWaveformZoom: (zoom: number) => void;
+  panWaveform: (delta: number) => void;
+  moveMarkerTo: (marker: Exclude<ChopMarkerSelection, null>, value: number) => void;
   moveSelectedMarker: (delta: number) => void;
   addSlice: () => void;
+  insertSliceAt: (position: number) => void;
   removeSlice: () => void;
+  saveChopEdits: () => void;
+  previewChopSlice: (sliceIndex: number) => void;
+  keepChops: (options: { baseName: string; targetBank: PadBank; createProgram: boolean }) => void;
+  discardChopEdits: () => void;
   assignCurrentSliceToSelectedPad: () => void;
+  assignSourceToSelectedPad: (sourceName: string) => void;
+  previewSource: (sourceName: string) => void;
+  previousChopSample: () => void;
+  nextChopSample: () => void;
   updateSelectedPadParam: (
     field: "level" | "tune" | "pan" | "attack" | "decay" | "chokeGroup",
     delta: number,
@@ -212,8 +264,12 @@ type AppState = {
     field: "level" | "pan" | "fxSend",
     delta: number,
   ) => void;
+  setMixerChannelValue: (pad: string, field: "level" | "pan" | "fxSend", value: number) => void;
+  selectMixerPad: (pad: string) => void;
   toggleSelectedMixerMute: () => void;
   toggleSelectedMixerSolo: () => void;
+  toggleMixerChannelMute: (pad: string) => void;
+  toggleMixerChannelSolo: (pad: string) => void;
   cycleSelectedMixerOutput: () => void;
   cycleTrackMuteMode: () => void;
   setTrackMuteMode: (mode: AppState["trackMuteMode"]) => void;
@@ -357,6 +413,8 @@ const initialStepEvents = createStepEvents();
 
 export const useAppStore = create<AppState>((set, get) => ({
   activeScreen: "MAIN",
+  audioStatus: samplerEngine.getStatus(),
+  lastAudioMessage: "",
   sequence: "01",
   sequences: createSequences(initialStepEvents),
   currentSequence: "01",
@@ -429,7 +487,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   inputGain: 0,
   recordedSamples: [],
   chopSelectedSampleIndex: 0,
-  chopMarkers: createDefaultMarkers(),
+  waveformZoom: 1,
+  waveformOffset: 0,
+  chopEditMode: "TRIM",
+  chopSliceMode: "AUTO",
+  autoSliceCount: 8,
+  selectedMarker: "sampleStart",
+  sampleStart: 0,
+  sampleEnd: 1,
+  loopEnabled: false,
+  loopStart: 0,
+  loopEnd: 1,
+  loopBars: 4,
+  sliceMarkers: [],
+  chopMarkers: [],
   selectedSlice: 1,
   chopCursor: 0,
   normalizeEnabled: false,
@@ -490,6 +561,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tapHistory: [],
   setActiveScreen: (activeScreen) => set({ activeScreen }),
   togglePlay: () => {
+    void samplerEngine.ensureReady();
     const state = get();
     if (state.isPlaying) {
       set({
@@ -563,10 +635,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       isSamplingArmed: false,
       recordedSamples: [
         ...state.recordedSamples,
-        { name: state.sampleName, durationMs: state.recordingMs, waveform },
+        {
+          name: state.sampleName,
+          durationMs: state.recordingMs,
+          waveform,
+          editState: createDefaultSampleEditState(),
+        },
       ],
       chopSelectedSampleIndex: state.recordedSamples.length,
-      chopMarkers: createDefaultMarkers(),
+      waveformZoom: 1,
+      waveformOffset: 0,
+      chopEditMode: "TRIM",
+      chopSliceMode: "AUTO",
+      autoSliceCount: 8,
+      selectedMarker: "sampleStart",
+      sampleStart: 0,
+      sampleEnd: 1,
+      loopEnabled: false,
+      loopStart: 0,
+      loopEnd: 1,
+      loopBars: 4,
+      sliceMarkers: [],
+      chopMarkers: [],
       selectedSlice: 1,
       chopCursor: 0,
       padAssignments: {
@@ -630,7 +720,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? state.timingCorrect
           : state.noteRepeatRate;
         const repeatedEvents = createRepeatedNoteEvents(state, selectedPad, rate);
-        const events = [...state.stepEvents, ...repeatedEvents].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step));
+        const events = state.isSequenceRecording
+          ? [...state.stepEvents, ...repeatedEvents].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step))
+          : state.stepEvents;
         return {
           selectedPad,
           lastTriggeredPad: selectedPad,
@@ -690,14 +782,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (state.activeScreen === "UTILITY_PAD_MUTE") {
+        const channels = state.padMixer[state.padBank].map((channel) =>
+          channel.pad === selectedPad ? { ...channel, muted: !channel.muted } : channel,
+        );
+        syncMixerBankToAudio(state.padBank, channels);
         return {
           selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
           padMixer: {
             ...state.padMixer,
-            [state.padBank]: state.padMixer[state.padBank].map((channel) =>
-              channel.pad === selectedPad ? { ...channel, muted: !channel.muted } : channel,
-            ),
+            [state.padBank]: channels,
           },
         };
       }
@@ -796,6 +890,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
       };
     });
+    playPadFromState(get(), selectedPad);
+    if (get().noteRepeatEnabled) playNoteRepeatBurst(get(), selectedPad);
     window.setTimeout(() => {
       set((state) => ({
         triggeredPads: { ...state.triggeredPads, [selectedPad]: false },
@@ -1095,41 +1191,153 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleFullLevel: () => set((state) => ({ fullLevelEnabled: !state.fullLevelEnabled })),
   selectSlice: (slice) =>
     set((state) => {
+      if (state.chopMarkers.length === 0) return state;
       const bounded = clamp(Math.round(slice), 1, state.chopMarkers.length);
       return { selectedSlice: bounded, chopCursor: state.chopMarkers[bounded - 1] };
     }),
   nextSlice: () =>
     set((state) => {
+      if (state.chopMarkers.length === 0) return state;
       const selectedSlice = Math.min(state.selectedSlice + 1, state.chopMarkers.length);
       return { selectedSlice, chopCursor: state.chopMarkers[selectedSlice - 1] };
     }),
   previousSlice: () =>
     set((state) => {
+      if (state.chopMarkers.length === 0) return state;
       const selectedSlice = Math.max(state.selectedSlice - 1, 1);
       return { selectedSlice, chopCursor: state.chopMarkers[selectedSlice - 1] };
     }),
+  setSelectedMarker: (selectedMarker) => set({ selectedMarker }),
+  setChopEditMode: (chopEditMode) => set({ chopEditMode }),
+  setChopSliceMode: (chopSliceMode) =>
+    set((state) => {
+      if (chopSliceMode === "AUTO") {
+        const sliceMarkers = createAutoMarkers(state.sampleStart, state.sampleEnd, state.autoSliceCount);
+        return {
+          chopSliceMode,
+          sliceMarkers,
+          chopMarkers: sliceMarkers,
+          selectedSlice: 1,
+          selectedMarker: "slice:0",
+          chopCursor: sliceMarkers[0] ?? state.sampleStart,
+        };
+      }
+      return { chopSliceMode };
+    }),
+  setAutoSliceCount: (count) =>
+    set((state) => {
+      const autoSliceCount = clamp(Math.round(count), 1, 64);
+      if (state.chopSliceMode !== "AUTO") return { autoSliceCount };
+      const sliceMarkers = createAutoMarkers(state.sampleStart, state.sampleEnd, autoSliceCount);
+      return {
+        autoSliceCount,
+        sliceMarkers,
+        chopMarkers: sliceMarkers,
+        selectedSlice: clamp(state.selectedSlice, 1, sliceMarkers.length),
+        selectedMarker: `slice:${clamp(state.selectedSlice, 1, sliceMarkers.length) - 1}`,
+        chopCursor: sliceMarkers[clamp(state.selectedSlice, 1, sliceMarkers.length) - 1],
+      };
+    }),
+  enableLoopMode: () =>
+    set({
+      chopEditMode: "LOOP",
+      loopEnabled: true,
+      selectedMarker: "loopStart",
+    }),
+  adjustLoopBars: (delta) =>
+    set((state) => ({ loopBars: clamp(state.loopBars + delta, 1, 16) })),
+  enterChopMode: () =>
+    set((state) => {
+      const sliceMarkers =
+        state.sliceMarkers.length > 0 ? state.sliceMarkers : createAutoMarkers(state.sampleStart, state.sampleEnd, 8);
+      return {
+        chopEditMode: "CHOP",
+        chopSliceMode: state.chopSliceMode,
+        sliceMarkers,
+        chopMarkers: sliceMarkers,
+        selectedSlice: 1,
+        selectedMarker: "slice:0",
+        chopCursor: sliceMarkers[0] ?? state.sampleStart,
+      };
+    }),
+  autoChop: () =>
+    set((state) => {
+      const sliceMarkers = createAutoMarkers(state.sampleStart, state.sampleEnd, state.autoSliceCount);
+      return {
+        chopEditMode: "CHOP",
+        chopSliceMode: "AUTO",
+        sliceMarkers,
+        chopMarkers: sliceMarkers,
+        selectedSlice: 1,
+        selectedMarker: "slice:0",
+        chopCursor: sliceMarkers[0],
+      };
+    }),
+  setWaveformZoom: (zoom) =>
+    set((state) => {
+      const waveformZoom = clamp(zoom, 1, 16);
+      const maxOffset = Math.max(0, 1 - 1 / waveformZoom);
+      return { waveformZoom, waveformOffset: clamp(state.waveformOffset, 0, maxOffset) };
+    }),
+  panWaveform: (delta) =>
+    set((state) => {
+      const maxOffset = Math.max(0, 1 - 1 / state.waveformZoom);
+      return { waveformOffset: clamp(state.waveformOffset + delta, 0, maxOffset) };
+    }),
+  moveMarkerTo: (marker, value) =>
+    set((state) => moveMarkerState(state, marker, value)),
   moveSelectedMarker: (delta) =>
     set((state) => {
-      const index = state.selectedSlice - 1;
-      const previous = index === 0 ? 0 : state.chopMarkers[index - 1] + 0.02;
-      const next =
-        index === state.chopMarkers.length - 1 ? 0.98 : state.chopMarkers[index + 1] - 0.02;
-      const nextValue = clamp(state.chopMarkers[index] + delta, previous, next);
-      const chopMarkers = state.chopMarkers.map((marker, markerIndex) =>
-        markerIndex === index ? nextValue : marker,
-      );
-      return { chopMarkers, chopCursor: nextValue };
+      const marker = state.selectedMarker ?? (`slice:${state.selectedSlice - 1}` as const);
+      return moveMarkerState(state, marker, getMarkerValue(state, marker) + delta);
     }),
   addSlice: () =>
     set((state) => {
-      if (state.chopMarkers.length >= 16) return state;
+      if (state.chopMarkers.length === 0) {
+        return {
+          chopEditMode: "CHOP",
+          chopSliceMode: "MANUAL",
+          chopMarkers: [state.sampleStart],
+          sliceMarkers: [state.sampleStart],
+          selectedSlice: 1,
+          selectedMarker: "slice:0",
+          chopCursor: state.sampleStart,
+        };
+      }
+      if (state.chopMarkers.length >= 64) return state;
       const index = state.selectedSlice - 1;
       const start = state.chopMarkers[index];
-      const end = state.chopMarkers[index + 1] ?? 1;
+      const end = state.chopMarkers[index + 1] ?? state.sampleEnd;
       const newMarker = start + (end - start) / 2;
       const chopMarkers = [...state.chopMarkers, newMarker].sort((a, b) => a - b);
       const selectedSlice = chopMarkers.indexOf(newMarker) + 1;
-      return { chopMarkers, selectedSlice, chopCursor: newMarker };
+      return {
+        chopMarkers,
+        sliceMarkers: chopMarkers,
+        chopSliceMode: "MANUAL",
+        selectedSlice,
+        selectedMarker: `slice:${selectedSlice - 1}`,
+        chopCursor: newMarker,
+      };
+    }),
+  insertSliceAt: (position) =>
+    set((state) => {
+      if (state.chopMarkers.length >= 64) return state;
+      const bounded = clamp(position, state.sampleStart, state.sampleEnd - 0.0025);
+      const chopMarkers =
+        state.chopMarkers.length === 0
+          ? [state.sampleStart, bounded].sort((a, b) => a - b)
+          : [...state.chopMarkers, bounded].sort((a, b) => a - b);
+      const selectedSlice = chopMarkers.indexOf(bounded) + 1;
+      return {
+        chopEditMode: "CHOP",
+        chopSliceMode: "MANUAL",
+        chopMarkers,
+        sliceMarkers: chopMarkers,
+        selectedSlice,
+        selectedMarker: `slice:${selectedSlice - 1}`,
+        chopCursor: bounded,
+      };
     }),
   removeSlice: () =>
     set((state) => {
@@ -1137,7 +1345,117 @@ export const useAppStore = create<AppState>((set, get) => ({
       const index = state.selectedSlice === 1 ? 1 : state.selectedSlice - 1;
       const chopMarkers = state.chopMarkers.filter((_, markerIndex) => markerIndex !== index);
       const selectedSlice = clamp(state.selectedSlice, 1, chopMarkers.length);
-      return { chopMarkers, selectedSlice, chopCursor: chopMarkers[selectedSlice - 1] };
+      return {
+        chopMarkers,
+        sliceMarkers: chopMarkers,
+        chopSliceMode: "MANUAL",
+        selectedSlice,
+        selectedMarker: `slice:${selectedSlice - 1}`,
+        chopCursor: chopMarkers[selectedSlice - 1],
+      };
+    }),
+  saveChopEdits: () =>
+    set((state) => {
+      const sampleIndex = state.chopSelectedSampleIndex;
+      const sample = state.recordedSamples[sampleIndex] ?? state.recordedSamples.at(-1);
+      if (!sample) return state;
+      const actualIndex = state.recordedSamples.indexOf(sample);
+      const editState: SampleEditState = {
+        sampleStart: state.sampleStart,
+        sampleEnd: state.sampleEnd,
+        loopEnabled: state.loopEnabled,
+        loopStart: state.loopStart,
+        loopEnd: state.loopEnd,
+        loopBars: state.loopBars,
+        sliceMarkers: state.sliceMarkers,
+      };
+      return {
+        recordedSamples: state.recordedSamples.map((item, index) =>
+          index === actualIndex ? { ...item, editState } : item,
+        ),
+        chopMarkers: state.sliceMarkers,
+      };
+    }),
+  previewChopSlice: (sliceIndex) => {
+    const state = get();
+    const preview = resolveTemporaryChopPreview(state, sliceIndex);
+    if (!preview) return;
+    set({
+      selectedSlice: sliceIndex + 1,
+      selectedMarker: `slice:${sliceIndex}`,
+      chopCursor: preview.sampleStart,
+      lastAudioMessage: `PREVIEW S${String(sliceIndex + 1).padStart(2, "0")}`,
+    });
+    samplerEngine.play(preview, { gain: 1, pan: 0 });
+  },
+  keepChops: ({ baseName, targetBank, createProgram }) =>
+    set((state) => {
+      const sampleIndex = state.chopSelectedSampleIndex;
+      const sample = state.recordedSamples[sampleIndex] ?? state.recordedSamples.at(-1);
+      if (!sample) return state;
+      const actualIndex = state.recordedSamples.indexOf(sample);
+      const editState: SampleEditState = {
+        sampleStart: state.sampleStart,
+        sampleEnd: state.sampleEnd,
+        loopEnabled: state.loopEnabled,
+        loopStart: state.loopStart,
+        loopEnd: state.loopEnd,
+        loopBars: state.loopBars,
+        sliceMarkers: state.sliceMarkers,
+      };
+      const sliceSamples = state.sliceMarkers.map((start, index) => {
+        const end = state.sliceMarkers[index + 1] ?? state.sampleEnd;
+        return {
+          name: `${baseName}_S${String(index + 1).padStart(2, "0")}`,
+          durationMs: Math.max(1, Math.round((end - start) * sample.durationMs)),
+          waveform: sample.waveform,
+          editState: {
+            sampleStart: start,
+            sampleEnd: end,
+            loopEnabled: false,
+            loopStart: start,
+            loopEnd: end,
+            loopBars: 4,
+            sliceMarkers: [],
+          },
+        } satisfies RecordedSample;
+      });
+      const retainedSamples = state.recordedSamples.filter(
+        (item, index) => index === actualIndex || !item.name.startsWith(`${baseName}_S`),
+      );
+      const padAssignments = createProgram
+        ? {
+            ...state.padAssignments,
+            [targetBank]: state.padAssignments[targetBank].map((pad, index) =>
+              sliceSamples[index]
+                ? { ...pad, assignment: `${sliceSamples[index].name} / S${String(index + 1).padStart(2, "0")}` }
+                : pad,
+            ),
+          }
+        : state.padAssignments;
+      return {
+        recordedSamples: [
+          ...retainedSamples.map((item, index) => (index === actualIndex ? { ...item, editState } : item)),
+          ...sliceSamples,
+        ],
+        padAssignments,
+        chopMarkers: state.sliceMarkers,
+        chopEditMode: "TRIM",
+        selectedMarker: "sampleStart",
+      };
+    }),
+  discardChopEdits: () =>
+    set((state) => {
+      const sample = state.recordedSamples[state.chopSelectedSampleIndex] ?? state.recordedSamples.at(-1);
+      const kept = sample?.editState?.sliceMarkers ?? [];
+      return {
+        sliceMarkers: kept,
+        chopMarkers: kept,
+        selectedSlice: 1,
+        selectedMarker: "sampleStart",
+        chopCursor: kept[0] ?? state.sampleStart,
+        chopEditMode: "TRIM",
+      };
     }),
   assignCurrentSliceToSelectedPad: () =>
     set((state) => {
@@ -1153,6 +1471,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
       };
     }),
+  assignSourceToSelectedPad: (sourceName) =>
+    set((state) => ({
+      padAssignments: {
+        ...state.padAssignments,
+        [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
+          pad.pad === state.selectedPad ? { ...pad, assignment: sourceName } : pad,
+        ),
+      },
+    })),
+  previewSource: (sourceName) => {
+    const state = get();
+    const resolved = resolveAssignedSample(state, sourceName);
+    if (!resolved) return;
+    set({ lastAudioMessage: `PREVIEW ${sourceName}` });
+    samplerEngine.play(resolved, { gain: 1, pan: 0 });
+  },
+  previousChopSample: () =>
+    set((state) => switchChopSample(state, -1)),
+  nextChopSample: () =>
+    set((state) => switchChopSample(state, 1)),
   updateSelectedPadParam: (field, delta) =>
     set((state) => ({
       padAssignments: {
@@ -1306,51 +1644,78 @@ export const useAppStore = create<AppState>((set, get) => ({
       const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
       return { currentBar, currentStepIndex, currentEvent: selectedStepEventIndex + 1, ...selectedEventPatch(state.stepEvents, selectedStepEventIndex), bar: formatBarPosition(currentBar, state.currentStep) };
     }),
-  tickStepPlayback: () =>
-    set((state) => {
-      if (!state.isPlaying) return state;
-      const currentStepIndex = (state.currentStepIndex + 1) % (state.sequenceLengthBars * 16);
-      const currentBar = Math.floor(currentStepIndex / 16) + 1;
-      const currentStep = (currentStepIndex % 16) + 1;
-      const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
-      return {
-        currentStepIndex,
-        currentBar,
-        currentStep,
-        currentEvent: selectedStepEventIndex + 1,
-        ...selectedEventPatch(state.stepEvents, selectedStepEventIndex),
-        bar: formatBarPosition(currentBar, currentStep),
-      };
-    }),
+  tickStepPlayback: () => {
+    const state = get();
+    if (!state.isPlaying) return;
+    const currentStepIndex = (state.currentStepIndex + 1) % (state.sequenceLengthBars * 16);
+    const eventsAtStep = state.stepEvents.filter(
+      (event) => eventStepIndex(event.step) === currentStepIndex && !isTrackMuted(state, event.trackId),
+    );
+    eventsAtStep.forEach((event) => playAssignedPadFromState(state, event.pad));
+    const currentBar = Math.floor(currentStepIndex / 16) + 1;
+    const currentStep = (currentStepIndex % 16) + 1;
+    const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
+    set({
+      currentStepIndex,
+      currentBar,
+      currentStep,
+      currentEvent: selectedStepEventIndex + 1,
+      ...selectedEventPatch(state.stepEvents, selectedStepEventIndex),
+      bar: formatBarPosition(currentBar, currentStep),
+    });
+  },
   updateSelectedMixerChannel: (field, delta) =>
-    set((state) => ({
-      padMixer: {
-        ...state.padMixer,
-        [state.padBank]: state.padMixer[state.padBank].map((channel) => {
-          if (channel.pad !== state.selectedPad) return channel;
-          const limits = getMixerLimits(field);
-          return { ...channel, [field]: clamp(channel[field] + delta, limits.min, limits.max) };
-        }),
-      },
-    })),
+    set((state) => {
+      const channels = state.padMixer[state.padBank].map((channel) => {
+        if (channel.pad !== state.selectedPad) return channel;
+        const limits = getMixerLimits(field);
+        return { ...channel, [field]: clamp(channel[field] + delta, limits.min, limits.max) };
+      });
+      syncMixerBankToAudio(state.padBank, channels);
+      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+    }),
+  setMixerChannelValue: (pad, field, value) =>
+    set((state) => {
+      const limits = getMixerLimits(field);
+      const channels = state.padMixer[state.padBank].map((channel) =>
+        channel.pad === pad ? { ...channel, [field]: clamp(value, limits.min, limits.max) } : channel,
+      );
+      syncMixerBankToAudio(state.padBank, channels);
+      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+    }),
+  selectMixerPad: (selectedPad) => set({ selectedPad }),
   toggleSelectedMixerMute: () =>
-    set((state) => ({
-      padMixer: {
-        ...state.padMixer,
-        [state.padBank]: state.padMixer[state.padBank].map((channel) =>
-          channel.pad === state.selectedPad ? { ...channel, muted: !channel.muted } : channel,
-        ),
-      },
-    })),
+    set((state) => {
+      const channels = state.padMixer[state.padBank].map((channel) =>
+        channel.pad === state.selectedPad ? { ...channel, muted: !channel.muted } : channel,
+      );
+      syncMixerBankToAudio(state.padBank, channels);
+      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+    }),
   toggleSelectedMixerSolo: () =>
-    set((state) => ({
-      padMixer: {
-        ...state.padMixer,
-        [state.padBank]: state.padMixer[state.padBank].map((channel) =>
-          channel.pad === state.selectedPad ? { ...channel, solo: !channel.solo } : channel,
-        ),
-      },
-    })),
+    set((state) => {
+      const channels = state.padMixer[state.padBank].map((channel) =>
+        channel.pad === state.selectedPad ? { ...channel, solo: !channel.solo } : channel,
+      );
+      syncMixerBankToAudio(state.padBank, channels);
+      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+    }),
+  toggleMixerChannelMute: (pad) =>
+    set((state) => {
+      const channels = state.padMixer[state.padBank].map((channel) =>
+        channel.pad === pad ? { ...channel, muted: !channel.muted } : channel,
+      );
+      syncMixerBankToAudio(state.padBank, channels);
+      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+    }),
+  toggleMixerChannelSolo: (pad) =>
+    set((state) => {
+      const channels = state.padMixer[state.padBank].map((channel) =>
+        channel.pad === pad ? { ...channel, solo: !channel.solo } : channel,
+      );
+      syncMixerBankToAudio(state.padBank, channels);
+      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+    }),
   cycleSelectedMixerOutput: () =>
     set((state) => {
       const outputs: MixerChannel["output"][] = ["MAIN", "OUT1", "OUT2", "OUT3"];
@@ -1517,6 +1882,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 }));
 
+samplerEngine.onStatusChange((audioStatus) => {
+  useAppStore.setState({ audioStatus });
+});
+
 function formatMs(value: number) {
   const totalSeconds = Math.floor(value / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -1651,8 +2020,92 @@ function createDefaultMarkers() {
   return Array.from({ length: 8 }, (_, index) => index / 8);
 }
 
+function createDefaultSampleEditState(): SampleEditState {
+  return {
+    sampleStart: 0,
+    sampleEnd: 1,
+    loopEnabled: false,
+    loopStart: 0,
+    loopEnd: 1,
+    loopBars: 4,
+    sliceMarkers: [],
+  };
+}
+
+function createAutoMarkers(start: number, end: number, count: number) {
+  return Array.from({ length: count }, (_, index) => start + ((end - start) * index) / count);
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function getMarkerValue(state: AppState, marker: Exclude<ChopMarkerSelection, null>) {
+  if (marker === "sampleStart") return state.sampleStart;
+  if (marker === "sampleEnd") return state.sampleEnd;
+  if (marker === "loopStart") return state.loopStart;
+  if (marker === "loopEnd") return state.loopEnd;
+  const index = Number(marker.split(":")[1]);
+  return state.sliceMarkers[index] ?? 0;
+}
+
+function moveMarkerState(
+  state: AppState,
+  marker: Exclude<ChopMarkerSelection, null>,
+  value: number,
+): Partial<AppState> {
+  const minimumGap = 0.0025;
+
+  if (marker === "sampleStart") {
+    const sampleStart = clamp(value, 0, state.sampleEnd - minimumGap);
+    const loopStart = Math.max(state.loopStart, sampleStart);
+    return {
+      sampleStart,
+      loopStart,
+      loopEnd: Math.max(state.loopEnd, loopStart + minimumGap),
+      selectedMarker: marker,
+    };
+  }
+
+  if (marker === "sampleEnd") {
+    const sampleEnd = clamp(value, state.sampleStart + minimumGap, 1);
+    const loopEnd = Math.min(state.loopEnd, sampleEnd);
+    return {
+      sampleEnd,
+      loopStart: Math.min(state.loopStart, loopEnd - minimumGap),
+      loopEnd,
+      selectedMarker: marker,
+    };
+  }
+
+  if (marker === "loopStart") {
+    const loopStart = clamp(value, state.sampleStart, state.loopEnd - minimumGap);
+    return { loopStart, selectedMarker: marker };
+  }
+
+  if (marker === "loopEnd") {
+    const loopEnd = clamp(value, state.loopStart + minimumGap, state.sampleEnd);
+    return { loopEnd, selectedMarker: marker };
+  }
+
+  const index = Number(marker.split(":")[1]);
+  const previous = index === 0 ? state.sampleStart : state.sliceMarkers[index - 1] + minimumGap;
+  const next =
+    index === state.sliceMarkers.length - 1
+      ? state.sampleEnd - minimumGap
+      : state.sliceMarkers[index + 1] - minimumGap;
+  const nextValue = clamp(value, previous, next);
+  const sliceMarkers = state.sliceMarkers.map((sliceMarker, markerIndex) =>
+    markerIndex === index ? nextValue : sliceMarker,
+  );
+  return {
+    sliceMarkers,
+    chopMarkers: sliceMarkers,
+    chopSliceMode: "MANUAL",
+    selectedSlice: index + 1,
+    selectedMarker: marker,
+    chopCursor: nextValue,
+  };
 }
 
 function createPadAssignments(): Record<"A" | "B" | "C" | "D", PadAssignment[]> {
@@ -1662,6 +2115,192 @@ function createPadAssignments(): Record<"A" | "B" | "C" | "D", PadAssignment[]> 
     C: createBankAssignments(),
     D: createBankAssignments(),
   };
+}
+
+function playPadFromState(state: AppState, pad: string, options: { allowUtilityPlayback?: boolean } = {}) {
+  if (
+    !options.allowUtilityPlayback &&
+    (state.activeScreen === "PERFORMANCE" ||
+      state.activeScreen.startsWith("UTILITY_") ||
+      state.activeScreen === "COUNT_IN")
+  ) {
+    return;
+  }
+  if (state.activeScreen === "CHOP" && state.chopEditMode === "CHOP") {
+    const padNumber = Number(pad.slice(1));
+    const previewSliceIndex = padNumber - 1;
+    const preview = resolveTemporaryChopPreview(state, previewSliceIndex);
+    if (!preview) return;
+    useAppStore.setState({
+      selectedSlice: previewSliceIndex + 1,
+      selectedMarker: `slice:${previewSliceIndex}`,
+      chopCursor: preview.sampleStart,
+      lastAudioMessage: `CHOP S${String(previewSliceIndex + 1).padStart(2, "0")}`,
+    });
+    const mix = state.padMixer[state.padBank].find((item) => item.pad === pad);
+    if (!mix || !isMixerChannelAudible(state.padMixer[state.padBank], pad)) return;
+    samplerEngine.play(preview, {
+      gain: mix.level / 100,
+      pan: mix.pan / 64,
+      channelKey: mixerChannelKey(state.padBank, pad),
+    });
+    return;
+  }
+  playAssignedPadFromState(state, pad);
+}
+
+function playAssignedPadFromState(state: AppState, pad: string) {
+  const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
+  const mix = state.padMixer[state.padBank].find((item) => item.pad === pad);
+  if (!assignment || assignment.assignment === "---" || !mix || !isMixerChannelAudible(state.padMixer[state.padBank], pad)) {
+    useAppStore.setState({ lastAudioMessage: "UNASSIGNED PAD" });
+    return;
+  }
+  const resolved = resolveAssignedSample(state, assignment.assignment);
+  if (!resolved) return;
+  useAppStore.setState({ lastAudioMessage: assignment.assignment });
+  samplerEngine.play(resolved, {
+    gain: mix.level / 100,
+    pan: mix.pan / 64,
+    channelKey: mixerChannelKey(state.padBank, pad),
+  });
+}
+
+function resolveTemporaryChopPreview(state: AppState, sliceIndex: number) {
+  const sample = state.recordedSamples[state.chopSelectedSampleIndex] ?? state.recordedSamples.at(-1);
+  if (!sample || state.sliceMarkers[sliceIndex] == null) return null;
+  return {
+    name: `${sample.name}#preview-${sliceIndex}`,
+    durationMs: sample.durationMs,
+    waveform: sample.waveform,
+    sampleStart: state.sliceMarkers[sliceIndex],
+    sampleEnd: state.sliceMarkers[sliceIndex + 1] ?? state.sampleEnd,
+    playbackRate: 1,
+  };
+}
+
+function switchChopSample(state: AppState, delta: number): Partial<AppState> {
+  const baseSampleIndexes = state.recordedSamples
+    .map((sample, index) => ({ sample, index }))
+    .filter(({ sample }) => !isSliceSampleName(sample.name))
+    .map(({ index }) => index);
+  if (baseSampleIndexes.length === 0) return state;
+
+  const currentPosition = Math.max(baseSampleIndexes.indexOf(state.chopSelectedSampleIndex), 0);
+  const targetPosition = (currentPosition + delta + baseSampleIndexes.length) % baseSampleIndexes.length;
+  const targetIndex = baseSampleIndexes[targetPosition];
+  const currentSample = state.recordedSamples[state.chopSelectedSampleIndex];
+  const currentEditState = buildCurrentSampleEditState(state);
+  const recordedSamples = currentSample
+    ? state.recordedSamples.map((sample, index) =>
+        index === state.chopSelectedSampleIndex ? { ...sample, editState: currentEditState } : sample,
+      )
+    : state.recordedSamples;
+  const target = recordedSamples[targetIndex];
+  const targetEditState = target.editState ?? createDefaultSampleEditState();
+  return {
+    recordedSamples,
+    chopSelectedSampleIndex: targetIndex,
+    waveformZoom: 1,
+    waveformOffset: 0,
+    chopEditMode: "TRIM",
+    chopSliceMode: targetEditState.sliceMarkers.length > 0 ? "MANUAL" : "AUTO",
+    autoSliceCount: targetEditState.sliceMarkers.length || state.autoSliceCount,
+    selectedMarker: "sampleStart",
+    sampleStart: targetEditState.sampleStart,
+    sampleEnd: targetEditState.sampleEnd,
+    loopEnabled: targetEditState.loopEnabled,
+    loopStart: targetEditState.loopStart,
+    loopEnd: targetEditState.loopEnd,
+    loopBars: targetEditState.loopBars,
+    sliceMarkers: targetEditState.sliceMarkers,
+    chopMarkers: targetEditState.sliceMarkers,
+    selectedSlice: 1,
+    chopCursor: targetEditState.sliceMarkers[0] ?? targetEditState.sampleStart,
+  };
+}
+
+function buildCurrentSampleEditState(state: AppState): SampleEditState {
+  return {
+    sampleStart: state.sampleStart,
+    sampleEnd: state.sampleEnd,
+    loopEnabled: state.loopEnabled,
+    loopStart: state.loopStart,
+    loopEnd: state.loopEnd,
+    loopBars: state.loopBars,
+    sliceMarkers: state.sliceMarkers,
+  };
+}
+
+function isSliceSampleName(name: string) {
+  return /_S\d{2}$/.test(name);
+}
+
+export function isPadAssigned(state: Pick<AppState, "padAssignments" | "padBank">, pad: string) {
+  const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
+  return Boolean(assignment && assignment.assignment !== "---");
+}
+
+function resolveAssignedSample(state: AppState, assignment: string) {
+  const [sampleNamePart, slicePart] = assignment.split("/").map((part) => part.trim());
+  const sample = state.recordedSamples.find((item) => item.name === sampleNamePart);
+  if (!sample) return null;
+  const explicitSlice = slicePart?.match(/^S(\d{2})$/)?.[1];
+  const sliceIndex = explicitSlice ? Number(explicitSlice) - 1 : -1;
+  const editState = sample.editState;
+  const sampleStart =
+    sliceIndex >= 0 && editState?.sliceMarkers[sliceIndex] != null
+      ? editState.sliceMarkers[sliceIndex]
+      : editState?.sampleStart ?? 0;
+  const sampleEnd =
+    sliceIndex >= 0 && editState?.sliceMarkers[sliceIndex] != null
+      ? editState.sliceMarkers[sliceIndex + 1] ?? editState.sampleEnd
+      : editState?.sampleEnd ?? 1;
+  return {
+    name: sample.name,
+    durationMs: sample.durationMs,
+    waveform: sample.waveform,
+    sampleStart,
+    sampleEnd,
+    playbackRate: 1,
+  };
+}
+
+function isTrackMuted(state: AppState, trackId: string) {
+  return state.performanceTracks.find((track) => track.name === trackId)?.muted ?? false;
+}
+
+function isMixerChannelAudible(channels: MixerChannel[], pad: string) {
+  const channel = channels.find((item) => item.pad === pad);
+  if (!channel || channel.muted) return false;
+  const hasSolo = channels.some((item) => item.solo);
+  return !hasSolo || channel.solo;
+}
+
+function mixerChannelKey(bank: PadBank, pad: string) {
+  return `${bank}:${pad}`;
+}
+
+function syncMixerBankToAudio(bank: PadBank, channels: MixerChannel[]) {
+  channels.forEach((channel) => {
+    samplerEngine.updateChannelMix(mixerChannelKey(bank, channel.pad), {
+      gain: channel.level / 100,
+      pan: channel.pan / 64,
+      audible: isMixerChannelAudible(channels, channel.pad),
+    });
+  });
+}
+
+function playNoteRepeatBurst(state: AppState, pad: string) {
+  const rate = state.noteRepeatLinkToTC && state.timingCorrect !== "OFF" ? state.timingCorrect : state.noteRepeatRate;
+  const intervalMs = repeatIntervalSteps(rate) * (60_000 / state.bpm / 4);
+  for (let index = 1; index < 4; index += 1) {
+    window.setTimeout(() => {
+      const liveState = useAppStore.getState();
+      if (!liveState.noteRepeatEnabled) return;
+      playPadFromState(liveState, pad, { allowUtilityPlayback: true });
+    }, intervalMs * index);
+  }
 }
 
 function createBankAssignments() {

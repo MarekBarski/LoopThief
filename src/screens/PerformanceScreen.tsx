@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -18,13 +17,6 @@ export function PerformanceScreen() {
   const isPlaying = useAppStore((state) => state.isPlaying);
   const performancePulse = useAppStore((state) => state.performancePulse);
   const queuePerformanceSequence = useAppStore((state) => state.queuePerformanceSequence);
-  const tickPerformance = useAppStore((state) => state.tickPerformance);
-
-  useEffect(() => {
-    if (!isPlaying) return;
-    const interval = window.setInterval(() => tickPerformance(), 180);
-    return () => window.clearInterval(interval);
-  }, [isPlaying, tickPerformance]);
 
   const activeMutes = tracks.filter((track) => track.muted).map((track) => track.name);
 

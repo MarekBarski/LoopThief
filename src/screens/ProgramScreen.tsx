@@ -1,3 +1,4 @@
+import { useMemo, useState, type ReactNode } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -11,12 +12,18 @@ export function ProgramScreen() {
   const currentPadMode = useAppStore((state) => state.currentPadMode);
   const padAssignments = useAppStore((state) => state.padAssignments[padBank]);
   const programView = useAppStore((state) => state.programView);
-  const assignCurrentSliceToSelectedPad = useAppStore((state) => state.assignCurrentSliceToSelectedPad);
+  const recordedSamples = useAppStore((state) => state.recordedSamples);
+  const allPadAssignments = useAppStore((state) => state.padAssignments);
+  const assignSourceToSelectedPad = useAppStore((state) => state.assignSourceToSelectedPad);
+  const previewSource = useAppStore((state) => state.previewSource);
   const updateSelectedPadParam = useAppStore((state) => state.updateSelectedPadParam);
   const toggleSelectedPadMode = useAppStore((state) => state.toggleSelectedPadMode);
   const setProgramView = useAppStore((state) => state.setProgramView);
   const cycleMuteTargetMode = useAppStore((state) => state.cycleMuteTargetMode);
   const toggleMuteTargetForSelectedPad = useAppStore((state) => state.toggleMuteTargetForSelectedPad);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [sourceType, setSourceType] = useState<"SAMPLES" | "SLICES" | "PROGRAM POOL">("SAMPLES");
+  const [sourceIndex, setSourceIndex] = useState(0);
 
   const selectedAssignment =
     padAssignments.find((assignment) => assignment.pad === selectedPad) ?? padAssignments[0];
@@ -26,6 +33,26 @@ export function ProgramScreen() {
       assignment.chokeGroup === selectedAssignment.chokeGroup &&
       assignment.pad !== selectedAssignment.pad,
   );
+  const sourceLists = useMemo(() => {
+    const sampleNames = recordedSamples
+      .filter((sample) => !/_S\d{2}$/.test(sample.name))
+      .map((sample) => sample.name);
+    const sliceNames = recordedSamples
+      .filter((sample) => /_S\d{2}$/.test(sample.name))
+      .map((sample) => sample.name);
+    const poolNames = Array.from(
+      new Set(
+        Object.values(allPadAssignments)
+          .flat()
+          .map((assignment) => assignment.assignment)
+          .filter((assignment) => assignment !== "---"),
+      ),
+    );
+    return { SAMPLES: sampleNames, SLICES: sliceNames, "PROGRAM POOL": poolNames };
+  }, [allPadAssignments, recordedSamples]);
+  const activeSources = sourceLists[sourceType];
+  const selectedSource = activeSources[sourceIndex] ?? "---";
+  const assignedSourceType = /_S\d{2}$/.test(selectedAssignment.assignment) ? "SLICE" : "SAMPLE";
 
   return (
     <ScreenFrame title="PROGRAM" subtitle="Pad program editor">
@@ -33,7 +60,7 @@ export function ProgramScreen() {
         className="grid h-full gap-[12px]"
         style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
       >
-        <div className="grid min-h-0 grid-cols-[1fr_0.92fr] gap-[2.5%] overflow-hidden">
+        <div className="relative grid min-h-0 grid-cols-[1fr_0.92fr] gap-[2.5%] overflow-hidden">
           <section className="grid min-h-0 grid-rows-[auto_1fr] gap-[3%] border border-[#46533b] bg-black/20 p-[2.8%]">
             <div className="grid grid-cols-4 text-[clamp(9px,0.72vw,11px)] tracking-[0.14em] text-[#91a477]">
               <span>PAD</span>
@@ -66,6 +93,8 @@ export function ProgramScreen() {
               <Info label="PAD BANK" value={padBank} />
               <Info label="SELECTED PAD" value={selectedAssignment.pad} />
               <Info label="ASSIGNED" value={selectedAssignment.assignment} />
+              <Info label="SOURCE TYPE" value={assignedSourceType} />
+              <Info label="SOURCE LIST" value={`${sourceType} ${activeSources.length}`} />
               <Info label="PLAY MODE" value={selectedAssignment.mode} />
               <Info label="POLY / MONO" value={selectedAssignment.chokeGroup > 0 ? "MONO" : "POLY"} />
               <Info label="CHOKE GROUP" value={formatChokeGroup(selectedAssignment.chokeGroup)} />
@@ -153,15 +182,59 @@ export function ProgramScreen() {
               </div>
             )}
           </section>
+          {assignOpen && (
+            <section className="absolute inset-0 z-20 grid grid-cols-[0.72fr_1fr_0.88fr] gap-[12px] border border-[#91a477] bg-[#090c07]/95 p-[14px] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
+              <AssignColumn title="SOURCE TYPE">
+                {(["SAMPLES", "SLICES", "PROGRAM POOL"] as const).map((type) => (
+                  <p key={type} className={type === sourceType ? "text-amber-200" : "text-[#9cab84]"}>
+                    {type}
+                  </p>
+                ))}
+              </AssignColumn>
+              <AssignColumn title="AVAILABLE SOURCES">
+                {activeSources.length === 0 ? (
+                  <p className="text-[#91a477]">--- EMPTY ---</p>
+                ) : (
+                  activeSources.map((source, index) => (
+                    <p key={source} className={index === sourceIndex ? "bg-amber-200/10 text-amber-100" : "text-[#d8e3b7]"}>
+                      {source}
+                    </p>
+                  ))
+                )}
+              </AssignColumn>
+              <AssignColumn title="TARGET">
+                <Info label="BANK" value={padBank} />
+                <Info label="PAD" value={selectedPad} />
+                <Info label="CURRENT" value={selectedAssignment.assignment} />
+                <Info label="PREVIEW" value={selectedSource} />
+              </AssignColumn>
+            </section>
+          )}
         </div>
 
         <div className="grid grid-cols-6 gap-[1.4%]">
-          {softButtons.map((button) => (
+          {assignOpen ? (
+            <>
+              <Softkey
+                label="F1 TYPE"
+                onClick={() => {
+                  const types = ["SAMPLES", "SLICES", "PROGRAM POOL"] as const;
+                  setSourceType(types[(types.indexOf(sourceType) + 1) % types.length]);
+                  setSourceIndex(0);
+                }}
+              />
+              <Softkey label="F2 PREV" onClick={() => setSourceIndex((index) => Math.max(index - 1, 0))} />
+              <Softkey label="F3 NEXT" onClick={() => setSourceIndex((index) => Math.min(index + 1, Math.max(activeSources.length - 1, 0)))} />
+              <Softkey label="F4 PREVIEW" onClick={() => selectedSource !== "---" && previewSource(selectedSource)} />
+              <Softkey label="F5 ASSIGN" onClick={() => selectedSource !== "---" && assignSourceToSelectedPad(selectedSource)} />
+              <Softkey label="F6 EXIT" onClick={() => setAssignOpen(false)} />
+            </>
+          ) : softButtons.map((button) => (
             <button
               key={button}
               type="button"
               onClick={() => {
-                if (button === "F1 ASSIGN") assignCurrentSliceToSelectedPad();
+                if (button === "F1 ASSIGN") setAssignOpen(true);
                 if (button === "F2 PARAMS") setProgramView("PARAMS");
                 if (button === "F3 CHOKE") setProgramView("CHOKE");
               }}
@@ -173,6 +246,27 @@ export function ProgramScreen() {
         </div>
       </div>
     </ScreenFrame>
+  );
+}
+
+function AssignColumn({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[10px]">
+      <p className="border-b border-[#46533b] pb-[6px] text-[#91a477]">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+    >
+      {label}
+    </button>
   );
 }
 

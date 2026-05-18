@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -17,16 +16,8 @@ export function SongScreen() {
   const moveSelectedSongStep = useAppStore((state) => state.moveSelectedSongStep);
   const cycleSelectedSongSequence = useAppStore((state) => state.cycleSelectedSongSequence);
   const convertSongToSequence = useAppStore((state) => state.convertSongToSequence);
-  const tickSongPlayback = useAppStore((state) => state.tickSongPlayback);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
-  const isPlaying = useAppStore((state) => state.isPlaying);
   const performanceTracks = useAppStore((state) => state.performanceTracks);
-
-  useEffect(() => {
-    if (!isPlaying) return;
-    const interval = window.setInterval(() => tickSongPlayback(), 500);
-    return () => window.clearInterval(interval);
-  }, [isPlaying, tickSongPlayback]);
 
   const selectedStep = songSteps[selectedSongStepIndex] ?? songSteps[0];
   const currentStep = songSteps[currentSongStepIndex] ?? songSteps[0];

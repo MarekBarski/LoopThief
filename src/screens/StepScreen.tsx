@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from "react";
-import { useAppStore } from "../store/useAppStore";
+import { useMemo } from "react";
+import { isPadAssigned, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 
@@ -15,9 +15,9 @@ export function StepScreen() {
   const selectedEventId = useAppStore((state) => state.selectedEventId);
   const eventEditMode = useAppStore((state) => state.eventEditMode);
   const currentStepIndex = useAppStore((state) => state.currentStepIndex);
-  const isPlaying = useAppStore((state) => state.isPlaying);
-  const tickStepPlayback = useAppStore((state) => state.tickStepPlayback);
   const performanceTracks = useAppStore((state) => state.performanceTracks);
+  const padAssignments = useAppStore((state) => state.padAssignments);
+  const padBank = useAppStore((state) => state.padBank);
   const setEventEditMode = useAppStore((state) => state.setEventEditMode);
   const adjustSelectedEvent = useAppStore((state) => state.adjustSelectedEvent);
   const cycleSelectedEventTrack = useAppStore((state) => state.cycleSelectedEventTrack);
@@ -34,12 +34,6 @@ export function StepScreen() {
     [stepEvents, windowStart],
   );
   const selectedEvent = stepEvents[selectedEventIndex];
-
-  useEffect(() => {
-    if (!isPlaying) return;
-    const interval = window.setInterval(() => tickStepPlayback(), 180);
-    return () => window.clearInterval(interval);
-  }, [isPlaying, tickStepPlayback]);
 
   return (
     <ScreenFrame title="STEP" subtitle="Event edit">
@@ -59,6 +53,7 @@ export function StepScreen() {
                 const selected = absoluteIndex === selectedEventIndex;
                 const playing = !muted && eventStepIndex(event.step) === currentStepIndex;
                 const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
+                const assigned = isPadAssigned({ padAssignments, padBank }, event.pad);
                 return (
                   <div
                     key={event.id}
@@ -73,7 +68,7 @@ export function StepScreen() {
                     }`}
                   >
                     <span>{event.step}</span>
-                    <span>{event.pad}</span>
+                    <span>{assigned ? event.pad : "UNASSIGNED PAD"}</span>
                     <span>{String(event.velocity).padStart(3, "0")}</span>
                     <span>{tag}</span>
                   </div>
@@ -99,6 +94,7 @@ export function StepScreen() {
             <Info label="TRACK" value={activeTrack} />
             <Info label="SEQ" value={`${sequence} ${sequenceName}`} />
             <Info label="TYPE" value={selectedEvent ? (selectedEvent.noteRepeatGenerated ? "NOTE REPEAT" : selectedEvent.appliedParameter ? "16 LEVELS" : selectedEvent.type) : "---"} />
+            <Info label="PAD STATUS" value={selectedEvent && isPadAssigned({ padAssignments, padBank }, selectedEvent.pad) ? "ASSIGNED" : "UNASSIGNED PAD"} />
           </section>
         </div>
 

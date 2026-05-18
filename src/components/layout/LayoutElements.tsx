@@ -198,15 +198,12 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
       disabled={editMode}
       onMouseDown={() => {
         if (element.type === "button" && element.label === "ERASE") setEraseHoldActive(true);
-        if (element.type === "padMode" && element.label === "NOTE REPEAT") setNoteRepeatEnabled(true);
       }}
       onMouseUp={() => {
         if (element.type === "button" && element.label === "ERASE") setEraseHoldActive(false);
-        if (element.type === "padMode" && element.label === "NOTE REPEAT") setNoteRepeatEnabled(false);
       }}
       onMouseLeave={() => {
         if (element.type === "button" && element.label === "ERASE") setEraseHoldActive(false);
-        if (element.type === "padMode" && element.label === "NOTE REPEAT") setNoteRepeatEnabled(false);
       }}
       onClick={() => {
         if (element.type === "mode" && element.label) {
@@ -229,8 +226,10 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
             openUtilityWorkflow("UTILITY_PAD_MUTE");
           if (element.label === "NEXT SEQ")
             openUtilityWorkflow("UTILITY_NEXT_SEQ");
-          if (element.label === "NOTE REPEAT")
+          if (element.label === "NOTE REPEAT") {
+            setNoteRepeatEnabled(!noteRepeatEnabled);
             openUtilityWorkflow("UTILITY_NOTE_REPEAT");
+          }
         }
 
         if (element.type === "button" && element.label) {

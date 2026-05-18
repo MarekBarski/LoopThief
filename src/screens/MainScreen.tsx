@@ -1,5 +1,5 @@
 import { ScreenFrame } from "./ScreenFrame";
-import { useAppStore } from "../store/useAppStore";
+import { isPadAssigned, useAppStore } from "../store/useAppStore";
 import { getPadModeDisplayLabel } from "../utils/padModeLabels";
 
 const softButtons = ["F1 TC", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 SONG", "F6 SEQ"];
@@ -21,6 +21,9 @@ export function MainScreen() {
   const currentPadMode = useAppStore((state) => state.currentPadMode);
   const isPlaying = useAppStore((state) => state.isPlaying);
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
+  const stepEvents = useAppStore((state) => state.stepEvents);
+  const padAssignments = useAppStore((state) => state.padAssignments);
+  const unassignedEventCount = stepEvents.filter((event) => !isPadAssigned({ padAssignments, padBank }, event.pad)).length;
 
   const mainFields = [
     ["SEQ", `${sequence} ${sequenceName}`],
@@ -38,6 +41,7 @@ export function MainScreen() {
     ["SWING", `${swing}%`],
     ["Q-STRENGTH", `${quantizeStrength}%`],
     ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isSequenceRecording ? " / SEQ REC" : ""}`],
+    ["SEQ AUDIO", unassignedEventCount > 0 ? `UNASSIGNED PAD x${unassignedEventCount}` : "ASSIGNED"],
   ] as const;
   const openUtilityWorkflow = useAppStore((state) => state.openUtilityWorkflow);
 
