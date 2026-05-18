@@ -6,11 +6,19 @@ type PadBank = "A" | "B" | "C" | "D";
 type AppState = {
   activeScreen: ScreenId;
   sequence: string;
+  sequences: Sequence[];
+  currentSequence: string;
+  sequenceLengthBars: number;
+  timeSignature: "4/4";
+  sequenceName: string;
   bar: string;
   bpm: number;
   swing: number;
   activeTrack: string;
   activeProgram: string;
+  currentBar: number;
+  currentStep: number;
+  currentEvent: number;
   padBank: PadBank;
   selectedPad: string;
   lastTriggeredPad: string;
@@ -31,6 +39,11 @@ type AppState = {
   transportCountInPulse: number;
   transportAnnouncement: string;
   utilityReturnScreen: ScreenId;
+  goToTarget: "BAR" | "STEP" | "EVENT" | "SEQ";
+  eraseMode: "PAD" | "TRACK" | "BAR" | "EVENTS" | "AUTOMATION";
+  undoHistory: string[];
+  redoHistory: string[];
+  lastAction: string;
   sixteenLevels: {
     sourcePad: string;
     parameter: "VELOCITY" | "TUNE" | "DECAY" | "FILTER" | "ATTACK";
@@ -71,7 +84,10 @@ type AppState = {
   mixerTracks: MixerTrack[];
   padMixer: Record<PadBank, MixerChannel[]>;
   performanceTracks: PerformanceTrack[];
-  performanceSequences: string[];
+  songSteps: SongStep[];
+  selectedSongStepIndex: number;
+  currentSongStepIndex: number;
+  currentSongRepeat: number;
   queuedSequence: string | null;
   performancePulse: number;
   diskFolders: DiskFolder[];
@@ -109,6 +125,25 @@ type AppState = {
   setPadMode: (mode: AppState["currentPadMode"]) => void;
   openUtilityWorkflow: (screen: ScreenId) => void;
   exitUtilityWorkflow: () => void;
+  setGoToTarget: (target: AppState["goToTarget"]) => void;
+  adjustGoToValue: (delta: number) => void;
+  executeGoTo: () => void;
+  setEraseMode: (mode: AppState["eraseMode"]) => void;
+  executeErase: () => void;
+  undoLastAction: () => void;
+  redoLastAction: () => void;
+  clearUndoHistory: () => void;
+  createSequence: () => void;
+  duplicateCurrentSequence: () => void;
+  deleteCurrentSequence: () => void;
+  renameCurrentSequence: () => void;
+  insertSongStep: () => void;
+  deleteSelectedSongStep: () => void;
+  adjustSelectedSongRepeats: (delta: number) => void;
+  moveSelectedSongStep: (delta: number) => void;
+  cycleSelectedSongSequence: () => void;
+  convertSongToSequence: () => void;
+  tickSongPlayback: () => void;
   toggleFullLevel: () => void;
   selectSlice: (slice: number) => void;
   nextSlice: () => void;
@@ -127,6 +162,10 @@ type AppState = {
   toggleMuteTargetForSelectedPad: (pad: string) => void;
   nextStepEvent: () => void;
   previousStepEvent: () => void;
+  stepBackward: () => void;
+  stepForward: () => void;
+  barBackward: () => void;
+  barForward: () => void;
   tickStepPlayback: () => void;
   updateSelectedMixerChannel: (
     field: "level" | "pan" | "fxSend",
@@ -174,6 +213,20 @@ type StepEvent = {
   probability: number;
   variation: string;
   muted: boolean;
+};
+
+type Sequence = {
+  id: string;
+  name: string;
+  lengthBars: number;
+  timeSignature: "4/4";
+  bpm: number;
+  events: StepEvent[];
+};
+
+type SongStep = {
+  sequenceId: string;
+  repeats: number;
 };
 
 type MixerTrack = {
@@ -244,11 +297,19 @@ type SettingsValues = {
 export const useAppStore = create<AppState>((set, get) => ({
   activeScreen: "MAIN",
   sequence: "01",
+  sequences: createSequences(),
+  currentSequence: "01",
+  sequenceLengthBars: 4,
+  timeSignature: "4/4",
+  sequenceName: "SEQ 01",
   bar: "001.01.00",
   bpm: 94,
   swing: 54,
   activeTrack: "01 DRUMS",
   activeProgram: "KIT A",
+  currentBar: 1,
+  currentStep: 1,
+  currentEvent: 1,
   padBank: "A",
   selectedPad: "P01",
   lastTriggeredPad: "P01",
@@ -267,6 +328,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   transportCountInPulse: 0,
   transportAnnouncement: "",
   utilityReturnScreen: "MAIN",
+  goToTarget: "BAR",
+  eraseMode: "PAD",
+  undoHistory: ["OVERDUB", "PAD ERASE", "TC APPLY"],
+  redoHistory: [],
+  lastAction: "TC APPLY",
   sixteenLevels: { sourcePad: "P01", parameter: "VELOCITY", range: 127, rootPad: "P01" },
   noteRepeat: { rate: "1/16", gate: 75, swing: 54, velocityMode: "PAD", timingCorrection: "1/16" },
   isPlaying: false,
@@ -308,7 +374,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     { name: "TEXTURE", muted: false },
     { name: "VOX", muted: false },
   ],
-  performanceSequences: ["SEQ 01", "SEQ 02", "SEQ 03", "SEQ 04"],
+  songSteps: [
+    { sequenceId: "01", repeats: 2 },
+    { sequenceId: "02", repeats: 1 },
+    { sequenceId: "03", repeats: 1 },
+  ],
+  selectedSongStepIndex: 0,
+  currentSongStepIndex: 0,
+  currentSongRepeat: 1,
   queuedSequence: null,
   performancePulse: 0,
   diskFolders: createDiskFolders(),
@@ -507,11 +580,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       }
 
-      if (state.activeScreen === "UTILITY_NEXT_SEQ" && padNumber >= 1 && padNumber <= state.performanceSequences.length) {
+      if (state.activeScreen === "UTILITY_NEXT_SEQ" && padNumber >= 1 && padNumber <= state.sequences.length) {
         return {
           selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
-          queuedSequence: state.performanceSequences[padNumber - 1],
+          queuedSequence: state.sequences[padNumber - 1].id,
         };
       }
 
@@ -597,6 +670,166 @@ export const useAppStore = create<AppState>((set, get) => ({
       utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
     })),
   exitUtilityWorkflow: () => set((state) => ({ activeScreen: state.utilityReturnScreen })),
+  setGoToTarget: (goToTarget) => set({ goToTarget }),
+  adjustGoToValue: (delta) =>
+    set((state) => {
+      if (state.goToTarget === "BAR") {
+        return { currentBar: clamp(state.currentBar + delta, 1, state.sequenceLengthBars) };
+      }
+      if (state.goToTarget === "STEP") {
+        return { currentStep: clamp(state.currentStep + delta, 1, 16) };
+      }
+      if (state.goToTarget === "EVENT") {
+        return { currentEvent: clamp(state.currentEvent + delta, 1, 999) };
+      }
+      const currentIndex = state.sequences.findIndex((sequence) => sequence.id === state.currentSequence);
+      const nextIndex = clamp(currentIndex + delta, 0, state.sequences.length - 1);
+      return applyCurrentSequence(state, state.sequences[nextIndex].id);
+    }),
+  executeGoTo: () =>
+    set((state) => ({
+      bar: formatBarPosition(state.currentBar, state.currentStep),
+      currentStepIndex: ((state.currentBar - 1) * 16 + (state.currentStep - 1)) % (state.sequenceLengthBars * 16),
+      selectedStepEventIndex: clamp(state.currentEvent - 1, 0, state.stepEvents.length - 1),
+      lastAction: `GO TO ${String(state.currentBar).padStart(3, "0")}.${String(state.currentStep).padStart(2, "0")}`,
+      undoHistory: pushHistory(state.undoHistory, `GO TO ${String(state.currentBar).padStart(3, "0")}.${String(state.currentStep).padStart(2, "0")}`),
+      redoHistory: [],
+    })),
+  setEraseMode: (eraseMode) => set({ eraseMode }),
+  executeErase: () =>
+    set((state) => {
+      const action = `${state.eraseMode} ERASE`;
+      return {
+        lastAction: action,
+        undoHistory: pushHistory(state.undoHistory, action),
+        redoHistory: [],
+      };
+    }),
+  undoLastAction: () =>
+    set((state) => {
+      const action = state.undoHistory.at(-1);
+      if (!action) return state;
+      return {
+        undoHistory: state.undoHistory.slice(0, -1),
+        redoHistory: [action, ...state.redoHistory].slice(0, 8),
+        lastAction: `UNDO ${action}`,
+      };
+    }),
+  redoLastAction: () =>
+    set((state) => {
+      const action = state.redoHistory[0];
+      if (!action) return state;
+      return {
+        undoHistory: pushHistory(state.undoHistory, action),
+        redoHistory: state.redoHistory.slice(1),
+        lastAction: `REDO ${action}`,
+      };
+    }),
+  clearUndoHistory: () => set({ undoHistory: [], redoHistory: [], lastAction: "HISTORY CLEARED" }),
+  createSequence: () =>
+    set((state) => {
+      const id = nextSequenceId(state.sequences);
+      const sequence = createSequence(id, `SEQ ${id}`, state.bpm, []);
+      return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
+    }),
+  duplicateCurrentSequence: () =>
+    set((state) => {
+      const current = getCurrentSequence(state);
+      const id = nextSequenceId(state.sequences);
+      const sequence = {
+        ...current,
+        id,
+        name: `${current.name} COPY`,
+        events: current.events.map((event) => ({ ...event })),
+      };
+      return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
+    }),
+  deleteCurrentSequence: () =>
+    set((state) => {
+      if (state.sequences.length <= 1) return state;
+      const sequences = state.sequences.filter((sequence) => sequence.id !== state.currentSequence);
+      return applyCurrentSequence({ ...state, sequences }, sequences[0].id);
+    }),
+  renameCurrentSequence: () =>
+    set((state) => {
+      const nextName = state.sequenceName.endsWith("*")
+        ? state.sequenceName.replace(/\*+$/, "")
+        : `${state.sequenceName}*`;
+      return {
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, name: nextName } : sequence,
+        ),
+        sequenceName: nextName,
+      };
+    }),
+  insertSongStep: () =>
+    set((state) => ({
+      songSteps: [
+        ...state.songSteps.slice(0, state.selectedSongStepIndex + 1),
+        { sequenceId: state.currentSequence, repeats: 1 },
+        ...state.songSteps.slice(state.selectedSongStepIndex + 1),
+      ],
+      selectedSongStepIndex: state.selectedSongStepIndex + 1,
+    })),
+  deleteSelectedSongStep: () =>
+    set((state) => {
+      if (state.songSteps.length <= 1) return state;
+      const songSteps = state.songSteps.filter((_, index) => index !== state.selectedSongStepIndex);
+      return {
+        songSteps,
+        selectedSongStepIndex: clamp(state.selectedSongStepIndex, 0, songSteps.length - 1),
+        currentSongStepIndex: clamp(state.currentSongStepIndex, 0, songSteps.length - 1),
+      };
+    }),
+  adjustSelectedSongRepeats: (delta) =>
+    set((state) => ({
+      songSteps: state.songSteps.map((step, index) =>
+        index === state.selectedSongStepIndex ? { ...step, repeats: clamp(step.repeats + delta, 1, 99) } : step,
+      ),
+    })),
+  moveSelectedSongStep: (delta) =>
+    set((state) => {
+      const targetIndex = clamp(state.selectedSongStepIndex + delta, 0, state.songSteps.length - 1);
+      if (targetIndex === state.selectedSongStepIndex) return state;
+      const songSteps = [...state.songSteps];
+      const [step] = songSteps.splice(state.selectedSongStepIndex, 1);
+      songSteps.splice(targetIndex, 0, step);
+      return { songSteps, selectedSongStepIndex: targetIndex };
+    }),
+  cycleSelectedSongSequence: () =>
+    set((state) => {
+      const selected = state.songSteps[state.selectedSongStepIndex];
+      const currentIndex = state.sequences.findIndex((sequence) => sequence.id === selected.sequenceId);
+      const nextSequence = state.sequences[(currentIndex + 1) % state.sequences.length];
+      return {
+        songSteps: state.songSteps.map((step, index) =>
+          index === state.selectedSongStepIndex ? { ...step, sequenceId: nextSequence.id } : step,
+        ),
+      };
+    }),
+  convertSongToSequence: () =>
+    set((state) => {
+      const id = nextSequenceId(state.sequences);
+      const flattenedEvents = state.songSteps.flatMap((step) => {
+        const sequence = state.sequences.find((item) => item.id === step.sequenceId);
+        return Array.from({ length: step.repeats }, () => sequence?.events ?? []).flat().map((event) => ({ ...event }));
+      });
+      const sequence = createSequence(id, "SONG_CONVERT", state.bpm, flattenedEvents);
+      return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
+    }),
+  tickSongPlayback: () =>
+    set((state) => {
+      if (!state.isPlaying || state.activeScreen !== "SONG" || state.songSteps.length === 0) return state;
+      const selectedStep = state.songSteps[state.currentSongStepIndex];
+      if (state.currentSongRepeat < selectedStep.repeats) {
+        return { currentSongRepeat: state.currentSongRepeat + 1 };
+      }
+      const nextIndex = (state.currentSongStepIndex + 1) % state.songSteps.length;
+      return {
+        currentSongStepIndex: nextIndex,
+        currentSongRepeat: 1,
+      };
+    }),
   toggleFullLevel: () => set((state) => ({ fullLevelEnabled: !state.fullLevelEnabled })),
   selectSlice: (slice) =>
     set((state) => {
@@ -725,9 +958,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       selectedStepEventIndex: Math.max(state.selectedStepEventIndex - 1, 0),
     })),
+  stepBackward: () =>
+    set((state) => {
+      const currentStepIndex = Math.max(state.currentStepIndex - 1, 0);
+      return { currentStepIndex, currentStep: (currentStepIndex % 16) + 1 };
+    }),
+  stepForward: () =>
+    set((state) => {
+      const currentStepIndex = Math.min(state.currentStepIndex + 1, state.sequenceLengthBars * 16 - 1);
+      return { currentStepIndex, currentStep: (currentStepIndex % 16) + 1 };
+    }),
+  barBackward: () =>
+    set((state) => {
+      const currentBar = Math.max(state.currentBar - 1, 1);
+      return { currentBar, bar: formatBarPosition(currentBar, state.currentStep) };
+    }),
+  barForward: () =>
+    set((state) => {
+      const currentBar = Math.min(state.currentBar + 1, state.sequenceLengthBars);
+      return { currentBar, bar: formatBarPosition(currentBar, state.currentStep) };
+    }),
   tickStepPlayback: () =>
     set((state) => ({
-      currentStepIndex: state.isPlaying ? (state.currentStepIndex + 1) % 64 : state.currentStepIndex,
+      currentStepIndex: state.isPlaying
+        ? (state.currentStepIndex + 1) % (state.sequenceLengthBars * 16)
+        : state.currentStepIndex,
     })),
   updateSelectedMixerChannel: (field, delta) =>
     set((state) => ({
@@ -777,12 +1032,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => {
       const performancePulse = (state.performancePulse + 1) % 16;
       const atBarBoundary = performancePulse === 0;
-      const sequence = atBarBoundary && state.queuedSequence ? state.queuedSequence.slice(-2) : state.sequence;
-      return {
-        performancePulse,
-        sequence,
-        queuedSequence: atBarBoundary ? null : state.queuedSequence,
-      };
+      if (atBarBoundary && state.queuedSequence) {
+        return {
+          ...applyCurrentSequence(state, state.queuedSequence),
+          performancePulse,
+          queuedSequence: null,
+        };
+      }
+      return { performancePulse };
     }),
   tickTransport: (deltaMs) =>
     set((state) => {
@@ -823,7 +1080,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       const selected = folder?.items[state.selectedDiskItemIndex];
       if (!selected) return state;
       if (selected.type === "PROGRAM") return { activeProgram: selected.assignedProgram };
-      if (selected.type === "SEQUENCE") return { sequence: selected.name.match(/\d+/)?.[0] ?? state.sequence };
+      if (selected.type === "SEQUENCE") {
+        const id = selected.name.match(/\d+/)?.[0];
+        return id && state.sequences.some((sequence) => sequence.id === id)
+          ? applyCurrentSequence(state, id)
+          : state;
+      }
       return state;
     }),
   saveDiskItem: () =>
@@ -895,6 +1157,20 @@ function formatMs(value: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
 }
 
+function shiftBar(bar: string, delta: number) {
+  const [barNumber = "001", beat = "01", tick = "00"] = bar.split(".");
+  const nextBar = Math.max(1, Number(barNumber) + delta);
+  return `${String(nextBar).padStart(3, "0")}.${beat}.${tick}`;
+}
+
+function formatBarPosition(bar: number, step: number) {
+  return `${String(bar).padStart(3, "0")}.${String(Math.ceil(step / 4)).padStart(2, "0")}.${String(((step - 1) % 4) * 24).padStart(2, "0")}`;
+}
+
+function pushHistory(history: string[], action: string) {
+  return [...history, action].slice(-8);
+}
+
 function createWaveform(seed: number) {
   let value = seed * 16807;
   return Array.from({ length: 64 }, () => {
@@ -957,7 +1233,7 @@ function createStepEvents(): StepEvent[] {
   const pads = [
     { pad: "P01", type: "kick" },
     { pad: "P05", type: "snare" },
-    { pad: "P09", type: "hat" },
+    { pad: "P08", type: "hat" },
   ];
 
   for (let bar = 0; bar < 4; bar += 1) {
@@ -977,6 +1253,48 @@ function createStepEvents(): StepEvent[] {
   return events;
 }
 
+function createSequences(): Sequence[] {
+  return [
+    createSequence("01", "SEQ 01", 94, createStepEvents()),
+    createSequence("02", "SEQ 02", 96, createStepEvents().slice(0, 18)),
+    createSequence("03", "SEQ 03", 92, createStepEvents().slice(8, 28)),
+    createSequence("04", "SEQ 04", 100, createStepEvents().slice(0, 12)),
+  ];
+}
+
+function createSequence(id: string, name: string, bpm: number, events: StepEvent[]): Sequence {
+  return { id, name, lengthBars: 4, timeSignature: "4/4", bpm, events };
+}
+
+function getCurrentSequence(state: Pick<AppState, "sequences" | "currentSequence">) {
+  return state.sequences.find((sequence) => sequence.id === state.currentSequence) ?? state.sequences[0];
+}
+
+function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, id: string) {
+  const sequence = state.sequences.find((item) => item.id === id) ?? state.sequences[0];
+  return {
+    ...state,
+    sequence: sequence.id,
+    currentSequence: sequence.id,
+    sequenceName: sequence.name,
+    sequenceLengthBars: sequence.lengthBars,
+    timeSignature: sequence.timeSignature,
+    bpm: sequence.bpm,
+    stepEvents: sequence.events,
+    currentBar: 1,
+    currentStep: 1,
+    currentEvent: 1,
+    bar: "001.01.00",
+    currentStepIndex: 0,
+    selectedStepEventIndex: 0,
+  };
+}
+
+function nextSequenceId(sequences: Sequence[]) {
+  const next = Math.max(...sequences.map((sequence) => Number(sequence.id)), 0) + 1;
+  return String(next).padStart(2, "0");
+}
+
 function createStepEvent(bar: number, step: number, pad: string, velocity: number): StepEvent {
   const quarter = Math.floor(step / 4) + 1;
   const tick = (step % 4) * 24;
@@ -984,11 +1302,11 @@ function createStepEvent(bar: number, step: number, pad: string, velocity: numbe
     step: `${String(bar + 1).padStart(3, "0")}.${quarter}.${String(tick).padStart(2, "0")}`,
     pad,
     velocity,
-    length: pad === "P09" ? 12 : 24,
+    length: pad === "P08" ? 12 : 24,
     type: "NOTE",
     timingOffset: step % 5 === 0 ? -2 : step % 7 === 0 ? 3 : 0,
-    probability: pad === "P09" && step % 8 !== 0 ? 92 : 100,
-    variation: pad === "P09" ? "HAT" : pad === "P05" ? "SNARE" : "KICK",
+    probability: pad === "P08" && step % 8 !== 0 ? 92 : 100,
+    variation: pad === "P08" ? "HAT" : pad === "P05" ? "SNARE" : "KICK",
     muted: false,
   };
 }
@@ -1084,7 +1402,7 @@ function createDiskItem(
 }
 
 function isUtilityScreen(screen: ScreenId) {
-  return screen.startsWith("UTILITY_");
+  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG";
 }
 
 function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {
@@ -1146,13 +1464,15 @@ function startTransportAction(
   };
 
   if (action === "PLAY") {
-    setState({ ...patch, isPlaying: true, bar: "001.01.00", currentStepIndex: 0 });
+    setState({ ...patch, isPlaying: true, bar: "001.01.00", currentBar: 1, currentStep: 1, currentStepIndex: 0 });
   } else {
     setState({
       ...patch,
       isPlaying: true,
       isSequenceRecording: true,
       bar: "001.01.00",
+      currentBar: 1,
+      currentStep: 1,
       currentStepIndex: 0,
     });
   }

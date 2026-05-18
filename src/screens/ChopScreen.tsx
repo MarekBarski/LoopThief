@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 
-const softButtons = ["F1 SAMPLE", "F2 ZOOM", "F3 SLICE", "F4 ADD", "F5 DELETE", "F6 CONVERT"];
+const softButtons = ["F1 SAMPLE", "F2 ZOOM", "F3 SLICE", "F4 ADD", "F5 DELETE", "F6 ASSIGN"];
 
 export function ChopScreen() {
   const recordedSamples = useAppStore((state) => state.recordedSamples);
@@ -12,6 +12,11 @@ export function ChopScreen() {
   const chopCursor = useAppStore((state) => state.chopCursor);
   const bpm = useAppStore((state) => state.bpm);
   const normalizeEnabled = useAppStore((state) => state.normalizeEnabled);
+  const selectedPad = useAppStore((state) => state.selectedPad);
+  const padBank = useAppStore((state) => state.padBank);
+  const selectedPadAssignment = useAppStore(
+    (state) => state.padAssignments[state.padBank].find((pad) => pad.pad === state.selectedPad)?.assignment ?? "---",
+  );
   const isPlaying = useAppStore((state) => state.isPlaying);
   const tickChopPlayback = useAppStore((state) => state.tickChopPlayback);
   const nextSlice = useAppStore((state) => state.nextSlice);
@@ -19,6 +24,7 @@ export function ChopScreen() {
   const moveSelectedMarker = useAppStore((state) => state.moveSelectedMarker);
   const addSlice = useAppStore((state) => state.addSlice);
   const removeSlice = useAppStore((state) => state.removeSlice);
+  const assignCurrentSliceToSelectedPad = useAppStore((state) => state.assignCurrentSliceToSelectedPad);
 
   const sample = recordedSamples[chopSelectedSampleIndex] ?? recordedSamples.at(-1);
   const waveform = useMemo(() => sample?.waveform ?? [], [sample]);
@@ -102,6 +108,8 @@ export function ChopScreen() {
           <aside className="grid content-start gap-[7%] border border-[#46533b] bg-black/20 p-[7%] text-[clamp(10px,0.78vw,12px)] tracking-[0.14em]">
             <Info label="NORMALIZE" value={normalizeEnabled ? "ON" : "OFF"} />
             <Info label="CURSOR" value={formatPercent(chopCursor)} />
+            <Info label="TARGET PAD" value={`${padBank}:${selectedPad}`} />
+            <Info label="ASSIGNED" value={selectedPadAssignment} />
             <div className="grid grid-cols-2 gap-[8px]">
               <MiniButton label="PREV" onClick={previousSlice} />
               <MiniButton label="NEXT" onClick={nextSlice} />
@@ -119,6 +127,7 @@ export function ChopScreen() {
               onClick={() => {
                 if (button === "F4 ADD") addSlice();
                 if (button === "F5 DELETE") removeSlice();
+                if (button === "F6 ASSIGN") assignCurrentSliceToSelectedPad();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >

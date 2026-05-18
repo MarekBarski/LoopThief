@@ -14,6 +14,7 @@ export function KeyboardShortcuts() {
   const previousStepEvent = useAppStore((state) => state.previousStepEvent);
   const nextDiskItem = useAppStore((state) => state.nextDiskItem);
   const previousDiskItem = useAppStore((state) => state.previousDiskItem);
+  const adjustGoToValue = useAppStore((state) => state.adjustGoToValue);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -56,6 +57,16 @@ export function KeyboardShortcuts() {
           previousDiskItem();
         }
       }
+      if (useAppStore.getState().activeScreen === "GO_TO") {
+        if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+          event.preventDefault();
+          adjustGoToValue(-1);
+        }
+        if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+          event.preventDefault();
+          adjustGoToValue(1);
+        }
+      }
 
       const padIndex = padKeys.indexOf(key);
       if (padIndex !== -1) {
@@ -65,7 +76,7 @@ export function KeyboardShortcuts() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [nextDiskItem, nextPadBank, nextStepEvent, previousDiskItem, previousStepEvent, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
+  }, [adjustGoToValue, nextDiskItem, nextPadBank, nextStepEvent, previousDiskItem, previousStepEvent, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
 
   return null;
 }

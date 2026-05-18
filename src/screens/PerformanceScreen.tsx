@@ -7,8 +7,8 @@ const softButtons = ["F1 TRACK MUTE", "F2 NEXT SEQ", "F3 PAD SCENE", "F4 NOTE RE
 
 export function PerformanceScreen() {
   const tracks = useAppStore((state) => state.performanceTracks);
-  const sequences = useAppStore((state) => state.performanceSequences);
-  const sequence = useAppStore((state) => state.sequence);
+  const sequences = useAppStore((state) => state.sequences);
+  const currentSequence = useAppStore((state) => state.currentSequence);
   const queuedSequence = useAppStore((state) => state.queuedSequence);
   const padBank = useAppStore((state) => state.padBank);
   const bpm = useAppStore((state) => state.bpm);
@@ -58,13 +58,13 @@ export function PerformanceScreen() {
             </div>
             <div className="grid grid-cols-2 gap-[10px]">
               {sequences.map((item) => {
-                const isActive = item.endsWith(sequence);
-                const isQueued = item === queuedSequence;
+                const isActive = item.id === currentSequence;
+                const isQueued = item.id === queuedSequence;
                 return (
                   <button
-                    key={item}
+                    key={item.id}
                     type="button"
-                    onClick={() => queuePerformanceSequence(item)}
+                    onClick={() => queuePerformanceSequence(item.id)}
                     className={`border px-[4%] py-[8%] text-left ${
                       isActive
                         ? "border-amber-300 bg-amber-200/15 text-amber-100"
@@ -73,7 +73,7 @@ export function PerformanceScreen() {
                           : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
                     }`}
                   >
-                    <span className="block">{item}</span>
+                    <span className="block">{item.name}</span>
                     <span className="mt-[4%] block text-[clamp(8px,0.66vw,10px)] text-[#91a477]">
                       {isActive ? "ACTIVE" : isQueued ? "QUEUED" : "READY"}
                     </span>
@@ -84,8 +84,8 @@ export function PerformanceScreen() {
           </section>
 
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
-            <Info label="CURRENT SEQ" value={`SEQ ${sequence}`} />
-            <Info label="NEXT QUEUED" value={queuedSequence ?? "---"} />
+            <Info label="CURRENT SEQ" value={sequences.find((item) => item.id === currentSequence)?.name ?? "---"} />
+            <Info label="NEXT QUEUED" value={sequences.find((item) => item.id === queuedSequence)?.name ?? "---"} />
             <Info label="ACTIVE MUTES" value={activeMutes.length > 0 ? activeMutes.join(", ") : "NONE"} />
             <Info label="PAD BANK" value={padBank} />
             <Info label="BPM" value={bpm.toFixed(2)} />

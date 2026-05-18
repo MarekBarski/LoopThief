@@ -7,6 +7,7 @@ export type LayoutElementType =
   | "padMode"
   | "pad"
   | "bank"
+  | "logo"
   | "mascot";
 
 export type LayoutElement = {

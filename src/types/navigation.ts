@@ -15,6 +15,11 @@ export const screens = [
   "UTILITY_NEXT_SEQ",
   "UTILITY_NOTE_REPEAT",
   "COUNT_IN",
+  "GO_TO",
+  "ERASE",
+  "UNDO",
+  "SEQUENCE_EDIT",
+  "SONG",
 ] as const;
 
 export type ScreenId = (typeof screens)[number];

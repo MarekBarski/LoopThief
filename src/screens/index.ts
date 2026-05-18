@@ -8,9 +8,21 @@ import { PerformanceScreen } from "./PerformanceScreen";
 import { ProgramScreen } from "./ProgramScreen";
 import { RecordScreen } from "./RecordScreen";
 import { SettingsScreen } from "./SettingsScreen";
+import { SongScreen } from "./SongScreen";
 import { StepScreen } from "./StepScreen";
 import { PadPlayScreen } from "./PadPlayScreen";
-import { NextSeqUtilityScreen, NoteRepeatUtilityScreen, PadMuteUtilityScreen, SixteenLevelsScreen, TrackMuteUtilityScreen } from "./UtilityScreens";
+import {
+  CountInUtilityScreen,
+  EraseUtilityScreen,
+  GoToUtilityScreen,
+  NextSeqUtilityScreen,
+  NoteRepeatUtilityScreen,
+  PadMuteUtilityScreen,
+  SixteenLevelsScreen,
+  SequenceEditUtilityScreen,
+  TrackMuteUtilityScreen,
+  UndoUtilityScreen,
+} from "./UtilityScreens";
 
 export const screensById: Record<ScreenId, ComponentType> = {
   MAIN: MainScreen,
@@ -22,10 +34,16 @@ export const screensById: Record<ScreenId, ComponentType> = {
   MIX: MixScreen,
   DISK: DiskScreen,
   SETTINGS: SettingsScreen,
+  SONG: SongScreen,
   PAD_PLAY: PadPlayScreen,
   UTILITY_16_LEVELS: SixteenLevelsScreen,
   UTILITY_TRACK_MUTE: TrackMuteUtilityScreen,
   UTILITY_PAD_MUTE: PadMuteUtilityScreen,
   UTILITY_NEXT_SEQ: NextSeqUtilityScreen,
   UTILITY_NOTE_REPEAT: NoteRepeatUtilityScreen,
+  COUNT_IN: CountInUtilityScreen,
+  GO_TO: GoToUtilityScreen,
+  ERASE: EraseUtilityScreen,
+  UNDO: UndoUtilityScreen,
+  SEQUENCE_EDIT: SequenceEditUtilityScreen,
 };

@@ -2,10 +2,13 @@ import { ScreenFrame } from "./ScreenFrame";
 import { useAppStore } from "../store/useAppStore";
 import { getPadModeDisplayLabel } from "../utils/padModeLabels";
 
-const softButtons = ["F1 SAMPLE", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 MIX", "F6 DISK"];
+const softButtons = ["F1 SAMPLE", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 SONG", "F6 SEQ"];
 
 export function MainScreen() {
   const sequence = useAppStore((state) => state.sequence);
+  const sequenceName = useAppStore((state) => state.sequenceName);
+  const sequenceLengthBars = useAppStore((state) => state.sequenceLengthBars);
+  const timeSignature = useAppStore((state) => state.timeSignature);
   const bar = useAppStore((state) => state.bar);
   const bpm = useAppStore((state) => state.bpm);
   const swing = useAppStore((state) => state.swing);
@@ -18,10 +21,11 @@ export function MainScreen() {
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
 
   const mainFields = [
-    ["SEQ", sequence],
-    ["BAR", bar],
+    ["SEQ", `${sequence} ${sequenceName}`],
+    ["BARS", String(sequenceLengthBars).padStart(3, "0")],
+    ["POS", bar],
     ["BPM", bpm.toFixed(2)],
-    ["TIME SIG", "4/4"],
+    ["TIME SIG", timeSignature],
     ["TRACK", activeTrack],
     ["TYPE", "DRUM"],
     ["PROGRAM", activeProgram],
@@ -31,6 +35,7 @@ export function MainScreen() {
     ["SWING", `${swing}%`],
     ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isSequenceRecording ? " / SEQ REC" : ""}`],
   ] as const;
+  const openUtilityWorkflow = useAppStore((state) => state.openUtilityWorkflow);
 
   return (
     <ScreenFrame title="MAIN" subtitle="MPC-style sequence control">
@@ -49,6 +54,10 @@ export function MainScreen() {
             <button
               key={button}
               type="button"
+              onClick={() => {
+                if (button === "F5 SONG") openUtilityWorkflow("SONG");
+                if (button === "F6 SEQ") openUtilityWorkflow("SEQUENCE_EDIT");
+              }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}

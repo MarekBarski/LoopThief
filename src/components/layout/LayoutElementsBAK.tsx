@@ -1,15 +1,10 @@
 import { useEffect, useState } from "react";
 import buttonActive from "../../../assets/ui/buttons/button_active.png";
 import buttonIdle from "../../../assets/ui/buttons/button_idle.png";
-import redButtonIdle from "../../../assets/ui/buttons/T_button_idle_RED.png";
 import padActive from "../../../assets/ui/pads/pad_active.png";
 import padIdle from "../../../assets/ui/pads/pad_idle.png";
 import thiefBlink from "../../../assets/ui/mascot/thief_blink_01.png";
 import thiefIdle from "../../../assets/ui/mascot/thief_idle.png";
-import thiefHeadphonesBlink from "../../../assets/ui/mascot/thief_headphones_blink_01.png";
-import thiefHeadphonesIdle from "../../../assets/ui/mascot/thief_headphones_idle.png";
-import logoImg from "../../../assets/ui/logo/loopthief_logo.png";
-
 import { useLayoutStore } from "../../store/useLayoutStore";
 import { useAppStore } from "../../store/useAppStore";
 import type { LayoutElement } from "../../types/layout";
@@ -45,10 +40,6 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const openCountInUtility = useAppStore((state) => state.openCountInUtility);
   const tapTempo = useAppStore((state) => state.tapTempo);
   const playStart = useAppStore((state) => state.playStart);
-  const stepBackward = useAppStore((state) => state.stepBackward);
-  const stepForward = useAppStore((state) => state.stepForward);
-  const barBackward = useAppStore((state) => state.barBackward);
-  const barForward = useAppStore((state) => state.barForward);
   const flashingButtons = useAppStore((state) => state.flashingButtons);
   const flashButton = useAppStore((state) => state.flashButton);
   const currentPadMode = useAppStore((state) => state.currentPadMode);
@@ -96,20 +87,8 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
     return <MascotElement style={commonStyle} />;
   }
 
-  if (element.type === "logo") {
-    return (
-      <img
-        src={logoImg}
-        alt="LoopThief logo"
-        className="absolute object-contain pointer-events-none"
-        style={commonStyle}
-      />
-    );
-  }
-
   if (element.type === "pad") {
     const isTriggered = Boolean(element.label && triggeredPads[element.label]);
-
     return (
       <button
         type="button"
@@ -123,7 +102,6 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
           alt=""
           className="h-full w-full object-contain"
         />
-
         <span className="absolute bottom-[8%] left-[9%] text-[10px] font-semibold tracking-[0.14em] text-[#ddd6c8]">
           {element.label}
         </span>
@@ -154,34 +132,26 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const active =
     element.type === "mode"
       ? element.label === activeScreen
-      : element.type === "padMode"
-        ? (element.label === "PLAY" && currentPadMode === "PAD_PLAY") ||
-          (element.label === "STEP" && currentPadMode === "STEP_INPUT") ||
-          (element.label === "FULL LEVEL" && fullLevelEnabled) ||
-          (element.label === "WAIT PAD" && waitPadEnabled) ||
-          (element.label === "COUNT IN" &&
-            (activeScreen === "COUNT_IN" || transportPhase === "COUNT_IN")) ||
-          (element.label === "16 LEVELS" &&
-            activeScreen === "UTILITY_16_LEVELS") ||
-          (element.label === "TRACK MUTE" &&
-            activeScreen === "UTILITY_TRACK_MUTE") ||
-          (element.label === "PAD MUTE" &&
-            activeScreen === "UTILITY_PAD_MUTE") ||
-          (element.label === "NEXT SEQ" &&
-            activeScreen === "UTILITY_NEXT_SEQ") ||
-          (element.label === "NOTE REPEAT" &&
-            activeScreen === "UTILITY_NOTE_REPEAT")
-        : element.label === "REC"
+        : element.type === "padMode"
+          ? (element.label === "PLAY" && currentPadMode === "PAD_PLAY") ||
+            (element.label === "STEP" && currentPadMode === "STEP_INPUT") ||
+            (element.label === "FULL LEVEL" && fullLevelEnabled) ||
+            (element.label === "WAIT PAD" && waitPadEnabled) ||
+            (element.label === "COUNT IN" && (activeScreen === "COUNT_IN" || transportPhase === "COUNT_IN")) ||
+            (element.label === "16 LEVELS" && activeScreen === "UTILITY_16_LEVELS") ||
+            (element.label === "TRACK MUTE" && activeScreen === "UTILITY_TRACK_MUTE") ||
+            (element.label === "PAD MUTE" && activeScreen === "UTILITY_PAD_MUTE") ||
+            (element.label === "NEXT SEQ" && activeScreen === "UTILITY_NEXT_SEQ") ||
+            (element.label === "NOTE REPEAT" && activeScreen === "UTILITY_NOTE_REPEAT")
+          : element.label === "REC"
           ? isSequenceRecording
           : element.label === "PLAY"
             ? isPlaying
             : element.label === "WAIT PAD"
               ? waitPadEnabled
               : element.label === "COUNT IN"
-                ? activeScreen === "COUNT_IN" ||
-                  transportPhase === "COUNT_IN"
-                : Boolean(flashingButtons[element.id]);
-  const buttonVisual = getButtonVisual(element, active);
+                ? activeScreen === "COUNT_IN" || transportPhase === "COUNT_IN"
+            : Boolean(flashingButtons[element.id]);
 
   return (
     <button
@@ -191,54 +161,31 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
       disabled={editMode}
       onClick={() => {
         if (element.type === "mode" && element.label) {
-          setActiveScreen(
-            element.label as Parameters<typeof setActiveScreen>[0],
-          );
+          setActiveScreen(element.label as Parameters<typeof setActiveScreen>[0]);
         }
-
         if (element.type === "padMode" && element.label) {
           if (element.label === "PLAY") setPadMode("PAD_PLAY");
           if (element.label === "STEP") setPadMode("STEP_INPUT");
           if (element.label === "FULL LEVEL") toggleFullLevel();
           if (element.label === "WAIT PAD") toggleWaitPad();
           if (element.label === "COUNT IN") openCountInUtility();
-          if (element.label === "16 LEVELS")
-            openUtilityWorkflow("UTILITY_16_LEVELS");
-          if (element.label === "TRACK MUTE")
-            openUtilityWorkflow("UTILITY_TRACK_MUTE");
-          if (element.label === "PAD MUTE")
-            openUtilityWorkflow("UTILITY_PAD_MUTE");
-          if (element.label === "NEXT SEQ")
-            openUtilityWorkflow("UTILITY_NEXT_SEQ");
-          if (element.label === "NOTE REPEAT")
-            openUtilityWorkflow("UTILITY_NOTE_REPEAT");
+          if (element.label === "16 LEVELS") openUtilityWorkflow("UTILITY_16_LEVELS");
+          if (element.label === "TRACK MUTE") openUtilityWorkflow("UTILITY_TRACK_MUTE");
+          if (element.label === "PAD MUTE") openUtilityWorkflow("UTILITY_PAD_MUTE");
+          if (element.label === "NEXT SEQ") openUtilityWorkflow("UTILITY_NEXT_SEQ");
+          if (element.label === "NOTE REPEAT") openUtilityWorkflow("UTILITY_NOTE_REPEAT");
         }
-
         if (element.type === "button" && element.label) {
           if (element.label === "PLAY") togglePlay();
           if (element.label === "STOP") stopPlayback();
           if (element.label === "REC") toggleSequenceRecording();
           if (element.label === "WAIT PAD") toggleWaitPad();
           if (element.label === "COUNT IN") openCountInUtility();
-          if (element.label === "GO TO") openUtilityWorkflow("GO_TO");
-          if (element.label === "ERASE") openUtilityWorkflow("ERASE");
-          if (element.label === "UNDO") openUtilityWorkflow("UNDO");
-          if (element.label === "STEP <") stepBackward();
-          if (element.label === "STEP >") stepForward();
-          if (element.label === "BAR <") barBackward();
-          if (element.label === "BAR >") barForward();
-
-          if (
-            element.label === "STOP"
-          ) {
-            flashButton(element.id);
-          }
-
+          if (element.label === "STOP") flashButton(element.id);
           if (element.label === "TAP TEMPO") {
             tapTempo();
             flashButton(element.id);
           }
-
           if (element.label === "PLAY START") {
             playStart();
             flashButton(element.id);
@@ -247,11 +194,10 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
       }}
     >
       <img
-        src={buttonVisual}
+        src={active ? buttonActive : buttonIdle}
         alt=""
         className="h-full w-full object-contain"
       />
-
       <span className="absolute inset-0 flex items-center justify-center px-2 text-center text-[12px] font-semibold tracking-[0.12em] text-[#e5ddcf]">
         {element.type === "padMode" && element.label
           ? getPadModeDisplayLabel(element.label)
@@ -261,26 +207,12 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   );
 }
 
-function getButtonVisual(element: LayoutElement, active: boolean) {
-  if (isRedTransportButton(element)) {
-    return active ? buttonActive : redButtonIdle;
-  }
-
-  return active ? buttonActive : buttonIdle;
-}
-
-function isRedTransportButton(element: LayoutElement) {
-  return element.type === "button" && (element.label === "REC" || element.label === "OVERDUB");
-}
-
 function MascotElement({
   style,
 }: {
   style: { left: number; top: number; width: number; height: number };
 }) {
-  const activeScreen = useAppStore((state) => state.activeScreen);
   const [isBlinking, setIsBlinking] = useState(false);
-  const isRecordScreen = activeScreen === "RECORD";
 
   useEffect(() => {
     let blinkTimeout: ReturnType<typeof setTimeout>;
@@ -290,7 +222,6 @@ function MascotElement({
       blinkTimeout = setTimeout(
         () => {
           setIsBlinking(true);
-
           resetTimeout = setTimeout(
             () => {
               setIsBlinking(false);
@@ -313,15 +244,7 @@ function MascotElement({
 
   return (
     <img
-      src={
-        isRecordScreen
-          ? isBlinking
-            ? thiefHeadphonesBlink
-            : thiefHeadphonesIdle
-          : isBlinking
-            ? thiefBlink
-            : thiefIdle
-      }
+      src={isBlinking ? thiefBlink : thiefIdle}
       alt="LoopThief mascot"
       className="absolute object-contain"
       style={style}

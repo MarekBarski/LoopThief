@@ -12,6 +12,8 @@ export function StepScreen() {
   const activeTrack = useAppStore((state) => state.activeTrack);
   const selectedPad = useAppStore((state) => state.selectedPad);
   const stepEvents = useAppStore((state) => state.stepEvents);
+  const padBank = useAppStore((state) => state.padBank);
+  const padAssignments = useAppStore((state) => state.padAssignments[padBank]);
   const selectedStepEventIndex = useAppStore((state) => state.selectedStepEventIndex);
   const currentStepIndex = useAppStore((state) => state.currentStepIndex);
   const isPlaying = useAppStore((state) => state.isPlaying);
@@ -26,6 +28,8 @@ export function StepScreen() {
     [stepEvents, windowStart],
   );
   const selectedEvent = stepEvents[selectedStepEventIndex] ?? stepEvents[0];
+  const assignmentByPad = new Map(padAssignments.map((assignment) => [assignment.pad, assignment.assignment]));
+  const getAssignedName = (pad: string) => assignmentByPad.get(pad) ?? "---";
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -47,12 +51,13 @@ export function StepScreen() {
             <Info label="TC" value={tcValue} />
             <Info label="TRACK" value={activeTrack} />
             <Info label="SELECTED PAD" value={selectedPad} />
+            <Info label="PAD BANK" value={padBank} />
           </section>
 
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
             <div className="grid grid-cols-[1fr_0.7fr_0.55fr_0.55fr_0.7fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(9px,0.7vw,11px)] tracking-[0.16em] text-[#91a477]">
               <span>STEP</span>
-              <span>PAD</span>
+              <span>ASSIGN</span>
               <span>VEL</span>
               <span>LEN</span>
               <span>TYPE</span>
@@ -77,7 +82,7 @@ export function StepScreen() {
                     }`}
                   >
                     <span>{event.step}</span>
-                    <span>{event.pad}</span>
+                    <span className="truncate">{getAssignedName(event.pad)}</span>
                     <span>{event.velocity}</span>
                     <span>{event.length}</span>
                     <span>{event.type}</span>
@@ -90,6 +95,7 @@ export function StepScreen() {
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
             <Info label="EVENT" value={selectedEvent.step} />
             <Info label="PAD" value={selectedEvent.pad} />
+            <Info label="ASSIGNED" value={getAssignedName(selectedEvent.pad)} />
             <Info label="VELOCITY" value={String(selectedEvent.velocity)} />
             <Info label="DURATION" value={String(selectedEvent.length)} />
             <Info label="TIMING OFS" value={formatSigned(selectedEvent.timingOffset)} />
