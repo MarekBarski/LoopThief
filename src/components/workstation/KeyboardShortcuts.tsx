@@ -15,6 +15,7 @@ export function KeyboardShortcuts() {
   const nextDiskItem = useAppStore((state) => state.nextDiskItem);
   const previousDiskItem = useAppStore((state) => state.previousDiskItem);
   const adjustGoToValue = useAppStore((state) => state.adjustGoToValue);
+  const setEraseHoldActive = useAppStore((state) => state.setEraseHoldActive);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -27,6 +28,9 @@ export function KeyboardShortcuts() {
       if (isTyping || useLayoutStore.getState().editMode) return;
 
       const key = event.key.toLowerCase();
+      if (key === "e") {
+        setEraseHoldActive(true);
+      }
       if (event.code === "Space") {
         event.preventDefault();
         togglePlay();
@@ -74,9 +78,19 @@ export function KeyboardShortcuts() {
       }
     };
 
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === "e") {
+        setEraseHoldActive(false);
+      }
+    };
+
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [adjustGoToValue, nextDiskItem, nextPadBank, nextStepEvent, previousDiskItem, previousStepEvent, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [adjustGoToValue, nextDiskItem, nextPadBank, nextStepEvent, previousDiskItem, previousStepEvent, setEraseHoldActive, tapTempo, togglePlay, toggleSequenceRecording, triggerPad]);
 
   return null;
 }

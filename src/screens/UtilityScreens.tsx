@@ -11,26 +11,45 @@ const shell = (children: ReactNode, softkeys: Softkey[], onExit?: () => void) =>
 );
 
 export function SixteenLevelsScreen() {
-  const data = useAppStore((s) => s.sixteenLevels);
+  const enabled = useAppStore((s) => s.sixteenLevelsEnabled);
+  const sourcePad = useAppStore((s) => s.sixteenLevelsSourcePad);
+  const parameter = useAppStore((s) => s.sixteenLevelsParameter);
+  const rootPad = useAppStore((s) => s.sixteenLevelsRootPad);
+  const rangeMin = useAppStore((s) => s.sixteenLevelsRangeMin);
+  const rangeMax = useAppStore((s) => s.sixteenLevelsRangeMax);
+  const cycleSixteenLevelsParameter = useAppStore((s) => s.cycleSixteenLevelsParameter);
+  const setSixteenLevelsSourcePad = useAppStore((s) => s.setSixteenLevelsSourcePad);
+  const setSixteenLevelsRootPad = useAppStore((s) => s.setSixteenLevelsRootPad);
+  const cycleSixteenLevelsRange = useAppStore((s) => s.cycleSixteenLevelsRange);
+  const toggleSixteenLevelsEnabled = useAppStore((s) => s.toggleSixteenLevelsEnabled);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
   return (
     <ScreenFrame title="16 LEVELS" subtitle="Pad parameter spread">
       {shell(
         <div className="grid h-full grid-cols-[0.8fr_1.2fr] gap-[2.3%]">
-          <Panel rows={[["SOURCE PAD", data.sourcePad], ["PARAMETER", data.parameter], ["RANGE", String(data.range)], ["ROOT PAD", data.rootPad]]} />
+          <Panel rows={[["SOURCE PAD", sourcePad], ["PARAMETER", parameter], ["ROOT PAD", rootPad], ["RANGE MIN", String(rangeMin)], ["RANGE MAX", String(rangeMax)], ["ACTIVE", enabled ? "ON" : "OFF"]]} />
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
             <p className="text-[#91a477]">PREVIEW VALUES</p>
             <div className="grid grid-cols-4 gap-[8px]">
               {Array.from({ length: 16 }, (_, index) => (
                 <div key={index} className="border border-[#46533b] bg-black/15 p-[8%]">
                   <span className="block">P{String(index + 1).padStart(2, "0")}</span>
-                  <span className="text-[#91a477]">{Math.round((index / 15) * data.range)}</span>
+                  <span className={index + 1 === Number(rootPad.slice(1)) ? "text-amber-200" : "text-[#91a477]"}>
+                    {Math.round(rangeMin + (index / 15) * (rangeMax - rangeMin))}
+                  </span>
                 </div>
               ))}
             </div>
           </section>
         </div>,
-        ["F1 PARAM", "F2 RANGE", "F3 ROOT", "F4 SPREAD", "F5 APPLY", "F6 EXIT"],
+        [
+          { label: "F1 PARAM", onClick: cycleSixteenLevelsParameter },
+          { label: "F2 SOURCE", onClick: setSixteenLevelsSourcePad },
+          { label: "F3 ROOT", onClick: setSixteenLevelsRootPad },
+          { label: "F4 RANGE", onClick: cycleSixteenLevelsRange },
+          { label: "F5 APPLY", onClick: toggleSixteenLevelsEnabled },
+          { label: "F6 EXIT", onClick: exit },
+        ],
         exit,
       )}
     </ScreenFrame>
@@ -39,8 +58,57 @@ export function SixteenLevelsScreen() {
 
 export function TrackMuteUtilityScreen() {
   const tracks = useAppStore((s) => s.performanceTracks);
+  const mode = useAppStore((s) => s.trackMuteMode);
+  const setTrackMuteMode = useAppStore((s) => s.setTrackMuteMode);
+  const clearTrackMutes = useAppStore((s) => s.clearTrackMutes);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
-  return <MuteScreen title="TRACK MUTE" items={tracks.map((t) => ({ label: t.name, muted: t.muted }))} softkeys={["F1 MUTE","F2 SOLO","F3 GROUP","F4 HOLD","F5 CLEAR","F6 EXIT"]} onExit={exit} />;
+  const soloTrack = tracks.find((track) => track.solo)?.name ?? "OFF";
+  return (
+    <ScreenFrame title="TRACK MUTE" subtitle="Live performance mute">
+      {shell(
+        <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            {tracks.map((track, index) => (
+              <div
+                key={track.name}
+                className={`grid grid-cols-[auto_1fr_auto_0.8fr] items-center gap-[8px] border px-[4%] py-[3%] ${
+                  track.solo
+                    ? "border-amber-300 bg-amber-200/15 text-amber-100"
+                    : track.muted
+                      ? "border-[#46533b] bg-black/25 text-[#70805c]"
+                      : "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
+                }`}
+              >
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <span>{track.name}</span>
+                <span>{track.solo ? "SOLO" : track.muted ? "MUTE" : "LIVE"}</span>
+                <span className="grid grid-cols-5 gap-[2px]">
+                  {Array.from({ length: 5 }, (_, meterIndex) => (
+                    <i
+                      key={meterIndex}
+                      className={`h-[8px] ${
+                        !track.muted && track.activity >= (meterIndex + 1) * 20 ? "bg-[#d8e3b7]" : "bg-[#34402d]"
+                      }`}
+                    />
+                  ))}
+                </span>
+              </div>
+            ))}
+          </section>
+          <Panel rows={[["MODE", mode], ["SOLO TRACK", soloTrack], ["MUTED", String(tracks.filter((track) => track.muted).length).padStart(2, "0")], ["ACTIVE", String(tracks.filter((track) => !track.muted).length).padStart(2, "0")]]} />
+        </div>,
+        [
+          { label: "F1 MUTE", onClick: () => setTrackMuteMode("MUTE") },
+          { label: "F2 SOLO", onClick: () => setTrackMuteMode("SOLO") },
+          "F3 GROUP",
+          { label: "F4 HOLD", onClick: () => setTrackMuteMode("HOLD") },
+          { label: "F5 CLEAR", onClick: clearTrackMutes },
+          { label: "F6 EXIT", onClick: exit },
+        ],
+        exit,
+      )}
+    </ScreenFrame>
+  );
 }
 
 export function PadMuteUtilityScreen() {
@@ -54,18 +122,39 @@ export function NextSeqUtilityScreen() {
   const sequences = useAppStore((s) => s.sequences);
   const current = useAppStore((s) => s.currentSequence);
   const queued = useAppStore((s) => s.queuedSequence);
+  const queuedBarsRemaining = useAppStore((s) => s.queuedSequenceBarsRemaining);
+  const queuePerformanceSequence = useAppStore((s) => s.queuePerformanceSequence);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
   return (
     <ScreenFrame title="NEXT SEQ" subtitle="Live sequence queue">
       {shell(
-        <div className="grid h-full grid-cols-2 gap-[10px] border border-[#46533b] bg-black/20 p-[4%]">
-          {sequences.map((seq) => (
-            <div key={seq.id} className={`border p-[5%] ${seq.id === queued ? "border-amber-300 text-amber-100" : seq.id === current ? "border-[#91a477]" : "border-[#46533b]"}`}>
-              <p>{seq.name}</p><p className="text-[#91a477]">{seq.id === queued ? "QUEUED" : seq.id === current ? "ACTIVE" : "READY"}</p>
-            </div>
-          ))}
+        <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
+          <section className="grid grid-cols-2 content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%]">
+            {sequences.map((seq) => (
+              <button
+                key={seq.id}
+                type="button"
+                onClick={() => queuePerformanceSequence(seq.id)}
+                className={`border p-[5%] text-left ${
+                  seq.id === queued
+                    ? "animate-pulse border-amber-300 bg-amber-200/15 text-amber-100"
+                    : seq.id === current
+                      ? "border-[#91a477] bg-[#d8e3b7]/10 text-[#eef6d8]"
+                      : "border-[#46533b] text-[#d8e3b7]"
+                }`}
+              >
+                <p>{seq.name}</p>
+                <p className="text-[#91a477]">{seq.id === queued ? "QUEUED" : seq.id === current ? "ACTIVE" : "READY"}</p>
+              </button>
+            ))}
+          </section>
+          <Panel rows={[
+            ["CURRENT", sequences.find((seq) => seq.id === current)?.name ?? "---"],
+            ["QUEUED", sequences.find((seq) => seq.id === queued)?.name ?? "---"],
+            ["SWITCH IN", queued ? `${String(queuedBarsRemaining).padStart(2, "0")} BAR` : "---"],
+          ]} />
         </div>,
-        ["F1 QUEUE","F2 CHAIN","F3 HOLD","F4 DUP","F5 BPM","F6 EXIT"],
+        ["F1 QUEUE","F2 CHAIN","F3 HOLD","F4 DUP","F5 BPM",{ label: "F6 EXIT", onClick: exit }],
         exit,
       )}
     </ScreenFrame>
@@ -74,10 +163,82 @@ export function NextSeqUtilityScreen() {
 
 export function NoteRepeatUtilityScreen() {
   const data = useAppStore((s) => s.noteRepeat);
+  const timingCorrect = useAppStore((s) => s.timingCorrect);
+  const noteRepeatLinkToTC = useAppStore((s) => s.noteRepeatLinkToTC);
+  const noteRepeatRate = useAppStore((s) => s.noteRepeatRate);
+  const noteRepeatGate = useAppStore((s) => s.noteRepeatGate);
+  const noteRepeatTriplet = useAppStore((s) => s.noteRepeatTriplet);
+  const cycleNoteRepeatRate = useAppStore((s) => s.cycleNoteRepeatRate);
+  const adjustNoteRepeatGate = useAppStore((s) => s.adjustNoteRepeatGate);
+  const adjustSwing = useAppStore((s) => s.adjustSwing);
+  const toggleNoteRepeatTriplet = useAppStore((s) => s.toggleNoteRepeatTriplet);
+  const cycleNoteRepeatVelocityMode = useAppStore((s) => s.cycleNoteRepeatVelocityMode);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
   return (
     <ScreenFrame title="NOTE REPEAT" subtitle="Repeat timing utility">
-      {shell(<Panel rows={[["REPEAT RATE", data.rate],["GATE", `${data.gate}%`],["SWING", `${data.swing}%`],["VELOCITY MODE", data.velocityMode],["TIMING CORRECTION", data.timingCorrection]]} />, ["F1 RATE","F2 GATE","F3 SWING","F4 TC","F5 MODE","F6 EXIT"], exit)}
+      {shell(
+        <Panel rows={[
+          ["RATE", noteRepeatLinkToTC ? timingCorrect : noteRepeatRate],
+          ["GATE", `${noteRepeatGate}%`],
+          ["SWING LINK", noteRepeatLinkToTC ? "ON" : "OFF"],
+          ["TRIPLET", noteRepeatTriplet ? "ON" : "OFF"],
+          ["VELOCITY MODE", data.velocityMode],
+        ]} />,
+        [
+          { label: "F1 RATE", onClick: cycleNoteRepeatRate },
+          { label: "F2 GATE", onClick: () => adjustNoteRepeatGate(5) },
+          { label: "F3 SWING", onClick: () => adjustSwing(1) },
+          { label: "F4 TRIPLET", onClick: toggleNoteRepeatTriplet },
+          { label: "F5 VELOCITY", onClick: cycleNoteRepeatVelocityMode },
+          { label: "F6 EXIT", onClick: exit },
+        ],
+      )}
+    </ScreenFrame>
+  );
+}
+
+export function TimingCorrectUtilityScreen() {
+  const timingCorrect = useAppStore((s) => s.timingCorrect);
+  const swing = useAppStore((s) => s.swing);
+  const quantizeStrength = useAppStore((s) => s.quantizeStrength);
+  const timingApplyTo = useAppStore((s) => s.timingApplyTo);
+  const noteRepeatLinkedToTc = useAppStore((s) => s.noteRepeatLinkedToTc);
+  const cycleTimingCorrect = useAppStore((s) => s.cycleTimingCorrect);
+  const adjustSwing = useAppStore((s) => s.adjustSwing);
+  const adjustQuantizeStrength = useAppStore((s) => s.adjustQuantizeStrength);
+  const cycleTimingApplyTo = useAppStore((s) => s.cycleTimingApplyTo);
+  const toggleNoteRepeatLink = useAppStore((s) => s.toggleNoteRepeatLink);
+  const resetTimingCorrect = useAppStore((s) => s.resetTimingCorrect);
+  const exit = useAppStore((s) => s.exitUtilityWorkflow);
+
+  return (
+    <ScreenFrame title="TIMING CORRECT" subtitle="Global timing utility">
+      {shell(
+        <div className="grid h-full grid-cols-[1fr_0.7fr] gap-[2.3%]">
+          <Panel rows={[
+            ["TC VALUE", timingCorrect],
+            ["SWING", `${swing}%`],
+            ["STRENGTH", `${quantizeStrength}%`],
+            ["APPLY TO", timingApplyTo],
+            ["NOTE REPEAT LINK", noteRepeatLinkedToTc ? "ON" : "OFF"],
+          ]} />
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
+            <UtilityAction label="SWING +" onClick={() => adjustSwing(1)} />
+            <UtilityAction label="SWING -" onClick={() => adjustSwing(-1)} />
+            <UtilityAction label="STR +" onClick={() => adjustQuantizeStrength(5)} />
+            <UtilityAction label="STR -" onClick={() => adjustQuantizeStrength(-5)} />
+            <UtilityAction label={noteRepeatLinkedToTc ? "UNLINK NR" : "LINK NR"} onClick={toggleNoteRepeatLink} />
+          </section>
+        </div>,
+        [
+          { label: "F1 TC", onClick: cycleTimingCorrect },
+          { label: "F2 SWING", onClick: () => adjustSwing(1) },
+          { label: "F3 STRENGTH", onClick: () => adjustQuantizeStrength(5) },
+          { label: "F4 APPLY", onClick: cycleTimingApplyTo },
+          { label: "F5 RESET", onClick: resetTimingCorrect },
+          { label: "F6 EXIT", onClick: exit },
+        ],
+      )}
     </ScreenFrame>
   );
 }

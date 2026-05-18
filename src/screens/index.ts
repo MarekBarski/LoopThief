@@ -20,6 +20,7 @@ import {
   PadMuteUtilityScreen,
   SixteenLevelsScreen,
   SequenceEditUtilityScreen,
+  TimingCorrectUtilityScreen,
   TrackMuteUtilityScreen,
   UndoUtilityScreen,
 } from "./UtilityScreens";
@@ -46,4 +47,5 @@ export const screensById: Record<ScreenId, ComponentType> = {
   ERASE: EraseUtilityScreen,
   UNDO: UndoUtilityScreen,
   SEQUENCE_EDIT: SequenceEditUtilityScreen,
+  TIMING_CORRECT: TimingCorrectUtilityScreen,
 };

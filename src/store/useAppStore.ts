@@ -14,6 +14,16 @@ type AppState = {
   bar: string;
   bpm: number;
   swing: number;
+  timingCorrect: "OFF" | "1/4" | "1/8" | "1/16" | "1/16T" | "1/32" | "1/32T";
+  quantizeStrength: number;
+  tcEnabled: boolean;
+  timingApplyTo: "CURRENT TRACK" | "ALL TRACKS";
+  noteRepeatLinkedToTc: boolean;
+  noteRepeatEnabled: boolean;
+  noteRepeatRate: "1/4" | "1/8" | "1/16" | "1/16T" | "1/32" | "1/32T";
+  noteRepeatGate: number;
+  noteRepeatLinkToTC: boolean;
+  noteRepeatTriplet: boolean;
   activeTrack: string;
   activeProgram: string;
   currentBar: number;
@@ -41,21 +51,25 @@ type AppState = {
   utilityReturnScreen: ScreenId;
   goToTarget: "BAR" | "STEP" | "EVENT" | "SEQ";
   eraseMode: "PAD" | "TRACK" | "BAR" | "EVENTS" | "AUTOMATION";
+  eraseHoldActive: boolean;
+  lastEraseMessage: string;
+  lastErasedCount: number;
   undoHistory: string[];
   redoHistory: string[];
   lastAction: string;
-  sixteenLevels: {
-    sourcePad: string;
-    parameter: "VELOCITY" | "TUNE" | "DECAY" | "FILTER" | "ATTACK";
-    range: number;
-    rootPad: string;
-  };
+  sixteenLevelsEnabled: boolean;
+  sixteenLevelsSourcePad: string;
+  sixteenLevelsParameter: "VELOCITY" | "TUNE" | "DECAY" | "FILTER" | "ATTACK";
+  sixteenLevelsRootPad: string;
+  sixteenLevelsRangeMin: number;
+  sixteenLevelsRangeMax: number;
+  lastSixteenLevelsValue: number;
   noteRepeat: {
-    rate: "1/8" | "1/16" | "1/32";
+    rate: "1/4" | "1/8" | "1/16" | "1/16T" | "1/32" | "1/32T";
     gate: number;
     swing: number;
     velocityMode: "FIXED" | "PAD";
-    timingCorrection: "1/8" | "1/16" | "1/32";
+    timingCorrection: "1/4" | "1/8" | "1/16" | "1/16T" | "1/32" | "1/32T";
   };
   isPlaying: boolean;
   isSequenceRecording: boolean;
@@ -77,18 +91,23 @@ type AppState = {
   normalizeEnabled: boolean;
   padAssignments: Record<PadBank, PadAssignment[]>;
   programView: "PARAMS" | "CHOKE";
-  tcValue: "1/4" | "1/8" | "1/16" | "1/32";
   stepEvents: StepEvent[];
   selectedStepEventIndex: number;
+  selectedEventIndex: number;
+  selectedEventId: string | null;
+  eventEditMode: "VELOCITY" | "OFFSET" | "DURATION" | "PROBABILITY" | "TRACK";
   currentStepIndex: number;
   mixerTracks: MixerTrack[];
   padMixer: Record<PadBank, MixerChannel[]>;
   performanceTracks: PerformanceTrack[];
+  trackMuteMode: "MUTE" | "SOLO" | "HOLD";
+  lastPerformanceMessage: string;
   songSteps: SongStep[];
   selectedSongStepIndex: number;
   currentSongStepIndex: number;
   currentSongRepeat: number;
   queuedSequence: string | null;
+  queuedSequenceBarsRemaining: number;
   performancePulse: number;
   diskFolders: DiskFolder[];
   activeDiskFolderId: string;
@@ -130,6 +149,8 @@ type AppState = {
   executeGoTo: () => void;
   setEraseMode: (mode: AppState["eraseMode"]) => void;
   executeErase: () => void;
+  setEraseHoldActive: (active: boolean) => void;
+  erasePadEvents: (pad: string) => void;
   undoLastAction: () => void;
   redoLastAction: () => void;
   clearUndoHistory: () => void;
@@ -137,6 +158,22 @@ type AppState = {
   duplicateCurrentSequence: () => void;
   deleteCurrentSequence: () => void;
   renameCurrentSequence: () => void;
+  cycleTimingCorrect: () => void;
+  adjustSwing: (delta: number) => void;
+  adjustQuantizeStrength: (delta: number) => void;
+  cycleTimingApplyTo: () => void;
+  toggleNoteRepeatLink: () => void;
+  resetTimingCorrect: () => void;
+  setNoteRepeatEnabled: (enabled: boolean) => void;
+  cycleNoteRepeatRate: () => void;
+  adjustNoteRepeatGate: (delta: number) => void;
+  toggleNoteRepeatTriplet: () => void;
+  cycleNoteRepeatVelocityMode: () => void;
+  cycleSixteenLevelsParameter: () => void;
+  setSixteenLevelsSourcePad: () => void;
+  setSixteenLevelsRootPad: () => void;
+  cycleSixteenLevelsRange: () => void;
+  toggleSixteenLevelsEnabled: () => void;
   insertSongStep: () => void;
   deleteSelectedSongStep: () => void;
   adjustSelectedSongRepeats: (delta: number) => void;
@@ -162,6 +199,10 @@ type AppState = {
   toggleMuteTargetForSelectedPad: (pad: string) => void;
   nextStepEvent: () => void;
   previousStepEvent: () => void;
+  setEventEditMode: (mode: AppState["eventEditMode"]) => void;
+  adjustSelectedEvent: (field: "velocity" | "timingOffset" | "duration" | "probability", delta: number) => void;
+  cycleSelectedEventTrack: () => void;
+  deleteSelectedEvent: () => void;
   stepBackward: () => void;
   stepForward: () => void;
   barBackward: () => void;
@@ -174,6 +215,9 @@ type AppState = {
   toggleSelectedMixerMute: () => void;
   toggleSelectedMixerSolo: () => void;
   cycleSelectedMixerOutput: () => void;
+  cycleTrackMuteMode: () => void;
+  setTrackMuteMode: (mode: AppState["trackMuteMode"]) => void;
+  clearTrackMutes: () => void;
   queuePerformanceSequence: (sequence: string) => void;
   tickPerformance: () => void;
   tickTransport: (deltaMs: number) => void;
@@ -204,10 +248,20 @@ type PadAssignment = {
 };
 
 type StepEvent = {
+  id: string;
   step: string;
   pad: string;
+  trackId: string;
+  trackName?: string;
+  physicalPad?: string;
+  sourcePad?: string;
+  appliedParameter?: AppState["sixteenLevelsParameter"];
+  appliedValue?: number;
+  parameterValue?: number;
+  noteRepeatGenerated?: boolean;
   velocity: number;
   length: number;
+  duration: number;
   type: "NOTE";
   timingOffset: number;
   probability: number;
@@ -221,6 +275,7 @@ type Sequence = {
   lengthBars: number;
   timeSignature: "4/4";
   bpm: number;
+  tracks: string[];
   events: StepEvent[];
 };
 
@@ -249,6 +304,8 @@ type MixerChannel = {
 type PerformanceTrack = {
   name: string;
   muted: boolean;
+  solo: boolean;
+  activity: number;
 };
 
 type DiskItem = {
@@ -294,10 +351,14 @@ type SettingsValues = {
   audioInputSource: "SYSTEM AUDIO" | "LINE IN" | "USB";
 };
 
+let eventIdCounter = 0;
+
+const initialStepEvents = createStepEvents();
+
 export const useAppStore = create<AppState>((set, get) => ({
   activeScreen: "MAIN",
   sequence: "01",
-  sequences: createSequences(),
+  sequences: createSequences(initialStepEvents),
   currentSequence: "01",
   sequenceLengthBars: 4,
   timeSignature: "4/4",
@@ -305,6 +366,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   bar: "001.01.00",
   bpm: 94,
   swing: 54,
+  timingCorrect: "1/16",
+  quantizeStrength: 100,
+  tcEnabled: true,
+  timingApplyTo: "CURRENT TRACK",
+  noteRepeatLinkedToTc: true,
+  noteRepeatEnabled: false,
+  noteRepeatRate: "1/16",
+  noteRepeatGate: 75,
+  noteRepeatLinkToTC: true,
+  noteRepeatTriplet: false,
   activeTrack: "01 DRUMS",
   activeProgram: "KIT A",
   currentBar: 1,
@@ -330,10 +401,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   utilityReturnScreen: "MAIN",
   goToTarget: "BAR",
   eraseMode: "PAD",
+  eraseHoldActive: false,
+  lastEraseMessage: "",
+  lastErasedCount: 0,
   undoHistory: ["OVERDUB", "PAD ERASE", "TC APPLY"],
   redoHistory: [],
   lastAction: "TC APPLY",
-  sixteenLevels: { sourcePad: "P01", parameter: "VELOCITY", range: 127, rootPad: "P01" },
+  sixteenLevelsEnabled: false,
+  sixteenLevelsSourcePad: "P01",
+  sixteenLevelsParameter: "VELOCITY",
+  sixteenLevelsRootPad: "P01",
+  sixteenLevelsRangeMin: 1,
+  sixteenLevelsRangeMax: 127,
+  lastSixteenLevelsValue: 96,
   noteRepeat: { rate: "1/16", gate: 75, swing: 54, velocityMode: "PAD", timingCorrection: "1/16" },
   isPlaying: false,
   isSequenceRecording: false,
@@ -355,9 +435,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   normalizeEnabled: false,
   padAssignments: createPadAssignments(),
   programView: "PARAMS",
-  tcValue: "1/16",
-  stepEvents: createStepEvents(),
+  stepEvents: initialStepEvents,
   selectedStepEventIndex: 0,
+  selectedEventIndex: 0,
+  selectedEventId: initialStepEvents[0]?.id ?? null,
+  eventEditMode: "VELOCITY",
   currentStepIndex: 0,
   mixerTracks: [
     { name: "01 DRUMS", level: 100, muted: false, solo: false },
@@ -367,13 +449,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   ],
   padMixer: createPadMixer(),
   performanceTracks: [
-    { name: "DRUMS", muted: false },
-    { name: "BASS", muted: false },
-    { name: "CHOPS", muted: false },
-    { name: "FX", muted: false },
-    { name: "TEXTURE", muted: false },
-    { name: "VOX", muted: false },
+    { name: "DRUMS", muted: false, solo: false, activity: 78 },
+    { name: "BASS", muted: false, solo: false, activity: 62 },
+    { name: "CHOPS", muted: false, solo: false, activity: 54 },
+    { name: "FX", muted: false, solo: false, activity: 36 },
+    { name: "TEXTURE", muted: false, solo: false, activity: 44 },
+    { name: "VOX", muted: false, solo: false, activity: 28 },
   ],
+  trackMuteMode: "MUTE",
+  lastPerformanceMessage: "",
   songSteps: [
     { sequenceId: "01", repeats: 2 },
     { sequenceId: "02", repeats: 1 },
@@ -383,6 +467,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentSongStepIndex: 0,
   currentSongRepeat: 1,
   queuedSequence: null,
+  queuedSequenceBarsRemaining: 0,
   performancePulse: 0,
   diskFolders: createDiskFolders(),
   activeDiskFolderId: "memory",
@@ -524,6 +609,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   triggerPad: (selectedPad) => {
     const padNumber = Number(selectedPad.slice(1));
     set((state) => {
+      if (state.eraseHoldActive) {
+        const events = state.stepEvents.filter((event) => event.pad !== selectedPad);
+        const removedCount = state.stepEvents.length - events.length;
+        const sequences = state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
+        );
+        return {
+          selectedPad,
+          stepEvents: events,
+          sequences,
+          lastEraseMessage: `ERASE ${selectedPad}`,
+          lastErasedCount: removedCount,
+          undoHistory: pushHistory(state.undoHistory, `PAD ERASE ${selectedPad}`),
+          redoHistory: [],
+        };
+      }
+      if (state.noteRepeatEnabled) {
+        const rate = state.noteRepeatLinkToTC && state.timingCorrect !== "OFF"
+          ? state.timingCorrect
+          : state.noteRepeatRate;
+        const repeatedEvents = createRepeatedNoteEvents(state, selectedPad, rate);
+        const events = [...state.stepEvents, ...repeatedEvents].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step));
+        return {
+          selectedPad,
+          lastTriggeredPad: selectedPad,
+          lastPadVelocity: state.fullLevelEnabled ? 127 : 96,
+          stepEvents: events,
+          sequences: state.sequences.map((sequence) =>
+            sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
+          ),
+          triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
+        };
+      }
       if (state.activeScreen === "PROGRAM" && state.programView === "CHOKE") {
         const currentPad = state.padAssignments[state.padBank].find((pad) => pad.pad === state.selectedPad);
         if (currentPad && currentPad.pad !== selectedPad) {
@@ -544,12 +662,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (state.activeScreen === "PERFORMANCE" && padNumber >= 1 && padNumber <= state.performanceTracks.length) {
+        const targetIndex = padNumber - 1;
+        const target = state.performanceTracks[targetIndex];
+        const performanceTracks = nextPerformanceTracks(state.performanceTracks, targetIndex, state.trackMuteMode);
         return {
           selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
-          performanceTracks: state.performanceTracks.map((track, index) =>
-            index === padNumber - 1 ? { ...track, muted: !track.muted } : track,
-          ),
+          performanceTracks,
+          lastPerformanceMessage: performanceMessage(targetIndex, performanceTracks[targetIndex]),
         };
       }
 
@@ -558,12 +678,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (state.activeScreen === "UTILITY_TRACK_MUTE" && padNumber >= 1 && padNumber <= state.performanceTracks.length) {
+        const targetIndex = padNumber - 1;
+        const target = state.performanceTracks[targetIndex];
+        const performanceTracks = nextPerformanceTracks(state.performanceTracks, targetIndex, state.trackMuteMode);
         return {
           selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
-          performanceTracks: state.performanceTracks.map((track, index) =>
-            index === padNumber - 1 ? { ...track, muted: !track.muted } : track,
-          ),
+          performanceTracks,
+          lastPerformanceMessage: performanceMessage(targetIndex, performanceTracks[targetIndex]),
         };
       }
 
@@ -581,10 +703,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (state.activeScreen === "UTILITY_NEXT_SEQ" && padNumber >= 1 && padNumber <= state.sequences.length) {
+        const sequence = state.sequences[padNumber - 1];
         return {
           selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
-          queuedSequence: state.sequences[padNumber - 1].id,
+          queuedSequence: sequence.id,
+          queuedSequenceBarsRemaining: 1,
+          lastPerformanceMessage: `NEXT SEQ: ${sequence.name}`,
         };
       }
 
@@ -616,12 +741,42 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       }
 
+      if (state.sixteenLevelsEnabled) {
+        const appliedValue = getSixteenLevelsValue(state, padNumber);
+        const event = createStepEventFromIndex(
+          state.currentStepIndex,
+          state.sixteenLevelsSourcePad,
+          state.sixteenLevelsParameter === "VELOCITY" ? appliedValue : state.lastPadVelocity,
+          100,
+          0,
+          {
+            physicalPad: selectedPad,
+            sourcePad: state.sixteenLevelsSourcePad,
+            appliedParameter: state.sixteenLevelsParameter,
+            appliedValue,
+            parameterValue: appliedValue,
+          },
+        );
+        const events = [...state.stepEvents, event].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step));
+        return {
+          selectedPad,
+          lastTriggeredPad: selectedPad,
+          lastPadVelocity: state.sixteenLevelsParameter === "VELOCITY" ? appliedValue : state.lastPadVelocity,
+          lastSixteenLevelsValue: appliedValue,
+          stepEvents: events,
+          sequences: state.sequences.map((sequence) =>
+            sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
+          ),
+          triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
+        };
+      }
+
       if (state.activeScreen === "UTILITY_16_LEVELS") {
         return {
           selectedPad,
           lastTriggeredPad: selectedPad,
-          lastPadVelocity: state.fullLevelEnabled ? 127 : 8 + Math.round(((padNumber - 1) / 15) * state.sixteenLevels.range),
-          sixteenLevels: { ...state.sixteenLevels, sourcePad: selectedPad },
+          lastPadVelocity: state.fullLevelEnabled ? 127 : state.lastPadVelocity,
+          sixteenLevelsSourcePad: selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
         };
       }
@@ -687,14 +842,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       return applyCurrentSequence(state, state.sequences[nextIndex].id);
     }),
   executeGoTo: () =>
-    set((state) => ({
+    set((state) => {
+      const currentStepIndex = ((state.currentBar - 1) * 16 + (state.currentStep - 1)) % (state.sequenceLengthBars * 16);
+      return {
       bar: formatBarPosition(state.currentBar, state.currentStep),
-      currentStepIndex: ((state.currentBar - 1) * 16 + (state.currentStep - 1)) % (state.sequenceLengthBars * 16),
-      selectedStepEventIndex: clamp(state.currentEvent - 1, 0, state.stepEvents.length - 1),
+      currentStepIndex,
+      ...selectedEventPatch(state.stepEvents, nearestEventAtOrAfter(state.stepEvents, currentStepIndex)),
       lastAction: `GO TO ${String(state.currentBar).padStart(3, "0")}.${String(state.currentStep).padStart(2, "0")}`,
       undoHistory: pushHistory(state.undoHistory, `GO TO ${String(state.currentBar).padStart(3, "0")}.${String(state.currentStep).padStart(2, "0")}`),
       redoHistory: [],
-    })),
+      };
+    }),
   setEraseMode: (eraseMode) => set({ eraseMode }),
   executeErase: () =>
     set((state) => {
@@ -703,6 +861,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         lastAction: action,
         undoHistory: pushHistory(state.undoHistory, action),
         redoHistory: [],
+      };
+    }),
+  setEraseHoldActive: (eraseHoldActive) => set({ eraseHoldActive }),
+  erasePadEvents: (pad) =>
+    set((state) => {
+      const events = state.stepEvents.filter((event) => event.pad !== pad);
+      const removedCount = state.stepEvents.length - events.length;
+      return {
+        stepEvents: events,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
+        ),
+        lastEraseMessage: `ERASE ${pad}`,
+        lastErasedCount: removedCount,
       };
     }),
   undoLastAction: () =>
@@ -762,6 +934,96 @@ export const useAppStore = create<AppState>((set, get) => ({
         sequenceName: nextName,
       };
     }),
+  cycleTimingCorrect: () =>
+    set((state) => {
+      const values: AppState["timingCorrect"][] = ["OFF", "1/4", "1/8", "1/16", "1/16T", "1/32", "1/32T"];
+      const timingCorrect = values[(values.indexOf(state.timingCorrect) + 1) % values.length];
+      return {
+        timingCorrect,
+        tcEnabled: timingCorrect !== "OFF",
+        noteRepeat: state.noteRepeatLinkToTC
+          ? { ...state.noteRepeat, rate: timingCorrect === "OFF" ? state.noteRepeat.rate : timingCorrect, timingCorrection: timingCorrect === "OFF" ? state.noteRepeat.timingCorrection : timingCorrect }
+          : state.noteRepeat,
+      };
+    }),
+  adjustSwing: (delta) =>
+    set((state) => {
+      const swing = clamp(state.swing + delta, 50, 75);
+      return { swing, noteRepeat: { ...state.noteRepeat, swing } };
+    }),
+  adjustQuantizeStrength: (delta) =>
+    set((state) => ({ quantizeStrength: clamp(state.quantizeStrength + delta, 0, 100) })),
+  cycleTimingApplyTo: () =>
+    set((state) => ({
+      timingApplyTo: state.timingApplyTo === "CURRENT TRACK" ? "ALL TRACKS" : "CURRENT TRACK",
+    })),
+  toggleNoteRepeatLink: () =>
+    set((state) => ({
+      noteRepeatLinkedToTc: !state.noteRepeatLinkedToTc,
+      noteRepeatLinkToTC: !state.noteRepeatLinkToTC,
+      noteRepeat: !state.noteRepeatLinkedToTc && state.timingCorrect !== "OFF"
+        ? { ...state.noteRepeat, rate: state.timingCorrect, timingCorrection: state.timingCorrect }
+        : state.noteRepeat,
+    })),
+  resetTimingCorrect: () =>
+    set((state) => ({
+      timingCorrect: "1/16",
+      tcEnabled: true,
+      swing: 50,
+      quantizeStrength: 100,
+      timingApplyTo: "CURRENT TRACK",
+      noteRepeat: state.noteRepeatLinkToTC
+        ? { ...state.noteRepeat, rate: "1/16", timingCorrection: "1/16", swing: 50 }
+        : { ...state.noteRepeat, swing: 50 },
+    })),
+  setNoteRepeatEnabled: (noteRepeatEnabled) => set({ noteRepeatEnabled }),
+  cycleNoteRepeatRate: () =>
+    set((state) => {
+      const rates: AppState["noteRepeatRate"][] = ["1/4", "1/8", "1/16", "1/16T", "1/32", "1/32T"];
+      const noteRepeatRate = rates[(rates.indexOf(state.noteRepeatRate) + 1) % rates.length];
+      return {
+        noteRepeatRate,
+        noteRepeat: { ...state.noteRepeat, rate: noteRepeatRate },
+      };
+    }),
+  adjustNoteRepeatGate: (delta) =>
+    set((state) => {
+      const noteRepeatGate = clamp(state.noteRepeatGate + delta, 1, 100);
+      return { noteRepeatGate, noteRepeat: { ...state.noteRepeat, gate: noteRepeatGate } };
+    }),
+  toggleNoteRepeatTriplet: () =>
+    set((state) => {
+      const noteRepeatTriplet = !state.noteRepeatTriplet;
+      const baseRate = state.noteRepeatRate.replace("T", "") as "1/4" | "1/8" | "1/16" | "1/32";
+      const noteRepeatRate = noteRepeatTriplet && (baseRate === "1/16" || baseRate === "1/32")
+        ? `${baseRate}T` as AppState["noteRepeatRate"]
+        : baseRate;
+      return { noteRepeatTriplet, noteRepeatRate, noteRepeat: { ...state.noteRepeat, rate: noteRepeatRate } };
+    }),
+  cycleNoteRepeatVelocityMode: () =>
+    set((state) => ({
+      noteRepeat: {
+        ...state.noteRepeat,
+        velocityMode: state.noteRepeat.velocityMode === "PAD" ? "FIXED" : "PAD",
+      },
+    })),
+  cycleSixteenLevelsParameter: () =>
+    set((state) => {
+      const parameters: AppState["sixteenLevelsParameter"][] = ["VELOCITY", "TUNE", "DECAY", "FILTER", "ATTACK"];
+      return { sixteenLevelsParameter: parameters[(parameters.indexOf(state.sixteenLevelsParameter) + 1) % parameters.length] };
+    }),
+  setSixteenLevelsSourcePad: () => set((state) => ({ sixteenLevelsSourcePad: state.selectedPad })),
+  setSixteenLevelsRootPad: () => set((state) => ({ sixteenLevelsRootPad: state.selectedPad })),
+  cycleSixteenLevelsRange: () =>
+    set((state) => {
+      if (state.sixteenLevelsParameter === "TUNE") {
+        return { sixteenLevelsRangeMin: -12, sixteenLevelsRangeMax: 12 };
+      }
+      return state.sixteenLevelsRangeMax === 127
+        ? { sixteenLevelsRangeMin: 0, sixteenLevelsRangeMax: 100 }
+        : { sixteenLevelsRangeMin: 1, sixteenLevelsRangeMax: 127 };
+    }),
+  toggleSixteenLevelsEnabled: () => set((state) => ({ sixteenLevelsEnabled: !state.sixteenLevelsEnabled })),
   insertSongStep: () =>
     set((state) => ({
       songSteps: [
@@ -951,39 +1213,115 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
     })),
   nextStepEvent: () =>
-    set((state) => ({
-      selectedStepEventIndex: Math.min(state.selectedStepEventIndex + 1, state.stepEvents.length - 1),
-    })),
+    set((state) => selectedEventPatch(state.stepEvents, Math.min(state.selectedEventIndex + 1, state.stepEvents.length - 1))),
   previousStepEvent: () =>
-    set((state) => ({
-      selectedStepEventIndex: Math.max(state.selectedStepEventIndex - 1, 0),
-    })),
+    set((state) => selectedEventPatch(state.stepEvents, Math.max(state.selectedEventIndex - 1, 0))),
+  setEventEditMode: (eventEditMode) => set({ eventEditMode }),
+  adjustSelectedEvent: (field, delta) =>
+    set((state) => {
+      const event = state.stepEvents[state.selectedEventIndex];
+      if (!event) return state;
+      const nextValue =
+        field === "velocity"
+          ? clamp(event.velocity + delta, 1, 127)
+          : field === "timingOffset"
+            ? clamp(event.timingOffset + delta, -24, 24)
+            : field === "duration"
+              ? clamp(event.duration + delta, 1, 96)
+              : clamp(event.probability + delta, 0, 100);
+      const stepEvents = state.stepEvents.map((item, index) =>
+        index === state.selectedEventIndex
+          ? {
+              ...item,
+              [field]: nextValue,
+              ...(field === "duration" ? { length: nextValue } : {}),
+            }
+          : item,
+      );
+      return {
+        stepEvents,
+        sequences: updateCurrentSequenceEvents(state, stepEvents),
+      };
+    }),
+  cycleSelectedEventTrack: () =>
+    set((state) => {
+      const event = state.stepEvents[state.selectedEventIndex];
+      if (!event) return state;
+      const tracks = getCurrentSequence(state).tracks;
+      const currentIndex = tracks.indexOf(event.trackId);
+      const trackId = tracks[(currentIndex + 1 + tracks.length) % tracks.length];
+      const stepEvents = state.stepEvents.map((item, index) =>
+        index === state.selectedEventIndex ? { ...item, trackId, trackName: trackId } : item,
+      );
+      return { stepEvents, sequences: updateCurrentSequenceEvents(state, stepEvents) };
+    }),
+  deleteSelectedEvent: () =>
+    set((state) => {
+      if (state.stepEvents.length === 0) return state;
+      const stepEvents = state.stepEvents.filter((_, index) => index !== state.selectedEventIndex);
+      const nextIndex = clamp(state.selectedEventIndex, 0, Math.max(stepEvents.length - 1, 0));
+      return {
+        stepEvents,
+        sequences: updateCurrentSequenceEvents(state, stepEvents),
+        ...selectedEventPatch(stepEvents, nextIndex),
+      };
+    }),
   stepBackward: () =>
     set((state) => {
       const currentStepIndex = Math.max(state.currentStepIndex - 1, 0);
-      return { currentStepIndex, currentStep: (currentStepIndex % 16) + 1 };
+      const currentBar = Math.floor(currentStepIndex / 16) + 1;
+      return {
+        currentStepIndex,
+        currentBar,
+        currentStep: (currentStepIndex % 16) + 1,
+        currentEvent: nearestEventAtOrAfter(state.stepEvents, currentStepIndex) + 1,
+        ...selectedEventPatch(state.stepEvents, nearestEventAtOrAfter(state.stepEvents, currentStepIndex)),
+        bar: formatBarPosition(currentBar, (currentStepIndex % 16) + 1),
+      };
     }),
   stepForward: () =>
     set((state) => {
       const currentStepIndex = Math.min(state.currentStepIndex + 1, state.sequenceLengthBars * 16 - 1);
-      return { currentStepIndex, currentStep: (currentStepIndex % 16) + 1 };
+      const currentBar = Math.floor(currentStepIndex / 16) + 1;
+      return {
+        currentStepIndex,
+        currentBar,
+        currentStep: (currentStepIndex % 16) + 1,
+        currentEvent: nearestEventAtOrAfter(state.stepEvents, currentStepIndex) + 1,
+        ...selectedEventPatch(state.stepEvents, nearestEventAtOrAfter(state.stepEvents, currentStepIndex)),
+        bar: formatBarPosition(currentBar, (currentStepIndex % 16) + 1),
+      };
     }),
   barBackward: () =>
     set((state) => {
       const currentBar = Math.max(state.currentBar - 1, 1);
-      return { currentBar, bar: formatBarPosition(currentBar, state.currentStep) };
+      const currentStepIndex = (currentBar - 1) * 16 + (state.currentStep - 1);
+      const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
+      return { currentBar, currentStepIndex, currentEvent: selectedStepEventIndex + 1, ...selectedEventPatch(state.stepEvents, selectedStepEventIndex), bar: formatBarPosition(currentBar, state.currentStep) };
     }),
   barForward: () =>
     set((state) => {
       const currentBar = Math.min(state.currentBar + 1, state.sequenceLengthBars);
-      return { currentBar, bar: formatBarPosition(currentBar, state.currentStep) };
+      const currentStepIndex = (currentBar - 1) * 16 + (state.currentStep - 1);
+      const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
+      return { currentBar, currentStepIndex, currentEvent: selectedStepEventIndex + 1, ...selectedEventPatch(state.stepEvents, selectedStepEventIndex), bar: formatBarPosition(currentBar, state.currentStep) };
     }),
   tickStepPlayback: () =>
-    set((state) => ({
-      currentStepIndex: state.isPlaying
-        ? (state.currentStepIndex + 1) % (state.sequenceLengthBars * 16)
-        : state.currentStepIndex,
-    })),
+    set((state) => {
+      if (!state.isPlaying) return state;
+      const currentStepIndex = (state.currentStepIndex + 1) % (state.sequenceLengthBars * 16);
+      const currentBar = Math.floor(currentStepIndex / 16) + 1;
+      const currentStep = (currentStepIndex % 16) + 1;
+      const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
+      return {
+        currentStepIndex,
+        currentBar,
+        currentStep,
+        currentEvent: selectedStepEventIndex + 1,
+        ...selectedEventPatch(state.stepEvents, selectedStepEventIndex),
+        bar: formatBarPosition(currentBar, currentStep),
+      };
+    }),
   updateSelectedMixerChannel: (field, delta) =>
     set((state) => ({
       padMixer: {
@@ -1027,19 +1365,49 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
       };
     }),
-  queuePerformanceSequence: (queuedSequence) => set({ queuedSequence }),
+  cycleTrackMuteMode: () =>
+    set((state) => ({
+      trackMuteMode:
+        state.trackMuteMode === "MUTE"
+          ? "SOLO"
+          : state.trackMuteMode === "SOLO"
+            ? "HOLD"
+            : "MUTE",
+    })),
+  setTrackMuteMode: (trackMuteMode) => set({ trackMuteMode }),
+  clearTrackMutes: () =>
+    set({
+      performanceTracks: get().performanceTracks.map((track) => ({ ...track, muted: false, solo: false })),
+      lastPerformanceMessage: "CLEAR TRACK MUTES",
+    }),
+  queuePerformanceSequence: (queuedSequence) =>
+    set((state) => ({
+      queuedSequence,
+      queuedSequenceBarsRemaining: 1,
+      lastPerformanceMessage: `NEXT SEQ: ${state.sequences.find((sequence) => sequence.id === queuedSequence)?.name ?? queuedSequence}`,
+    })),
   tickPerformance: () =>
     set((state) => {
       const performancePulse = (state.performancePulse + 1) % 16;
       const atBarBoundary = performancePulse === 0;
+      const performanceTracks = state.performanceTracks.map((track, index) => ({
+        ...track,
+        activity: track.muted ? 0 : 24 + ((state.performancePulse * 11 + index * 17) % 76),
+      }));
       if (atBarBoundary && state.queuedSequence) {
         return {
           ...applyCurrentSequence(state, state.queuedSequence),
           performancePulse,
+          performanceTracks,
           queuedSequence: null,
+          queuedSequenceBarsRemaining: 0,
         };
       }
-      return { performancePulse };
+      return {
+        performancePulse,
+        performanceTracks,
+        queuedSequenceBarsRemaining: state.queuedSequence ? 1 : 0,
+      };
     }),
   tickTransport: (deltaMs) =>
     set((state) => {
@@ -1171,6 +1539,106 @@ function pushHistory(history: string[], action: string) {
   return [...history, action].slice(-8);
 }
 
+function nearestEventAtOrAfter(events: StepEvent[], stepIndex: number) {
+  if (events.length === 0) return 0;
+  const nextIndex = events.findIndex((event) => eventStepIndex(event.step) >= stepIndex);
+  return nextIndex === -1 ? events.length - 1 : nextIndex;
+}
+
+function selectedEventPatch(events: StepEvent[], selectedEventIndex: number) {
+  const safeIndex = events.length === 0 ? 0 : clamp(selectedEventIndex, 0, events.length - 1);
+  return {
+    selectedStepEventIndex: safeIndex,
+    selectedEventIndex: safeIndex,
+    selectedEventId: events[safeIndex]?.id ?? null,
+  };
+}
+
+function updateCurrentSequenceEvents(state: Pick<AppState, "sequences" | "currentSequence">, events: StepEvent[]) {
+  return state.sequences.map((sequence) =>
+    sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
+  );
+}
+
+function eventStepIndex(step: string) {
+  const [bar, beat, tick] = step.split(".").map(Number);
+  return (bar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24);
+}
+
+function createRepeatedNoteEvents(state: AppState, pad: string, rate: AppState["noteRepeatRate"]) {
+  const interval = repeatIntervalSteps(rate);
+  const sequenceLengthSteps = state.sequenceLengthBars * 16;
+  const eventCount = 4;
+  return Array.from({ length: eventCount }, (_, index) => {
+    const rawStep = state.currentStepIndex + index * interval;
+    const stepIndex = Math.min(Math.round(rawStep), sequenceLengthSteps - 1);
+    const velocity =
+      state.noteRepeat.velocityMode === "FIXED"
+        ? 100
+        : state.fullLevelEnabled
+          ? 127
+          : 96;
+    const swingOffset = index % 2 === 1 ? Math.round((state.swing - 50) / 5) : 0;
+    return createStepEventFromIndex(stepIndex, pad, velocity, state.noteRepeatGate, swingOffset, {
+      trackId: "DRUMS",
+      trackName: "DRUMS",
+      noteRepeatGenerated: true,
+    });
+  });
+}
+
+function repeatIntervalSteps(rate: AppState["noteRepeatRate"]) {
+  switch (rate) {
+    case "1/4":
+      return 4;
+    case "1/8":
+      return 2;
+    case "1/16":
+      return 1;
+    case "1/16T":
+      return 2 / 3;
+    case "1/32":
+      return 0.5;
+    case "1/32T":
+      return 1 / 3;
+  }
+}
+
+function createStepEventFromIndex(
+  stepIndex: number,
+  pad: string,
+  velocity: number,
+  gate: number,
+  timingOffset: number,
+  extra?: Partial<StepEvent>,
+): StepEvent {
+  const bar = Math.floor(stepIndex / 16);
+  const local = stepIndex % 16;
+  const beat = Math.floor(local / 4) + 1;
+  const tick = (local % 4) * 24;
+  return {
+    id: nextEventId(),
+    step: `${String(bar + 1).padStart(3, "0")}.${beat}.${String(tick).padStart(2, "0")}`,
+    pad,
+    trackId: "DRUMS",
+    trackName: "DRUMS",
+    velocity,
+    length: Math.max(1, Math.round((gate / 100) * 24)),
+    duration: Math.max(1, Math.round((gate / 100) * 24)),
+    type: "NOTE",
+    timingOffset,
+    probability: 100,
+    variation: "REPEAT",
+    muted: false,
+    ...extra,
+  };
+}
+
+function getSixteenLevelsValue(state: AppState, padNumber: number) {
+  const ratio = (padNumber - 1) / 15;
+  return Math.round(state.sixteenLevelsRangeMin + (state.sixteenLevelsRangeMax - state.sixteenLevelsRangeMin) * ratio);
+}
+
 function createWaveform(seed: number) {
   let value = seed * 16807;
   return Array.from({ length: 64 }, () => {
@@ -1253,9 +1721,9 @@ function createStepEvents(): StepEvent[] {
   return events;
 }
 
-function createSequences(): Sequence[] {
+function createSequences(firstSequenceEvents = createStepEvents()): Sequence[] {
   return [
-    createSequence("01", "SEQ 01", 94, createStepEvents()),
+    createSequence("01", "SEQ 01", 94, firstSequenceEvents),
     createSequence("02", "SEQ 02", 96, createStepEvents().slice(0, 18)),
     createSequence("03", "SEQ 03", 92, createStepEvents().slice(8, 28)),
     createSequence("04", "SEQ 04", 100, createStepEvents().slice(0, 12)),
@@ -1263,7 +1731,7 @@ function createSequences(): Sequence[] {
 }
 
 function createSequence(id: string, name: string, bpm: number, events: StepEvent[]): Sequence {
-  return { id, name, lengthBars: 4, timeSignature: "4/4", bpm, events };
+  return { id, name, lengthBars: 4, timeSignature: "4/4", bpm, tracks: ["DRUMS", "BASS", "CHOPS", "FX", "TEXTURE", "VOX"], events };
 }
 
 function getCurrentSequence(state: Pick<AppState, "sequences" | "currentSequence">) {
@@ -1272,6 +1740,10 @@ function getCurrentSequence(state: Pick<AppState, "sequences" | "currentSequence
 
 function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, id: string) {
   const sequence = state.sequences.find((item) => item.id === id) ?? state.sequences[0];
+  const priorTracks =
+    "performanceTracks" in state
+      ? (state.performanceTracks as PerformanceTrack[])
+      : [];
   return {
     ...state,
     sequence: sequence.id,
@@ -1281,12 +1753,16 @@ function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, i
     timeSignature: sequence.timeSignature,
     bpm: sequence.bpm,
     stepEvents: sequence.events,
+    performanceTracks: sequence.tracks.map((name, index) => {
+      const previous = priorTracks.find((track) => track.name === name);
+      return previous ?? { name, muted: false, solo: false, activity: 28 + index * 8 };
+    }),
     currentBar: 1,
     currentStep: 1,
     currentEvent: 1,
     bar: "001.01.00",
     currentStepIndex: 0,
-    selectedStepEventIndex: 0,
+    ...selectedEventPatch(sequence.events, 0),
   };
 }
 
@@ -1299,16 +1775,49 @@ function createStepEvent(bar: number, step: number, pad: string, velocity: numbe
   const quarter = Math.floor(step / 4) + 1;
   const tick = (step % 4) * 24;
   return {
+    id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${quarter}.${String(tick).padStart(2, "0")}`,
     pad,
+    trackId: "DRUMS",
+    trackName: "DRUMS",
     velocity,
     length: pad === "P08" ? 12 : 24,
+    duration: pad === "P08" ? 12 : 24,
     type: "NOTE",
     timingOffset: step % 5 === 0 ? -2 : step % 7 === 0 ? 3 : 0,
     probability: pad === "P08" && step % 8 !== 0 ? 92 : 100,
     variation: pad === "P08" ? "HAT" : pad === "P05" ? "SNARE" : "KICK",
     muted: false,
   };
+}
+
+function nextEventId() {
+  eventIdCounter += 1;
+  return `EV${String(eventIdCounter).padStart(4, "0")}`;
+}
+
+function nextPerformanceTracks(
+  tracks: PerformanceTrack[],
+  targetIndex: number,
+  mode: AppState["trackMuteMode"],
+) {
+  if (mode === "SOLO") {
+    return tracks.map((track, index) => ({
+      ...track,
+      muted: index !== targetIndex,
+      solo: index === targetIndex,
+    }));
+  }
+
+  return tracks.map((track, index) =>
+    index === targetIndex ? { ...track, muted: !track.muted, solo: false } : { ...track, solo: false },
+  );
+}
+
+function performanceMessage(index: number, next: PerformanceTrack) {
+  const trackNumber = String(index + 1).padStart(2, "0");
+  if (next.solo) return `SOLO TRACK ${trackNumber}`;
+  return `${next.muted ? "MUTE" : "UNMUTE"} TRACK ${trackNumber}`;
 }
 
 function createPadMixer(): Record<PadBank, MixerChannel[]> {
@@ -1402,7 +1911,7 @@ function createDiskItem(
 }
 
 function isUtilityScreen(screen: ScreenId) {
-  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG";
+  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT";
 }
 
 function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {

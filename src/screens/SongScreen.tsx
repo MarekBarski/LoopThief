@@ -20,6 +20,7 @@ export function SongScreen() {
   const tickSongPlayback = useAppStore((state) => state.tickSongPlayback);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const isPlaying = useAppStore((state) => state.isPlaying);
+  const performanceTracks = useAppStore((state) => state.performanceTracks);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -36,6 +37,7 @@ export function SongScreen() {
   const currentSequence = sequences.find((sequence) => sequence.id === currentStep.sequenceId);
   const nextStep = songSteps[(currentSongStepIndex + 1) % songSteps.length];
   const nextSequence = sequences.find((sequence) => sequence.id === nextStep?.sequenceId);
+  const liveTrackCount = performanceTracks.filter((track) => !track.muted).length;
 
   return (
     <ScreenFrame title="SONG" subtitle="MPC-style song mode">
@@ -74,6 +76,7 @@ export function SongScreen() {
             <Info label="SONG POS" value={`${String(currentSongStepIndex + 1).padStart(2, "0")}.${String(currentSongRepeat).padStart(2, "0")}`} />
             <Info label="CURRENT SEQ" value={currentSequence?.name ?? "---"} />
             <Info label="NEXT SEQ" value={nextSequence?.name ?? "---"} />
+            <Info label="LIVE TRACKS" value={`${String(liveTrackCount).padStart(2, "0")}/${String(performanceTracks.length).padStart(2, "0")}`} />
           </section>
 
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">

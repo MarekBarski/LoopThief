@@ -50,6 +50,11 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const barBackward = useAppStore((state) => state.barBackward);
   const barForward = useAppStore((state) => state.barForward);
   const flashingButtons = useAppStore((state) => state.flashingButtons);
+  const eraseHoldActive = useAppStore((state) => state.eraseHoldActive);
+  const setEraseHoldActive = useAppStore((state) => state.setEraseHoldActive);
+  const noteRepeatEnabled = useAppStore((state) => state.noteRepeatEnabled);
+  const setNoteRepeatEnabled = useAppStore((state) => state.setNoteRepeatEnabled);
+  const sixteenLevelsEnabled = useAppStore((state) => state.sixteenLevelsEnabled);
   const flashButton = useAppStore((state) => state.flashButton);
   const currentPadMode = useAppStore((state) => state.currentPadMode);
   const setPadMode = useAppStore((state) => state.setPadMode);
@@ -162,7 +167,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
           (element.label === "COUNT IN" &&
             (activeScreen === "COUNT_IN" || transportPhase === "COUNT_IN")) ||
           (element.label === "16 LEVELS" &&
-            activeScreen === "UTILITY_16_LEVELS") ||
+            (activeScreen === "UTILITY_16_LEVELS" || sixteenLevelsEnabled)) ||
           (element.label === "TRACK MUTE" &&
             activeScreen === "UTILITY_TRACK_MUTE") ||
           (element.label === "PAD MUTE" &&
@@ -170,7 +175,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
           (element.label === "NEXT SEQ" &&
             activeScreen === "UTILITY_NEXT_SEQ") ||
           (element.label === "NOTE REPEAT" &&
-            activeScreen === "UTILITY_NOTE_REPEAT")
+            (activeScreen === "UTILITY_NOTE_REPEAT" || noteRepeatEnabled))
         : element.label === "REC"
           ? isSequenceRecording
           : element.label === "PLAY"
@@ -180,7 +185,9 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
               : element.label === "COUNT IN"
                 ? activeScreen === "COUNT_IN" ||
                   transportPhase === "COUNT_IN"
-                : Boolean(flashingButtons[element.id]);
+                : element.label === "ERASE"
+                  ? eraseHoldActive
+                  : Boolean(flashingButtons[element.id]);
   const buttonVisual = getButtonVisual(element, active);
 
   return (
@@ -189,6 +196,18 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
       className="absolute"
       style={commonStyle}
       disabled={editMode}
+      onMouseDown={() => {
+        if (element.type === "button" && element.label === "ERASE") setEraseHoldActive(true);
+        if (element.type === "padMode" && element.label === "NOTE REPEAT") setNoteRepeatEnabled(true);
+      }}
+      onMouseUp={() => {
+        if (element.type === "button" && element.label === "ERASE") setEraseHoldActive(false);
+        if (element.type === "padMode" && element.label === "NOTE REPEAT") setNoteRepeatEnabled(false);
+      }}
+      onMouseLeave={() => {
+        if (element.type === "button" && element.label === "ERASE") setEraseHoldActive(false);
+        if (element.type === "padMode" && element.label === "NOTE REPEAT") setNoteRepeatEnabled(false);
+      }}
       onClick={() => {
         if (element.type === "mode" && element.label) {
           setActiveScreen(

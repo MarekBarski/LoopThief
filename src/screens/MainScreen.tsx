@@ -2,7 +2,7 @@ import { ScreenFrame } from "./ScreenFrame";
 import { useAppStore } from "../store/useAppStore";
 import { getPadModeDisplayLabel } from "../utils/padModeLabels";
 
-const softButtons = ["F1 SAMPLE", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 SONG", "F6 SEQ"];
+const softButtons = ["F1 TC", "F2 CHOP", "F3 PROGRAM", "F4 STEP", "F5 SONG", "F6 SEQ"];
 
 export function MainScreen() {
   const sequence = useAppStore((state) => state.sequence);
@@ -12,6 +12,8 @@ export function MainScreen() {
   const bar = useAppStore((state) => state.bar);
   const bpm = useAppStore((state) => state.bpm);
   const swing = useAppStore((state) => state.swing);
+  const timingCorrect = useAppStore((state) => state.timingCorrect);
+  const quantizeStrength = useAppStore((state) => state.quantizeStrength);
   const activeTrack = useAppStore((state) => state.activeTrack);
   const activeProgram = useAppStore((state) => state.activeProgram);
   const padBank = useAppStore((state) => state.padBank);
@@ -32,7 +34,9 @@ export function MainScreen() {
     ["PAD BANK", padBank],
     ["SELECTED PAD", selectedPad],
     ["PAD MODE", getPadModeDisplayLabel(currentPadMode)],
+    ["TC", timingCorrect],
     ["SWING", `${swing}%`],
+    ["Q-STRENGTH", `${quantizeStrength}%`],
     ["STATUS", `${isPlaying ? "PLAY" : "STOP"}${isSequenceRecording ? " / SEQ REC" : ""}`],
   ] as const;
   const openUtilityWorkflow = useAppStore((state) => state.openUtilityWorkflow);
@@ -55,6 +59,7 @@ export function MainScreen() {
               key={button}
               type="button"
               onClick={() => {
+                if (button === "F1 TC") openUtilityWorkflow("TIMING_CORRECT");
                 if (button === "F5 SONG") openUtilityWorkflow("SONG");
                 if (button === "F6 SEQ") openUtilityWorkflow("SEQUENCE_EDIT");
               }}
