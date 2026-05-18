@@ -110,7 +110,7 @@
       "type": "padMode",
       "label": "PLAY",
       "x": 1552,
-      "y": 210,
+      "y": 280,
       "w": 108,
       "h": 45
     },
@@ -118,8 +118,8 @@
       "id": "padmode-track-mute",
       "type": "padMode",
       "label": "TRACK MUTE",
-      "x": 1688,
-      "y": 210,
+      "x": 1552,
+      "y": 352,
       "w": 108,
       "h": 45
     },
@@ -128,7 +128,7 @@
       "type": "padMode",
       "label": "16 LEVELS",
       "x": 1552,
-      "y": 284,
+      "y": 208,
       "w": 108,
       "h": 45
     },
@@ -137,7 +137,7 @@
       "type": "padMode",
       "label": "PAD MUTE",
       "x": 1688,
-      "y": 284,
+      "y": 424,
       "w": 108,
       "h": 45
     },
@@ -145,8 +145,8 @@
       "id": "padmode-full-level",
       "type": "padMode",
       "label": "FULL LEVEL",
-      "x": 1552,
-      "y": 358,
+      "x": 1688,
+      "y": 208,
       "w": 108,
       "h": 45
     },
@@ -155,7 +155,7 @@
       "type": "padMode",
       "label": "NEXT SEQ",
       "x": 1688,
-      "y": 358,
+      "y": 352,
       "w": 108,
       "h": 45
     },
@@ -164,7 +164,7 @@
       "type": "padMode",
       "label": "NOTE REPEAT",
       "x": 1552,
-      "y": 432,
+      "y": 424,
       "w": 108,
       "h": 45
     },
@@ -173,7 +173,7 @@
       "type": "padMode",
       "label": "STEP",
       "x": 1688,
-      "y": 432,
+      "y": 280,
       "w": 108,
       "h": 45
     },
@@ -503,8 +503,8 @@
     {
       "id": "logo",
       "type": "logo",
-      "x": 1896,
-      "y": 184,
+      "x": 1888,
+      "y": 176,
       "w": 528,
       "h": 248
     }
