@@ -1,13 +1,21 @@
 import { create } from "zustand";
 import type { ScreenId } from "../types/navigation";
+import { startRecordingCapture, type ActiveRecordingCapture, type RecordingInputSource } from "../audio/recordingCapture";
 import { samplerEngine } from "../audio/samplerEngine";
+import { createSampleId, createWaveformCache, encodeWavRegion, getSampleAudioRef, registerSampleAudio } from "../audio/sampleLibrary";
 
 type PadBank = "A" | "B" | "C" | "D";
 type ChopMarkerSelection = "sampleStart" | "sampleEnd" | "loopStart" | "loopEnd" | `slice:${number}` | null;
 type RecordedSample = {
+  id: string;
   name: string;
+  audioBufferId: string;
   durationMs: number;
+  duration: number;
+  sampleRate: number;
+  channelCount: number;
   waveform: number[];
+  keptSlices: string[];
   editState?: SampleEditState;
 };
 type SampleEditState = {
@@ -95,13 +103,16 @@ type AppState = {
   isSamplingArmed: boolean;
   isSampling: boolean;
   recordingMs: number;
-  inputSource: "SYSTEM AUDIO";
-  threshold: number;
+  inputSource: RecordingInputSource;
+  inputLevel: number;
+  threshold: number | "OFF";
   monitorEnabled: boolean;
   sampleLength: string;
   freeMemory: string;
   sampleName: string;
   inputGain: number;
+  importStatus: "IDLE" | "LOADING" | "READY" | "ERROR";
+  importMessage: string;
   recordedSamples: RecordedSample[];
   chopSelectedSampleIndex: number;
   waveformZoom: number;
@@ -120,6 +131,11 @@ type AppState = {
   chopMarkers: number[];
   selectedSlice: number;
   chopCursor: number;
+  chopPreviewActive: boolean;
+  chopPreviewStart: number;
+  chopPreviewEnd: number;
+  chopPreviewStartedAt: number;
+  chopPreviewDurationMs: number;
   normalizeEnabled: boolean;
   padAssignments: Record<PadBank, PadAssignment[]>;
   programView: "PARAMS" | "CHOKE";
@@ -166,11 +182,17 @@ type AppState = {
   armSampling: () => void;
   startSampling: () => void;
   keepSampling: () => void;
+  cycleInputSource: () => void;
+  toggleMonitor: () => void;
+  cycleThreshold: () => void;
+  adjustInputGain: (delta: number) => void;
+  importWavFile: (file: File) => Promise<void>;
   tickRecording: (deltaMs: number) => void;
-  tickChopPlayback: (delta: number) => void;
+  tickChopPlayback: () => void;
   playStart: () => void;
   tapTempo: () => void;
   triggerPad: (pad: string) => void;
+  releasePad: (pad: string) => void;
   flashButton: (id: string) => void;
   nextPadBank: () => void;
   setPadMode: (mode: AppState["currentPadMode"]) => void;
@@ -246,6 +268,7 @@ type AppState = {
     delta: number,
   ) => void;
   toggleSelectedPadMode: () => void;
+  toggleSelectedPadVoiceMode: () => void;
   setProgramView: (view: AppState["programView"]) => void;
   cycleMuteTargetMode: () => void;
   toggleMuteTargetForSelectedPad: (pad: string) => void;
@@ -283,6 +306,10 @@ type AppState = {
   previousDiskItem: () => void;
   loadSelectedDiskItem: () => void;
   saveDiskItem: () => void;
+  previewSelectedMemorySample: () => void;
+  renameSelectedMemorySample: (name: string) => void;
+  deleteSelectedMemorySample: () => void;
+  exportSelectedMemorySample: () => void;
   setActiveSettingsCategory: (id: string) => void;
   selectSetting: (index: number) => void;
   adjustSelectedSetting: (delta: number) => void;
@@ -293,6 +320,7 @@ type PadAssignment = {
   pad: string;
   assignment: string;
   mode: "ONE SHOT" | "NOTE ON";
+  voiceMode: "POLY" | "MONO";
   level: number;
   tune: number;
   pan: number;
@@ -404,10 +432,12 @@ type SettingsValues = {
   displayBrightness: number;
   autoSave: boolean;
   latency: number;
+  masterVolume: number;
   audioInputSource: "SYSTEM AUDIO" | "LINE IN" | "USB";
 };
 
 let eventIdCounter = 0;
+let activeRecordingCapture: ActiveRecordingCapture | null = null;
 
 const initialStepEvents = createStepEvents();
 
@@ -478,13 +508,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   isSamplingArmed: false,
   isSampling: false,
   recordingMs: 0,
-  inputSource: "SYSTEM AUDIO",
+  inputSource: "SYSTEM",
+  inputLevel: 0,
   threshold: -24,
   monitorEnabled: true,
   sampleLength: "00:00.000",
   freeMemory: "25:00",
   sampleName: "SAMPLE_001",
   inputGain: 0,
+  importStatus: "IDLE",
+  importMessage: "WAV ONLY",
   recordedSamples: [],
   chopSelectedSampleIndex: 0,
   waveformZoom: 1,
@@ -503,6 +536,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   chopMarkers: [],
   selectedSlice: 1,
   chopCursor: 0,
+  chopPreviewActive: false,
+  chopPreviewStart: 0,
+  chopPreviewEnd: 0,
+  chopPreviewStartedAt: 0,
+  chopPreviewDurationMs: 0,
   normalizeEnabled: false,
   padAssignments: createPadAssignments(),
   programView: "PARAMS",
@@ -554,6 +592,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     displayBrightness: 72,
     autoSave: false,
     latency: 8,
+    masterVolume: 1500,
     audioInputSource: "SYSTEM AUDIO",
   },
   triggeredPads: {},
@@ -617,59 +656,87 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({ timingCorrectionCountEnabled: !state.timingCorrectionCountEnabled })),
   toggleWaitPadCompat: () => set((state) => ({ waitPadCompatEnabled: !state.waitPadCompatEnabled })),
   requestTransportStart: (action) => requestTransportStartImpl(action, set, get),
-  armSampling: () => set({ isSamplingArmed: true, isSampling: false, recordingMs: 0 }),
-  startSampling: () =>
-    set((state) =>
-      state.isSamplingArmed
-        ? { isSampling: true, isSamplingArmed: false, recordingMs: 0 }
-        : state,
-    ),
+  armSampling: () => set({ isSamplingArmed: true, isSampling: false, recordingMs: 0, sampleLength: "00:00.000", importStatus: "IDLE", importMessage: "ARMED" }),
+  startSampling: () => {
+    const state = get();
+    if (!state.isSamplingArmed || state.isSampling) return;
+    set({ importStatus: "LOADING", importMessage: `OPENING ${state.inputSource}` });
+    const gain = dbToGain(state.inputGain);
+    void startRecordingCapture(state.inputSource, (inputLevel) => useAppStore.setState({ inputLevel: clamp(inputLevel * gain, 0, 1) }))
+      .then((capture) => {
+        activeRecordingCapture = capture;
+        set({
+          isSampling: true,
+          isSamplingArmed: false,
+          recordingMs: 0,
+          sampleLength: "00:00.000",
+          importStatus: "READY",
+          importMessage: `RECORDING ${get().inputSource}`,
+        });
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message.toUpperCase() : "CAPTURE FAILED";
+        set({ isSampling: false, isSamplingArmed: false, inputLevel: 0, importStatus: "ERROR", importMessage: message });
+      });
+  },
   keepSampling: () => {
     const state = get();
     if (!state.isSampling) return;
-    const nextIndex = state.recordedSamples.length + 1;
-    const waveform = createWaveform(nextIndex);
-    const nextName = `SAMPLE_${String(nextIndex + 1).padStart(3, "0")}`;
-    set({
-      isSampling: false,
-      isSamplingArmed: false,
-      recordedSamples: [
-        ...state.recordedSamples,
-        {
-          name: state.sampleName,
-          durationMs: state.recordingMs,
-          waveform,
-          editState: createDefaultSampleEditState(),
-        },
-      ],
-      chopSelectedSampleIndex: state.recordedSamples.length,
-      waveformZoom: 1,
-      waveformOffset: 0,
-      chopEditMode: "TRIM",
-      chopSliceMode: "AUTO",
-      autoSliceCount: 8,
-      selectedMarker: "sampleStart",
-      sampleStart: 0,
-      sampleEnd: 1,
-      loopEnabled: false,
-      loopStart: 0,
-      loopEnd: 1,
-      loopBars: 4,
-      sliceMarkers: [],
-      chopMarkers: [],
-      selectedSlice: 1,
-      chopCursor: 0,
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad, index) =>
-          index < 8 && pad.assignment === "---"
-            ? { ...pad, assignment: `${state.sampleName} / S${String(index + 1).padStart(2, "0")}` }
-            : pad,
-        ),
-      },
-      sampleLength: formatMs(state.recordingMs),
-      sampleName: nextName,
-    });
+    const capture = activeRecordingCapture;
+    activeRecordingCapture = null;
+    if (!capture) {
+      set({ isSampling: false, isSamplingArmed: false, inputLevel: 0, importStatus: "ERROR", importMessage: "NO ACTIVE RECORDER" });
+      return;
+    }
+    set({ importStatus: "LOADING", importMessage: "DECODING RECORDING" });
+    void capture.stop()
+      .then((blob) => blob.arrayBuffer())
+      .then((data) => samplerEngine.decodeAudioData(data))
+      .then((buffer) => {
+        applyBufferGain(buffer, get().inputGain);
+        const sample = createImportedSample(get().sampleName, buffer);
+        registerSampleAudio(sample.audioBufferId, buffer);
+        set((latest) => ({
+          ...addSampleToState(latest, sample, `RECORDED ${sample.name}`),
+          activeScreen: "CHOP",
+          isSampling: false,
+          isSamplingArmed: false,
+          inputLevel: 0,
+        }));
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message.toUpperCase() : "RECORD DECODE FAILED";
+        set({ isSampling: false, isSamplingArmed: false, inputLevel: 0, importStatus: "ERROR", importMessage: message });
+      });
+  },
+  cycleInputSource: () =>
+    set((state) => {
+      const sources: RecordingInputSource[] = ["DEFAULT", "MIC", "SYSTEM"];
+      return { inputSource: sources[(sources.indexOf(state.inputSource) + 1) % sources.length] };
+    }),
+  toggleMonitor: () => set((state) => ({ monitorEnabled: !state.monitorEnabled })),
+  cycleThreshold: () =>
+    set((state) => {
+      const values: Array<number | "OFF"> = [-60, -48, -36, -24, -18, -12, -6, "OFF"];
+      return { threshold: values[(values.indexOf(state.threshold) + 1) % values.length] };
+    }),
+  adjustInputGain: (delta) => set((state) => ({ inputGain: clamp(state.inputGain + delta, -24, 24) })),
+  importWavFile: async (file) => {
+    if (!isWavFile(file)) {
+      set({ importStatus: "ERROR", importMessage: "WAV FILES ONLY" });
+      return;
+    }
+
+    set({ importStatus: "LOADING", importMessage: `IMPORTING ${file.name.toUpperCase()}` });
+
+    try {
+      const buffer = await samplerEngine.decodeAudioData(await file.arrayBuffer());
+      const imported = createImportedSample(file.name, buffer);
+      registerSampleAudio(imported.audioBufferId, buffer);
+      set((state) => addSampleToState(state, imported, `IMPORTED ${imported.name}`));
+    } catch {
+      set({ importStatus: "ERROR", importMessage: "WAV DECODE FAILED" });
+    }
   },
   tickRecording: (deltaMs) =>
     set((state) =>
@@ -680,10 +747,20 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         : state,
     ),
-  tickChopPlayback: (delta) =>
-    set((state) => ({
-      chopCursor: state.isPlaying ? (state.chopCursor + delta) % 1 : state.chopCursor,
-    })),
+  tickChopPlayback: () =>
+    set((state) => {
+      if (!state.chopPreviewActive || state.chopPreviewDurationMs <= 0) return state;
+      const elapsed = performance.now() - state.chopPreviewStartedAt;
+      const progress = clamp(elapsed / state.chopPreviewDurationMs, 0, 1);
+      const chopCursor = state.chopPreviewStart + (state.chopPreviewEnd - state.chopPreviewStart) * progress;
+      if (progress >= 1) {
+        return {
+          chopCursor,
+          chopPreviewActive: false,
+        };
+      }
+      return { chopCursor };
+    }),
   playStart: () => requestTransportStartImpl("PLAY", set, get),
   tapTempo: () => {
     const now = performance.now();
@@ -897,6 +974,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         triggeredPads: { ...state.triggeredPads, [selectedPad]: false },
       }));
     }, 140);
+  },
+  releasePad: (pad) => {
+    const state = get();
+    const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
+    if (assignment?.mode === "NOTE ON") samplerEngine.stopVoiceGroup(mixerChannelKey(state.padBank, pad));
+    set((current) => ({
+      triggeredPads: { ...current.triggeredPads, [pad]: false },
+    }));
   },
   flashButton: (id) => {
     set((state) => ({
@@ -1374,6 +1459,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           index === actualIndex ? { ...item, editState } : item,
         ),
         chopMarkers: state.sliceMarkers,
+        lastAudioMessage: `SAVED ${sample.name}`,
       };
     }),
   previewChopSlice: (sliceIndex) => {
@@ -1384,6 +1470,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedSlice: sliceIndex + 1,
       selectedMarker: `slice:${sliceIndex}`,
       chopCursor: preview.sampleStart,
+      ...createChopPreviewCursorState(preview),
       lastAudioMessage: `PREVIEW S${String(sliceIndex + 1).padStart(2, "0")}`,
     });
     samplerEngine.play(preview, { gain: 1, pan: 0 });
@@ -1405,10 +1492,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       const sliceSamples = state.sliceMarkers.map((start, index) => {
         const end = state.sliceMarkers[index + 1] ?? state.sampleEnd;
+        const id = createSampleId();
         return {
+          id,
           name: `${baseName}_S${String(index + 1).padStart(2, "0")}`,
+          audioBufferId: sample.audioBufferId,
           durationMs: Math.max(1, Math.round((end - start) * sample.durationMs)),
+          duration: Math.max(0.001, (end - start) * sample.duration),
+          sampleRate: sample.sampleRate,
+          channelCount: sample.channelCount,
           waveform: sample.waveform,
+          keptSlices: [],
           editState: {
             sampleStart: start,
             sampleEnd: end,
@@ -1428,14 +1522,18 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...state.padAssignments,
             [targetBank]: state.padAssignments[targetBank].map((pad, index) =>
               sliceSamples[index]
-                ? { ...pad, assignment: `${sliceSamples[index].name} / S${String(index + 1).padStart(2, "0")}` }
+                ? { ...pad, assignment: sliceSamples[index].name }
                 : pad,
             ),
           }
         : state.padAssignments;
       return {
         recordedSamples: [
-          ...retainedSamples.map((item, index) => (index === actualIndex ? { ...item, editState } : item)),
+          ...retainedSamples.map((item, index) =>
+            item.id === sample.id
+              ? { ...item, editState, keptSlices: sliceSamples.map((slice) => slice.id) }
+              : item,
+          ),
           ...sliceSamples,
         ],
         padAssignments,
@@ -1512,6 +1610,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
           pad.pad === state.selectedPad
             ? { ...pad, mode: pad.mode === "ONE SHOT" ? "NOTE ON" : "ONE SHOT" }
+            : pad,
+        ),
+      },
+    })),
+  toggleSelectedPadVoiceMode: () =>
+    set((state) => ({
+      padAssignments: {
+        ...state.padAssignments,
+        [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
+          pad.pad === state.selectedPad
+            ? { ...pad, voiceMode: pad.voiceMode === "POLY" ? "MONO" : "POLY" }
             : pad,
         ),
       },
@@ -1843,6 +1952,74 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedDiskItemIndex: folder.items.length,
       };
     }),
+  previewSelectedMemorySample: () => {
+    const state = get();
+    const sample = state.recordedSamples[state.selectedDiskItemIndex];
+    if (!sample) {
+      set({ importStatus: "ERROR", importMessage: "NO MEMORY SAMPLE" });
+      return;
+    }
+    const playable = resolveSampleRegion(sample);
+    set({ importStatus: "READY", importMessage: `PREVIEW ${sample.name}`, lastAudioMessage: `PREVIEW ${sample.name}` });
+    samplerEngine.play(playable, { gain: 1, pan: 0 });
+  },
+  renameSelectedMemorySample: (name) =>
+    set((state) => {
+      const sample = state.recordedSamples[state.selectedDiskItemIndex];
+      if (!sample) return { importStatus: "ERROR", importMessage: "NO MEMORY SAMPLE" };
+      const nextName = createSampleName(name);
+      if (!nextName) return { importStatus: "ERROR", importMessage: "INVALID NAME" };
+      if (state.recordedSamples.some((item) => item.id !== sample.id && item.name === nextName)) {
+        return { importStatus: "ERROR", importMessage: "NAME EXISTS" };
+      }
+      return {
+        recordedSamples: state.recordedSamples.map((item) =>
+          item.id === sample.id ? { ...item, name: nextName } : item,
+        ),
+        padAssignments: renameSampleAssignments(state.padAssignments, sample.name, nextName),
+        diskFolders: renameDiskSampleItems(state.diskFolders, sample.name, nextName),
+        importStatus: "READY",
+        importMessage: `RENAMED ${nextName}`,
+      };
+    }),
+  deleteSelectedMemorySample: () =>
+    set((state) => {
+      const sample = state.recordedSamples[state.selectedDiskItemIndex];
+      if (!sample) return { importStatus: "ERROR", importMessage: "NO MEMORY SAMPLE" };
+      const assignedPads = getAssignedPads(state, sample.name);
+      if (assignedPads.length > 0) {
+        return {
+          importStatus: "ERROR",
+          importMessage: `ASSIGNED ${assignedPads.join(",")} - DELETE BLOCKED`,
+        };
+      }
+      const recordedSamples = state.recordedSamples.filter((item) => item.id !== sample.id);
+      return {
+        recordedSamples,
+        selectedDiskItemIndex: clamp(state.selectedDiskItemIndex, 0, Math.max(0, recordedSamples.length - 1)),
+        chopSelectedSampleIndex: clamp(state.chopSelectedSampleIndex, 0, Math.max(0, recordedSamples.length - 1)),
+        diskFolders: removeDiskSampleItems(state.diskFolders, sample.name),
+        importStatus: "READY",
+        importMessage: `DELETED ${sample.name}`,
+      };
+    }),
+  exportSelectedMemorySample: () => {
+    const state = get();
+    const sample = state.recordedSamples[state.selectedDiskItemIndex];
+    if (!sample) {
+      set({ importStatus: "ERROR", importMessage: "NO MEMORY SAMPLE" });
+      return;
+    }
+    const audioRef = getSampleAudioRef(sample.audioBufferId);
+    if (!audioRef) {
+      set({ importStatus: "ERROR", importMessage: "PCM BUFFER MISSING" });
+      return;
+    }
+    const region = getSampleRegion(sample);
+    const wav = encodeWavRegion(audioRef, region.start, region.end);
+    downloadBytes(`${sample.name}.wav`, wav, "audio/wav");
+    set({ importStatus: "READY", importMessage: `EXPORTED ${sample.name}` });
+  },
   setActiveSettingsCategory: (activeSettingsCategoryId) =>
     set({ activeSettingsCategoryId, selectedSettingIndex: 0 }),
   selectSetting: (selectedSettingIndex) => set({ selectedSettingIndex }),
@@ -1853,10 +2030,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!setting) return state;
       const current = state.settingsValues[setting.key];
       if (setting.kind === "numeric" && typeof current === "number") {
+        const nextValue = clamp(current + delta * (setting.step ?? 1), setting.min ?? current, setting.max ?? current);
+        if (setting.key === "masterVolume") samplerEngine.setMasterVolume(nextValue);
         return {
           settingsValues: {
             ...state.settingsValues,
-            [setting.key]: clamp(current + delta * (setting.step ?? 1), setting.min ?? current, setting.max ?? current),
+            [setting.key]: nextValue,
           },
         };
       }
@@ -2008,16 +2187,104 @@ function getSixteenLevelsValue(state: AppState, padNumber: number) {
   return Math.round(state.sixteenLevelsRangeMin + (state.sixteenLevelsRangeMax - state.sixteenLevelsRangeMin) * ratio);
 }
 
-function createWaveform(seed: number) {
-  let value = seed * 16807;
-  return Array.from({ length: 64 }, () => {
-    value = (value * 48271) % 2147483647;
-    return 0.12 + ((value / 2147483647) * 0.88);
+function createDefaultMarkers() {
+  return Array.from({ length: 8 }, (_, index) => index / 8);
+}
+
+function createImportedSample(fileName: string, buffer: AudioBuffer): RecordedSample {
+  const id = createSampleId();
+  return {
+    id,
+    name: createSampleName(fileName),
+    audioBufferId: id,
+    durationMs: Math.round(buffer.duration * 1000),
+    duration: buffer.duration,
+    sampleRate: buffer.sampleRate,
+    channelCount: buffer.numberOfChannels,
+    waveform: createWaveformCache(buffer),
+    keptSlices: [],
+    editState: createDefaultSampleEditState(),
+  };
+}
+
+function addSampleToState(state: AppState, sample: RecordedSample, message: string): Partial<AppState> {
+  return {
+    recordedSamples: [...state.recordedSamples, sample],
+    chopSelectedSampleIndex: state.recordedSamples.length,
+    waveformZoom: 1,
+    waveformOffset: 0,
+    chopEditMode: "TRIM",
+    chopSliceMode: "AUTO",
+    autoSliceCount: 8,
+    selectedMarker: "sampleStart",
+    sampleStart: 0,
+    sampleEnd: 1,
+    loopEnabled: false,
+    loopStart: 0,
+    loopEnd: 1,
+    loopBars: 4,
+    sliceMarkers: [],
+    chopMarkers: [],
+    selectedSlice: 1,
+    chopCursor: 0,
+    sampleLength: formatMs(sample.durationMs),
+    sampleName: nextSampleName(state.recordedSamples.length + 2),
+    importStatus: "READY",
+    importMessage: message,
+    lastAudioMessage: message,
+    diskFolders: addSampleToDiskMemory(state.diskFolders, sample),
+  };
+}
+
+function createSampleName(fileName: string) {
+  const withoutExtension = fileName.replace(/\.[^/.]+$/, "");
+  const normalized = withoutExtension.toUpperCase().replace(/[^A-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  return (normalized || "SAMPLE").slice(0, 24);
+}
+
+function nextSampleName(index: number) {
+  return `SAMPLE_${String(index).padStart(3, "0")}`;
+}
+
+function isWavFile(file: File) {
+  return file.name.toLowerCase().endsWith(".wav") || file.type === "audio/wav" || file.type === "audio/x-wav";
+}
+
+function addSampleToDiskMemory(folders: DiskFolder[], sample: RecordedSample) {
+  return folders.map((folder) => {
+    if (folder.id !== "memory" && folder.id !== "samples") return folder;
+    const item = createDiskItem(
+      `${sample.name}.WAV`,
+      "SAMPLE",
+      estimatePcmSize(sample),
+      "TODAY",
+      "--",
+      "--",
+      formatMs(sample.durationMs),
+    );
+    return { ...folder, items: [...folder.items.filter((existing) => existing.name !== item.name), item] };
   });
 }
 
-function createDefaultMarkers() {
-  return Array.from({ length: 8 }, (_, index) => index / 8);
+function estimatePcmSize(sample: RecordedSample) {
+  const bytes = Math.max(1, Math.round(sample.duration * sample.sampleRate * sample.channelCount * 2));
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function dbToGain(db: number) {
+  return 10 ** (db / 20);
+}
+
+function applyBufferGain(buffer: AudioBuffer, gainDb: number) {
+  const gain = dbToGain(gainDb);
+  if (gain === 1) return;
+  for (let channelIndex = 0; channelIndex < buffer.numberOfChannels; channelIndex += 1) {
+    const channel = buffer.getChannelData(channelIndex);
+    for (let frame = 0; frame < channel.length; frame += 1) {
+      channel[frame] = clamp(channel[frame] * gain, -1, 1);
+    }
+  }
 }
 
 function createDefaultSampleEditState(): SampleEditState {
@@ -2126,16 +2393,15 @@ function playPadFromState(state: AppState, pad: string, options: { allowUtilityP
   ) {
     return;
   }
-  if (state.activeScreen === "CHOP" && state.chopEditMode === "CHOP") {
-    const padNumber = Number(pad.slice(1));
-    const previewSliceIndex = padNumber - 1;
-    const preview = resolveTemporaryChopPreview(state, previewSliceIndex);
+  if (state.activeScreen === "CHOP") {
+    const preview = resolveTemporaryChopPadPreview(state, pad);
     if (!preview) return;
     useAppStore.setState({
-      selectedSlice: previewSliceIndex + 1,
-      selectedMarker: `slice:${previewSliceIndex}`,
+      selectedSlice: preview.sliceIndex != null ? preview.sliceIndex + 1 : state.selectedSlice,
+      selectedMarker: preview.sliceIndex != null ? `slice:${preview.sliceIndex}` : state.selectedMarker,
       chopCursor: preview.sampleStart,
-      lastAudioMessage: `CHOP S${String(previewSliceIndex + 1).padStart(2, "0")}`,
+      ...createChopPreviewCursorState(preview),
+      lastAudioMessage: preview.label,
     });
     const mix = state.padMixer[state.padBank].find((item) => item.pad === pad);
     if (!mix || !isMixerChannelAudible(state.padMixer[state.padBank], pad)) return;
@@ -2143,6 +2409,7 @@ function playPadFromState(state: AppState, pad: string, options: { allowUtilityP
       gain: mix.level / 100,
       pan: mix.pan / 64,
       channelKey: mixerChannelKey(state.padBank, pad),
+      previewGroup: state.chopEditMode === "CHOP" ? undefined : "chop-trim-loop",
     });
     return;
   }
@@ -2159,23 +2426,81 @@ function playAssignedPadFromState(state: AppState, pad: string) {
   const resolved = resolveAssignedSample(state, assignment.assignment);
   if (!resolved) return;
   useAppStore.setState({ lastAudioMessage: assignment.assignment });
+  const voiceGroup = mixerChannelKey(state.padBank, pad);
+  samplerEngine.stopVoiceGroups(getMuteStopGroups(state, assignment, pad));
   samplerEngine.play(resolved, {
     gain: mix.level / 100,
     pan: mix.pan / 64,
-    channelKey: mixerChannelKey(state.padBank, pad),
+    channelKey: voiceGroup,
+    voiceGroup,
+    mono: assignment.voiceMode === "MONO",
   });
 }
 
 function resolveTemporaryChopPreview(state: AppState, sliceIndex: number) {
   const sample = state.recordedSamples[state.chopSelectedSampleIndex] ?? state.recordedSamples.at(-1);
   if (!sample || state.sliceMarkers[sliceIndex] == null) return null;
+  return createTemporarySampleRegion(
+    sample,
+    `${sample.name}#preview-${sliceIndex}`,
+    state.sliceMarkers[sliceIndex],
+    state.sliceMarkers[sliceIndex + 1] ?? state.sampleEnd,
+    `PREVIEW S${String(sliceIndex + 1).padStart(2, "0")}`,
+    sliceIndex,
+  );
+}
+
+function resolveTemporaryChopPadPreview(state: AppState, pad: string) {
+  const sample = state.recordedSamples[state.chopSelectedSampleIndex] ?? state.recordedSamples.at(-1);
+  if (!sample) return null;
+  if (state.chopEditMode === "CHOP") {
+    const sliceIndex = Number(pad.slice(1)) - 1;
+    if (state.sliceMarkers[sliceIndex] == null) return null;
+    return createTemporarySampleRegion(
+      sample,
+      `${sample.name}#pad-${sliceIndex}`,
+      state.sliceMarkers[sliceIndex],
+      state.sliceMarkers[sliceIndex + 1] ?? state.sampleEnd,
+      `CHOP S${String(sliceIndex + 1).padStart(2, "0")}`,
+      sliceIndex,
+    );
+  }
+  if (state.chopEditMode === "LOOP" && state.loopEnabled) {
+    return createTemporarySampleRegion(sample, `${sample.name}#loop`, state.loopStart, state.loopEnd, "LOOP PREVIEW");
+  }
+  return createTemporarySampleRegion(sample, `${sample.name}#trim`, state.sampleStart, state.sampleEnd, "TRIM PREVIEW");
+}
+
+function createTemporarySampleRegion(
+  sample: RecordedSample,
+  name: string,
+  sampleStart: number,
+  sampleEnd: number,
+  label: string,
+  sliceIndex?: number,
+) {
   return {
-    name: `${sample.name}#preview-${sliceIndex}`,
+    id: sample.id,
+    name,
+    audioBufferId: sample.audioBufferId,
     durationMs: sample.durationMs,
+    sampleRate: sample.sampleRate,
     waveform: sample.waveform,
-    sampleStart: state.sliceMarkers[sliceIndex],
-    sampleEnd: state.sliceMarkers[sliceIndex + 1] ?? state.sampleEnd,
+    sampleStart,
+    sampleEnd,
     playbackRate: 1,
+    label,
+    sliceIndex,
+  };
+}
+
+function createChopPreviewCursorState(preview: { sampleStart: number; sampleEnd: number; durationMs: number }) {
+  return {
+    chopPreviewActive: true,
+    chopPreviewStart: preview.sampleStart,
+    chopPreviewEnd: preview.sampleEnd,
+    chopPreviewStartedAt: performance.now(),
+    chopPreviewDurationMs: Math.max(1, (preview.sampleEnd - preview.sampleStart) * preview.durationMs),
   };
 }
 
@@ -2257,13 +2582,102 @@ function resolveAssignedSample(state: AppState, assignment: string) {
       ? editState.sliceMarkers[sliceIndex + 1] ?? editState.sampleEnd
       : editState?.sampleEnd ?? 1;
   return {
+    id: sample.id,
     name: sample.name,
+    audioBufferId: sample.audioBufferId,
     durationMs: sample.durationMs,
+    sampleRate: sample.sampleRate,
     waveform: sample.waveform,
     sampleStart,
     sampleEnd,
     playbackRate: 1,
   };
+}
+
+function resolveSampleRegion(sample: RecordedSample) {
+  const region = getSampleRegion(sample);
+  return {
+    id: sample.id,
+    name: sample.name,
+    audioBufferId: sample.audioBufferId,
+    durationMs: sample.durationMs,
+    sampleRate: sample.sampleRate,
+    waveform: sample.waveform,
+    sampleStart: region.start,
+    sampleEnd: region.end,
+    playbackRate: 1,
+  };
+}
+
+function getSampleRegion(sample: RecordedSample) {
+  const editState = sample.editState;
+  return {
+    start: editState?.sampleStart ?? 0,
+    end: editState?.sampleEnd ?? 1,
+  };
+}
+
+function getAssignedPads(state: AppState, sampleName: string) {
+  const assigned: string[] = [];
+  for (const [bank, assignments] of Object.entries(state.padAssignments)) {
+    for (const assignment of assignments) {
+      if (assignmentMatchesSample(assignment.assignment, sampleName)) assigned.push(`${bank}${assignment.pad.slice(1)}`);
+    }
+  }
+  return assigned;
+}
+
+function renameSampleAssignments(
+  padAssignments: Record<PadBank, PadAssignment[]>,
+  oldName: string,
+  newName: string,
+): Record<PadBank, PadAssignment[]> {
+  return mapPadAssignments(padAssignments, (assignment) => {
+    if (!assignmentMatchesSample(assignment, oldName)) return assignment;
+    const [, slicePart] = assignment.split("/").map((part) => part.trim());
+    return slicePart ? `${newName} / ${slicePart}` : newName;
+  });
+}
+
+function mapPadAssignments(
+  padAssignments: Record<PadBank, PadAssignment[]>,
+  mapper: (assignment: string) => string,
+): Record<PadBank, PadAssignment[]> {
+  return {
+    A: padAssignments.A.map((pad) => ({ ...pad, assignment: mapper(pad.assignment) })),
+    B: padAssignments.B.map((pad) => ({ ...pad, assignment: mapper(pad.assignment) })),
+    C: padAssignments.C.map((pad) => ({ ...pad, assignment: mapper(pad.assignment) })),
+    D: padAssignments.D.map((pad) => ({ ...pad, assignment: mapper(pad.assignment) })),
+  };
+}
+
+function assignmentMatchesSample(assignment: string, sampleName: string) {
+  return assignment === sampleName || assignment.startsWith(`${sampleName} /`);
+}
+
+function renameDiskSampleItems(folders: DiskFolder[], oldName: string, newName: string) {
+  return folders.map((folder) => ({
+    ...folder,
+    items: folder.items.map((item) => (item.name === `${oldName}.WAV` ? { ...item, name: `${newName}.WAV` } : item)),
+  }));
+}
+
+function removeDiskSampleItems(folders: DiskFolder[], sampleName: string) {
+  return folders.map((folder) => ({
+    ...folder,
+    items: folder.items.filter((item) => item.name !== `${sampleName}.WAV`),
+  }));
+}
+
+function downloadBytes(fileName: string, bytes: ArrayBuffer, mimeType: string) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function isTrackMuted(state: AppState, trackId: string) {
@@ -2279,6 +2693,19 @@ function isMixerChannelAudible(channels: MixerChannel[], pad: string) {
 
 function mixerChannelKey(bank: PadBank, pad: string) {
   return `${bank}:${pad}`;
+}
+
+function getMuteStopGroups(state: AppState, assignment: PadAssignment, pad: string) {
+  const targets = new Set<string>();
+  assignment.muteTargets.forEach((targetPad) => targets.add(mixerChannelKey(state.padBank, targetPad)));
+  if (assignment.chokeGroup > 0) {
+    state.padAssignments[state.padBank].forEach((candidate) => {
+      if (candidate.pad !== pad && candidate.chokeGroup === assignment.chokeGroup) {
+        targets.add(mixerChannelKey(state.padBank, candidate.pad));
+      }
+    });
+  }
+  return [...targets];
 }
 
 function syncMixerBankToAudio(bank: PadBank, channels: MixerChannel[]) {
@@ -2308,6 +2735,7 @@ function createBankAssignments() {
     pad: `P${String(index + 1).padStart(2, "0")}`,
     assignment: "---",
     mode: "ONE SHOT" as const,
+    voiceMode: "POLY" as const,
     level: 100,
     tune: 0,
     pan: 0,
@@ -2471,8 +2899,8 @@ function createPadMixer(): Record<PadBank, MixerChannel[]> {
 function createMixerBank() {
   return Array.from({ length: 16 }, (_, index) => ({
     pad: `P${String(index + 1).padStart(2, "0")}`,
-    level: 92 + ((index * 7) % 24),
-    pan: index % 4 === 0 ? -12 : index % 4 === 1 ? 12 : 0,
+    level: 127,
+    pan: 0,
     muted: false,
     solo: false,
     fxSend: (index * 5) % 32,
@@ -2641,6 +3069,7 @@ function createSettingsCategories(): SettingsCategory[] {
       id: "audio",
       label: "AUDIO",
       settings: [
+        { key: "masterVolume", label: "MASTER VOL", kind: "numeric", min: 0, max: 2000, step: 5 },
         { key: "audioInputSource", label: "AUDIO INPUT", kind: "enum", options: ["SYSTEM AUDIO", "LINE IN", "USB"] },
         { key: "latency", label: "LATENCY", kind: "numeric", min: 2, max: 24, step: 1 },
       ],

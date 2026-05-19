@@ -38,6 +38,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
   const triggeredPads = useAppStore((state) => state.triggeredPads);
   const triggerPad = useAppStore((state) => state.triggerPad);
+  const releasePad = useAppStore((state) => state.releasePad);
   const togglePlay = useAppStore((state) => state.togglePlay);
   const stopPlayback = useAppStore((state) => state.stopPlayback);
   const toggleSequenceRecording = useAppStore((state) => state.toggleSequenceRecording);
@@ -121,7 +122,13 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
         className="absolute"
         style={commonStyle}
         disabled={editMode}
-        onClick={() => element.label && triggerPad(element.label)}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          if (element.label) triggerPad(element.label);
+        }}
+        onPointerUp={() => element.label && releasePad(element.label)}
+        onPointerLeave={() => element.label && releasePad(element.label)}
+        onPointerCancel={() => element.label && releasePad(element.label)}
       >
         <img
           src={isTriggered ? padActive : padIdle}

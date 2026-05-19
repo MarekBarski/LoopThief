@@ -8,12 +8,14 @@ import {
   type RefObject,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { getSampleAudioRef } from "../audio/sampleLibrary";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 
 const zoomSteps = [1, 2, 4, 8, 16];
 type MarkerId = "sampleStart" | "sampleEnd" | "loopStart" | "loopEnd" | `slice:${number}`;
+type WaveformColumn = { min: number; max: number };
 
 export function ChopScreen() {
   const recordedSamples = useAppStore((state) => state.recordedSamples);
@@ -39,7 +41,7 @@ export function ChopScreen() {
   const selectedPadAssignment = useAppStore(
     (state) => state.padAssignments[state.padBank].find((pad) => pad.pad === state.selectedPad)?.assignment ?? "---",
   );
-  const isPlaying = useAppStore((state) => state.isPlaying);
+  const chopPreviewActive = useAppStore((state) => state.chopPreviewActive);
   const tickChopPlayback = useAppStore((state) => state.tickChopPlayback);
   const nextSlice = useAppStore((state) => state.nextSlice);
   const previousSlice = useAppStore((state) => state.previousSlice);
@@ -65,9 +67,11 @@ export function ChopScreen() {
   const discardChopEdits = useAppStore((state) => state.discardChopEdits);
   const assignCurrentSliceToSelectedPad = useAppStore((state) => state.assignCurrentSliceToSelectedPad);
 
-  const viewportRef = useRef<HTMLElement>(null);
+  const waveformRectRef = useRef<HTMLDivElement>(null);
   const baseNameInputRef = useRef<HTMLInputElement>(null);
   const [sliceCountDraft, setSliceCountDraft] = useState(String(autoSliceCount).padStart(2, "0"));
+  const [waveformViewportWidth, setWaveformViewportWidth] = useState(512);
+  const [waveformViewportHeight, setWaveformViewportHeight] = useState(180);
   const [showKeepPopup, setShowKeepPopup] = useState(false);
   const [baseName, setBaseName] = useState("");
   const [targetBank, setTargetBank] = useState<"A" | "B" | "C" | "D">("A");
@@ -83,13 +87,26 @@ export function ChopScreen() {
   const sampleOrdinal = Math.max(baseSamples.findIndex((item) => item === sample), 0) + 1;
   const chopStateLabel = sliceMarkers.length > 0 || sample?.editState?.sliceMarkers.length ? "CHOPPED" : "RAW";
   const waveform = sample?.waveform ?? [];
+  const activeStart = sample?.editState?.sampleStart ?? 0;
+  const activeEnd = sample?.editState?.sampleEnd ?? 1;
+  const activeLength = Math.max(0.0001, activeEnd - activeStart);
   const visibleLength = 1 / waveformZoom;
-  const visibleEnd = waveformOffset + visibleLength;
+  const visibleEnd = Math.min(1, waveformOffset + visibleLength);
+  const visibleOriginalStart = activeToOriginalPosition(waveformOffset, activeStart, activeLength);
+  const visibleOriginalEnd = activeToOriginalPosition(visibleEnd, activeStart, activeLength);
+  const visibleOriginalLength = Math.max(0.0001, visibleOriginalEnd - visibleOriginalStart);
   const selectedStart = sliceMarkers[selectedSlice - 1] ?? sampleStart;
   const selectedEnd = sliceMarkers[selectedSlice] ?? sampleEnd;
   const visibleWaveform = useMemo(
-    () => createVisibleWaveformPoints(waveform, waveformOffset, visibleEnd),
-    [waveform, waveformOffset, visibleEnd],
+    () =>
+      createVisibleWaveformColumns({
+        audioBufferId: sample?.audioBufferId,
+        fallbackWaveform: waveform,
+        start: visibleOriginalStart,
+        end: visibleOriginalEnd,
+        columnCount: waveformViewportWidth,
+      }),
+    [sample?.audioBufferId, visibleOriginalEnd, visibleOriginalStart, waveform, waveformViewportWidth],
   );
   const loopLengthMs = sample ? Math.max(0, loopEnd - loopStart) * sample.durationMs : 0;
   const timeSignatureNumerator = 4;
@@ -97,8 +114,9 @@ export function ChopScreen() {
   const bpmEstimate = loopEnabled && loopLengthMs > 0 ? (60 * loopBeats) / (loopLengthMs / 1000) : null;
 
   useEffect(() => {
-    setSliceCountDraft(String(autoSliceCount).padStart(2, "0"));
-  }, [autoSliceCount]);
+    const displayedCount = chopSliceMode === "MANUAL" ? sliceMarkers.length : autoSliceCount;
+    setSliceCountDraft(String(displayedCount).padStart(2, "0"));
+  }, [autoSliceCount, chopSliceMode, sliceMarkers.length]);
 
   useEffect(() => {
     if (!sample) return;
@@ -106,20 +124,34 @@ export function ChopScreen() {
   }, [sample]);
 
   useEffect(() => {
-    if (!isPlaying) return;
-    const interval = window.setInterval(() => tickChopPlayback(0.01), 50);
+    const waveformRect = waveformRectRef.current;
+    if (!waveformRect) return;
+    const updateSize = () => {
+      const rect = waveformRect.getBoundingClientRect();
+      setWaveformViewportWidth(Math.max(128, Math.round(rect.width)));
+      setWaveformViewportHeight(Math.max(48, Math.round(rect.height)));
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(waveformRect);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!chopPreviewActive) return;
+    const interval = window.setInterval(tickChopPlayback, 33);
     return () => window.clearInterval(interval);
-  }, [isPlaying, tickChopPlayback]);
+  }, [chopPreviewActive, tickChopPlayback]);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
-      const viewport = viewportRef.current;
-      if (!drag || !viewport) return;
-      const rect = viewport.getBoundingClientRect();
+      const waveformRect = waveformRectRef.current;
+      if (!drag || !waveformRect) return;
+      const rect = waveformRect.getBoundingClientRect();
       if (drag.type === "marker") {
-        const normalized = clamp01(waveformOffset + ((event.clientX - rect.left) / rect.width) * visibleLength);
-        moveMarkerTo(drag.marker, normalized);
+        const viewportPosition = clamp01(waveformOffset + ((event.clientX - rect.left) / rect.width) * visibleLength);
+        moveMarkerTo(drag.marker, activeToOriginalPosition(viewportPosition, activeStart, activeLength));
         return;
       }
       const delta = ((drag.startX - event.clientX) / rect.width) * visibleLength;
@@ -136,7 +168,7 @@ export function ChopScreen() {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
     };
-  }, [moveMarkerTo, panWaveform, visibleLength, waveformOffset]);
+  }, [activeLength, activeStart, moveMarkerTo, panWaveform, visibleLength, waveformOffset]);
 
   useEffect(() => {
     if (chopEditMode !== "CHOP" || chopSliceMode !== "MANUAL") return;
@@ -175,11 +207,16 @@ export function ChopScreen() {
   const insertSliceFromWaveform = (event: ReactMouseEvent<HTMLElement>) => {
     if (chopEditMode !== "CHOP" || chopSliceMode !== "MANUAL" || event.target !== event.currentTarget) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const position = clamp01(waveformOffset + ((event.clientX - rect.left) / rect.width) * visibleLength);
+    const viewportPosition = clamp01(waveformOffset + ((event.clientX - rect.left) / rect.width) * visibleLength);
+    const position = activeToOriginalPosition(viewportPosition, activeStart, activeLength);
     insertSliceAt(position);
   };
 
   const commitSliceCount = () => {
+    if (chopSliceMode === "MANUAL") {
+      setSliceCountDraft(String(sliceMarkers.length).padStart(2, "0"));
+      return;
+    }
     const parsed = Number(sliceCountDraft);
     setAutoSliceCount(Number.isFinite(parsed) ? parsed : autoSliceCount);
   };
@@ -209,16 +246,13 @@ export function ChopScreen() {
           <div className="grid grid-cols-4 gap-[16px]">
             <Info label="STATE" value={chopStateLabel} />
             <Info label="ZOOM" value={`${waveformZoom.toFixed(0)}X`} />
-            <Info label="START" value={formatPercent(sampleStart)} />
-            <Info label="END" value={formatPercent(sampleEnd)} />
+            <Info label="START" value={formatPercent(originalToActivePosition(sampleStart, activeStart, activeLength))} />
+            <Info label="END" value={formatPercent(originalToActivePosition(sampleEnd, activeStart, activeLength))} />
           </div>
         </div>
 
         <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_190px] gap-[2.5%] overflow-hidden">
           <section
-            ref={viewportRef}
-            onPointerDown={beginPan}
-            onClick={insertSliceFromWaveform}
             onWheel={handleWheel}
             className="relative min-h-0 overflow-hidden border border-[#46533b] bg-black/25"
           >
@@ -228,75 +262,82 @@ export function ChopScreen() {
               </div>
             ) : (
               <>
-                <WaveformShape points={visibleWaveform} />
+                <div
+                  ref={waveformRectRef}
+                  onPointerDown={beginPan}
+                  onClick={insertSliceFromWaveform}
+                  className="absolute bottom-[11%] left-[2.5%] right-[2.5%] top-[5%]"
+                >
+                  <WaveformShape columns={visibleWaveform} width={waveformViewportWidth} height={waveformViewportHeight} />
 
-                <RegionBand start={sampleStart} end={sampleEnd} offset={waveformOffset} length={visibleLength} />
-                {loopEnabled && <RegionBand start={loopStart} end={loopEnd} offset={waveformOffset} length={visibleLength} loop />}
+                  <RegionBand start={sampleStart} end={sampleEnd} offset={visibleOriginalStart} length={visibleOriginalLength} />
+                  {loopEnabled && <RegionBand start={loopStart} end={loopEnd} offset={visibleOriginalStart} length={visibleOriginalLength} loop />}
 
-                {isWithinView(chopCursor, waveformOffset, visibleEnd) && (
-                  <div
-                    className="absolute inset-y-[4%] w-[2px] bg-[#eef6d8] shadow-[0_0_8px_rgba(238,246,216,0.55)]"
-                    style={{ left: `${toViewportPercent(chopCursor, waveformOffset, visibleLength)}%` }}
-                  />
-                )}
-
-                <Marker
-                  label="S"
-                  marker="sampleStart"
-                  value={sampleStart}
-                  offset={waveformOffset}
-                  length={visibleLength}
-                  selected={selectedMarker === "sampleStart"}
-                  onPointerDown={beginMarkerDrag("sampleStart")}
-                />
-                <Marker
-                  label="E"
-                  marker="sampleEnd"
-                  value={sampleEnd}
-                  offset={waveformOffset}
-                  length={visibleLength}
-                  selected={selectedMarker === "sampleEnd"}
-                  onPointerDown={beginMarkerDrag("sampleEnd")}
-                />
-                {loopEnabled && (
-                  <>
-                    <Marker
-                      label="L"
-                      marker="loopStart"
-                      value={loopStart}
-                      offset={waveformOffset}
-                      length={visibleLength}
-                      selected={selectedMarker === "loopStart"}
-                      onPointerDown={beginMarkerDrag("loopStart")}
+                  {chopPreviewActive && isWithinView(chopCursor, visibleOriginalStart, visibleOriginalEnd) && (
+                    <div
+                      className="absolute inset-y-0 w-[2px] bg-[#eef6d8] shadow-[0_0_8px_rgba(238,246,216,0.55)]"
+                      style={{ left: `${toViewportPercent(chopCursor, visibleOriginalStart, visibleOriginalLength)}%` }}
                     />
-                    <Marker
-                      label="R"
-                      marker="loopEnd"
-                      value={loopEnd}
-                      offset={waveformOffset}
-                      length={visibleLength}
-                      selected={selectedMarker === "loopEnd"}
-                      onPointerDown={beginMarkerDrag("loopEnd")}
-                    />
-                  </>
-                )}
+                  )}
 
-                {chopEditMode === "CHOP" && sliceMarkers.map((marker, index) => (
                   <Marker
-                    key={`${marker}-${index}`}
-                    label={String(index + 1).padStart(2, "0")}
-                    marker={`slice:${index}`}
-                    value={marker}
-                    offset={waveformOffset}
-                    length={visibleLength}
-                    selected={selectedMarker === `slice:${index}` || selectedSlice === index + 1}
-                    onPointerDown={(event) => {
-                      previewChopSlice(index);
-                      beginMarkerDrag(`slice:${index}`)(event);
-                    }}
-                    slice
+                    label="S"
+                    marker="sampleStart"
+                    value={sampleStart}
+                    offset={visibleOriginalStart}
+                    length={visibleOriginalLength}
+                    selected={selectedMarker === "sampleStart"}
+                    onPointerDown={beginMarkerDrag("sampleStart")}
                   />
-                ))}
+                  <Marker
+                    label="E"
+                    marker="sampleEnd"
+                    value={sampleEnd}
+                    offset={visibleOriginalStart}
+                    length={visibleOriginalLength}
+                    selected={selectedMarker === "sampleEnd"}
+                    onPointerDown={beginMarkerDrag("sampleEnd")}
+                  />
+                  {loopEnabled && (
+                    <>
+                      <Marker
+                        label="L"
+                        marker="loopStart"
+                        value={loopStart}
+                        offset={visibleOriginalStart}
+                        length={visibleOriginalLength}
+                        selected={selectedMarker === "loopStart"}
+                        onPointerDown={beginMarkerDrag("loopStart")}
+                      />
+                      <Marker
+                        label="R"
+                        marker="loopEnd"
+                        value={loopEnd}
+                        offset={visibleOriginalStart}
+                        length={visibleOriginalLength}
+                        selected={selectedMarker === "loopEnd"}
+                        onPointerDown={beginMarkerDrag("loopEnd")}
+                      />
+                    </>
+                  )}
+
+                  {chopEditMode === "CHOP" && sliceMarkers.map((marker, index) => (
+                    <Marker
+                      key={`${marker}-${index}`}
+                      label={String(index + 1).padStart(2, "0")}
+                      marker={`slice:${index}`}
+                      value={marker}
+                      offset={visibleOriginalStart}
+                      length={visibleOriginalLength}
+                      selected={selectedMarker === `slice:${index}` || selectedSlice === index + 1}
+                      onPointerDown={(event) => {
+                        previewChopSlice(index);
+                        beginMarkerDrag(`slice:${index}`)(event);
+                      }}
+                      slice
+                    />
+                  ))}
+                </div>
 
                 <div className="absolute inset-x-[2.5%] bottom-[3%] flex justify-between text-[clamp(8px,0.68vw,10px)] tracking-[0.18em] text-[#91a477]">
                   <span>{formatPercent(waveformOffset)}</span>
@@ -313,13 +354,16 @@ export function ChopScreen() {
             <Info label="SELECTED" value={formatSelectedMarker(selectedMarker)} />
             {chopEditMode === "TRIM" && (
               <>
-                <Info label="TRIM START" value={formatPercent(sampleStart)} />
-                <Info label="TRIM END" value={formatPercent(sampleEnd)} />
+                <Info label="TRIM START" value={formatPercent(originalToActivePosition(sampleStart, activeStart, activeLength))} />
+                <Info label="TRIM END" value={formatPercent(originalToActivePosition(sampleEnd, activeStart, activeLength))} />
               </>
             )}
             {chopEditMode === "LOOP" && (
               <>
-                <Info label="LOOP" value={`${formatPercent(loopStart)} → ${formatPercent(loopEnd)}`} />
+                <Info
+                  label="LOOP"
+                  value={`${formatPercent(originalToActivePosition(loopStart, activeStart, activeLength))} → ${formatPercent(originalToActivePosition(loopEnd, activeStart, activeLength))}`}
+                />
                 <Info label="LOOP BARS" value={String(loopBars)} />
                 <Info label="LOOP BPM EST" value={bpmEstimate ? bpmEstimate.toFixed(2) : "--.--"} />
               </>
@@ -327,7 +371,10 @@ export function ChopScreen() {
             {chopEditMode === "CHOP" && (
               <>
                 <Info label="CHOP MODE" value={chopSliceMode} />
-                <Info label="SLICE" value={`${formatPercent(selectedStart)} → ${formatPercent(selectedEnd)}`} />
+                <Info
+                  label="SLICE"
+                  value={`${formatPercent(originalToActivePosition(selectedStart, activeStart, activeLength))} → ${formatPercent(originalToActivePosition(selectedEnd, activeStart, activeLength))}`}
+                />
                 <SliceCountField
                   value={sliceCountDraft}
                   actualCount={sliceMarkers.length}
@@ -480,18 +527,38 @@ function RegionBand({
   );
 }
 
-function WaveformShape({ points }: { points: number[] }) {
-  const topPath = createWaveformPath(points, false);
-  const bottomPath = createWaveformPath(points, true);
+function WaveformShape({ columns, width, height }: { columns: WaveformColumn[]; width: number; height: number }) {
+  const centerY = height / 2;
+  const amplitudeScale = height * 0.45;
+  const maxVisibleAmplitude = columns.reduce(
+    (maximum, column) => Math.max(maximum, Math.abs(column.min), Math.abs(column.max)),
+    0,
+  );
+  const visualGain = maxVisibleAmplitude > 0 ? Math.min(1 / maxVisibleAmplitude, 12) : 1;
   return (
     <svg
-      viewBox="0 0 100 100"
+      viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
-      className="pointer-events-none absolute inset-[5%_2.5%_11%] h-auto w-auto"
+      className="pointer-events-none absolute inset-0 h-full w-full"
     >
-      <line x1="0" y1="50" x2="100" y2="50" stroke="rgba(216,227,183,0.35)" strokeWidth="0.8" />
-      <path d={topPath} fill="none" stroke="#d8e3b7" strokeWidth="1.3" vectorEffect="non-scaling-stroke" />
-      <path d={bottomPath} fill="none" stroke="#d8e3b7" strokeWidth="1.3" vectorEffect="non-scaling-stroke" opacity="0.82" />
+      <line x1="0" y1={centerY} x2={width} y2={centerY} stroke="rgba(216,227,183,0.35)" strokeWidth="0.8" />
+      {columns.map((column, index) => {
+        const x = columns.length <= 1 ? 0 : (index / (columns.length - 1)) * width;
+        const yMax = centerY - clamp(column.max * visualGain, -1, 1) * amplitudeScale;
+        const yMin = centerY - clamp(column.min * visualGain, -1, 1) * amplitudeScale;
+        return (
+          <line
+            key={index}
+            x1={x}
+            x2={x}
+            y1={Math.min(yMax, yMin)}
+            y2={Math.max(yMax, yMin)}
+            stroke="#d8e3b7"
+            strokeWidth="0.75"
+            vectorEffect="non-scaling-stroke"
+          />
+        );
+      })}
     </svg>
   );
 }
@@ -614,13 +681,57 @@ function PopupRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function createVisibleWaveformPoints(waveform: number[], start: number, end: number) {
+function createVisibleWaveformColumns({
+  audioBufferId,
+  fallbackWaveform,
+  start,
+  end,
+  columnCount,
+}: {
+  audioBufferId?: string;
+  fallbackWaveform: number[];
+  start: number;
+  end: number;
+  columnCount: number;
+}): WaveformColumn[] {
+  const columns = clamp(Math.round(columnCount), 128, 1200);
+  const audioRef = audioBufferId ? getSampleAudioRef(audioBufferId) : null;
+  if (!audioRef) return createFallbackWaveformColumns(fallbackWaveform, start, end, columns);
+
+  const sampleLength = audioRef.buffer.length;
+  const startFrame = clamp(Math.floor(start * sampleLength), 0, Math.max(0, sampleLength - 1));
+  const endFrame = clamp(Math.ceil(end * sampleLength), startFrame + 1, sampleLength);
+  const visibleFrames = Math.max(1, endFrame - startFrame);
+
+  return Array.from({ length: columns }, (_, columnIndex) => {
+    const windowStart = startFrame + Math.floor((columnIndex / columns) * visibleFrames);
+    const windowEnd =
+      columnIndex === columns - 1
+        ? endFrame
+        : startFrame + Math.max(1, Math.floor(((columnIndex + 1) / columns) * visibleFrames));
+    let min = 1;
+    let max = -1;
+
+    for (const channel of audioRef.channels) {
+      for (let frame = windowStart; frame < windowEnd; frame += 1) {
+        const value = channel[frame] ?? 0;
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+    }
+
+    if (min === 1 && max === -1) return { min: 0, max: 0 };
+    return { min, max };
+  });
+}
+
+function createFallbackWaveformColumns(waveform: number[], start: number, end: number, columnCount: number): WaveformColumn[] {
   if (waveform.length === 0) return [];
-  const pointCount = 128;
-  return Array.from({ length: pointCount }, (_, index) => {
-    const position = start + (index / (pointCount - 1)) * (end - start);
+  return Array.from({ length: columnCount }, (_, index) => {
+    const position = start + (index / Math.max(1, columnCount - 1)) * (end - start);
     const waveformIndex = Math.min(waveform.length - 1, Math.floor(position * waveform.length));
-    return waveform[waveformIndex] ?? 0;
+    const peak = waveform[waveformIndex] ?? 0;
+    return { min: -peak, max: peak };
   });
 }
 
@@ -653,22 +764,22 @@ function clamp01(value: number) {
   return Math.min(Math.max(value, 0), 1);
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function activeToOriginalPosition(position: number, activeStart: number, activeLength: number) {
+  return activeStart + clamp01(position) * activeLength;
+}
+
+function originalToActivePosition(position: number, activeStart: number, activeLength: number) {
+  return clamp01((position - activeStart) / activeLength);
+}
+
 function formatSelectedMarker(marker: MarkerId | null) {
   if (!marker) return "---";
   if (marker.startsWith("slice:")) return `SLICE ${String(Number(marker.split(":")[1]) + 1).padStart(2, "0")}`;
   return marker.replace(/([A-Z])/g, " $1").toUpperCase();
-}
-
-function createWaveformPath(points: number[], mirrored: boolean) {
-  if (points.length === 0) return "";
-  return points
-    .map((value, index) => {
-      const x = (index / (points.length - 1)) * 100;
-      const amplitude = value * 38;
-      const y = mirrored ? 50 + amplitude : 50 - amplitude;
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .join(" ");
 }
 
 function nextBank(bank: "A" | "B" | "C" | "D") {

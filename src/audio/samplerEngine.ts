@@ -1,7 +1,12 @@
+import { getSampleBuffer } from "./sampleLibrary";
+
 export type PlayableSample = {
+  id?: string;
   name: string;
   durationMs: number;
   waveform: number[];
+  audioBufferId?: string;
+  sampleRate?: number;
   sampleStart?: number;
   sampleEnd?: number;
   playbackRate?: number;
@@ -13,10 +18,14 @@ type Voice = {
   pan: StereoPannerNode;
   startedAt: number;
   channelKey?: string;
+  previewGroup?: string;
+  voiceGroup?: string;
 };
 
 class SamplerEngine {
   private context: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private masterVolume = 1500;
   private buffers = new Map<string, AudioBuffer>();
   private voices = new Set<Voice>();
   private readonly maxVoices = 32;
@@ -34,6 +43,7 @@ class SamplerEngine {
   async ensureReady() {
     try {
       this.context ??= new AudioContext();
+      this.ensureMasterGain();
       if (this.context.state === "suspended") await this.context.resume();
       this.setStatus("READY");
       return true;
@@ -43,8 +53,23 @@ class SamplerEngine {
     }
   }
 
-  play(sample: PlayableSample, options: { gain: number; pan: number; channelKey?: string }) {
+  async decodeAudioData(data: ArrayBuffer) {
+    if (!(await this.ensureReady()) || !this.context) throw new Error("Audio engine is not ready");
+    return this.context.decodeAudioData(data.slice(0));
+  }
+
+  play(sample: PlayableSample, options: { gain: number; pan: number; channelKey?: string; previewGroup?: string; voiceGroup?: string; mono?: boolean }) {
     void this.playInternal(sample, options);
+  }
+
+  stopVoiceGroup(voiceGroup: string) {
+    this.stopVoices((voice) => voice.voiceGroup === voiceGroup);
+  }
+
+  stopVoiceGroups(voiceGroups: string[]) {
+    if (voiceGroups.length === 0) return;
+    const groups = new Set(voiceGroups);
+    this.stopVoices((voice) => Boolean(voice.voiceGroup && groups.has(voice.voiceGroup)));
   }
 
   updateChannelMix(channelKey: string, options: { gain: number; pan: number; audible: boolean }) {
@@ -55,7 +80,12 @@ class SamplerEngine {
     }
   }
 
-  private async playInternal(sample: PlayableSample, options: { gain: number; pan: number; channelKey?: string }) {
+  setMasterVolume(masterVolume: number) {
+    this.masterVolume = clamp(masterVolume, 0, 2000);
+    this.applyMasterVolume();
+  }
+
+  private async playInternal(sample: PlayableSample, options: { gain: number; pan: number; channelKey?: string; previewGroup?: string; voiceGroup?: string; mono?: boolean }) {
     if (!(await this.ensureReady()) || !this.context) return;
     const buffer = this.getBuffer(sample);
     const start = clamp(sample.sampleStart ?? 0, 0, 1);
@@ -63,6 +93,8 @@ class SamplerEngine {
     const offset = start * buffer.duration;
     const duration = Math.max(0.001, (end - start) * buffer.duration);
 
+    if (options.previewGroup) this.stopPreviewGroup(options.previewGroup);
+    if (options.mono && options.voiceGroup) this.stopVoiceGroup(options.voiceGroup);
     if (this.voices.size >= this.maxVoices) this.stealOldestVoice();
 
     const source = this.context.createBufferSource();
@@ -72,15 +104,27 @@ class SamplerEngine {
     source.playbackRate.value = sample.playbackRate ?? 1;
     gain.gain.value = clamp(options.gain, 0, 2);
     pan.pan.value = clamp(options.pan, -1, 1);
-    source.connect(gain).connect(pan).connect(this.context.destination);
+    source.connect(gain).connect(pan).connect(this.ensureMasterGain());
 
-    const voice: Voice = { source, gain, pan, startedAt: this.context.currentTime, channelKey: options.channelKey };
+    const voice: Voice = {
+      source,
+      gain,
+      pan,
+      startedAt: this.context.currentTime,
+      channelKey: options.channelKey,
+      previewGroup: options.previewGroup,
+      voiceGroup: options.voiceGroup,
+    };
     this.voices.add(voice);
     source.onended = () => this.voices.delete(voice);
     source.start(0, offset, duration);
   }
 
   private getBuffer(sample: PlayableSample) {
+    if (sample.audioBufferId) {
+      const realBuffer = getSampleBuffer(sample.audioBufferId);
+      if (realBuffer) return realBuffer;
+    }
     const cached = this.buffers.get(sample.name);
     if (cached) return cached;
     if (!this.context) throw new Error("Audio context not ready");
@@ -99,6 +143,21 @@ class SamplerEngine {
     return buffer;
   }
 
+  private ensureMasterGain() {
+    if (!this.context) throw new Error("Audio context not ready");
+    if (!this.masterGain) {
+      this.masterGain = this.context.createGain();
+      this.masterGain.connect(this.context.destination);
+    }
+    this.applyMasterVolume();
+    return this.masterGain;
+  }
+
+  private applyMasterVolume() {
+    if (!this.masterGain) return;
+    this.masterGain.gain.value = clamp(this.masterVolume / 100, 0, 20);
+  }
+
   private stealOldestVoice() {
     let oldest: Voice | null = null;
     for (const voice of this.voices) {
@@ -111,6 +170,22 @@ class SamplerEngine {
       // already ended
     }
     this.voices.delete(oldest);
+  }
+
+  private stopPreviewGroup(previewGroup: string) {
+    this.stopVoices((voice) => voice.previewGroup === previewGroup);
+  }
+
+  private stopVoices(predicate: (voice: Voice) => boolean) {
+    for (const voice of [...this.voices]) {
+      if (!predicate(voice)) continue;
+      try {
+        voice.source.stop();
+      } catch {
+        // already ended
+      }
+      this.voices.delete(voice);
+    }
   }
 
   private setStatus(status: "IDLE" | "READY" | "ERROR") {

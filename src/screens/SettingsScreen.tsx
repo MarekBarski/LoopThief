@@ -58,7 +58,7 @@ export function SettingsScreen() {
                   }`}
                 >
                   <span>{setting.label}</span>
-                  <span>{formatSettingValue(values[setting.key])}</span>
+                  <span>{formatSettingValue(values[setting.key], setting.key)}</span>
                 </button>
               ))}
             </div>
@@ -66,7 +66,7 @@ export function SettingsScreen() {
 
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
             <Info label="SETTING" value={selectedSetting.label} />
-            <Info label="CURRENT VALUE" value={formatSettingValue(selectedValue)} />
+            <Info label="CURRENT VALUE" value={formatSettingValue(selectedValue, selectedSetting.key)} />
             {selectedSetting.kind === "toggle" ? (
               <button
                 type="button"
@@ -86,7 +86,7 @@ export function SettingsScreen() {
                   -
                 </button>
                 <span className="min-w-[72px] text-center text-[#eef6d8]">
-                  {formatSettingValue(selectedValue)}
+                  {formatSettingValue(selectedValue, selectedSetting.key)}
                 </span>
                 <button type="button" onClick={() => adjustSelectedSetting(1)} className="px-1 text-[#eef6d8]">
                   +
@@ -131,7 +131,8 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatSettingValue(value: string | number | boolean) {
+function formatSettingValue(value: string | number | boolean, key?: string) {
   if (typeof value === "boolean") return value ? "ON" : "OFF";
+  if (key === "masterVolume" && typeof value === "number") return `${value}%`;
   return String(value);
 }

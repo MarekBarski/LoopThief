@@ -18,6 +18,7 @@ export function ProgramScreen() {
   const previewSource = useAppStore((state) => state.previewSource);
   const updateSelectedPadParam = useAppStore((state) => state.updateSelectedPadParam);
   const toggleSelectedPadMode = useAppStore((state) => state.toggleSelectedPadMode);
+  const toggleSelectedPadVoiceMode = useAppStore((state) => state.toggleSelectedPadVoiceMode);
   const setProgramView = useAppStore((state) => state.setProgramView);
   const cycleMuteTargetMode = useAppStore((state) => state.cycleMuteTargetMode);
   const toggleMuteTargetForSelectedPad = useAppStore((state) => state.toggleMuteTargetForSelectedPad);
@@ -96,7 +97,7 @@ export function ProgramScreen() {
               <Info label="SOURCE TYPE" value={assignedSourceType} />
               <Info label="SOURCE LIST" value={`${sourceType} ${activeSources.length}`} />
               <Info label="PLAY MODE" value={selectedAssignment.mode} />
-              <Info label="POLY / MONO" value={selectedAssignment.chokeGroup > 0 ? "MONO" : "POLY"} />
+              <Info label="POLY / MONO" value={selectedAssignment.voiceMode} />
               <Info label="CHOKE GROUP" value={formatChokeGroup(selectedAssignment.chokeGroup)} />
               <Info label="MUTE TARGETS" value={formatMuteTargets(padBank, selectedAssignment.muteTargets)} />
             </div>
@@ -112,6 +113,7 @@ export function ProgramScreen() {
             {programView === "PARAMS" ? (
             <div className="grid content-start grid-cols-2 gap-x-[5%] gap-y-[3%]">
               <Param label="MODE" value={selectedAssignment.mode} onMinus={toggleSelectedPadMode} onPlus={toggleSelectedPadMode} />
+              <Param label="VOICE" value={selectedAssignment.voiceMode} onMinus={toggleSelectedPadVoiceMode} onPlus={toggleSelectedPadVoiceMode} />
               <Param
                 label="LEVEL"
                 value={selectedAssignment.level}
