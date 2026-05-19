@@ -1,0 +1,207 @@
+# LoopThief — UX Audit Findings (Screen Review Session)
+
+> Captured from a screen-by-screen review session with Marek.
+> These are issues found visually / by description, not from running the app.
+> Most are small polish; a few are core feature bugs (16 LEVELS).
+>
+> **NOT for Phase A backlog yet — this is a holding list.**
+> Merge into Phase A1 (close current backlog) when prioritizing CC sessions.
+
+---
+
+## CRITICAL — Feature is broken / silent
+
+### 16 LEVELS — no audio feedback (FLAGSHIP BUG)
+
+The whole feature is currently unusable because there's no sound. MPC 16 LEVELS is a **live performance feature** — clicking should always produce sound.
+
+Expected behavior:
+1. Clicking Source Pad → immediately plays the source sample (so user hears what they're editing)
+2. Entering 16 LEVELS screen with source pad set → 16 hardware pads *immediately* play parameter variations as live preview, no APPLY needed
+3. Changing PARAMETER (velocity / tuning / attack / decay / filter) → instantly updates what pads play
+4. APPLY commits the mapping permanently to the current program
+5. EXIT without APPLY discards changes
+6. ACTIVE state should reflect ARMED (live preview on) / APPLIED (committed) / OFF (no source)
+7. Hardware reference: MPC2000XL/4000 16 LEVELS was always-live, no confirmation step
+
+**Principle:** every click = sound. No silence. No "load and pray."
+
+---
+
+## STEP screen — event navigation issues
+
+### Stepping through bars/steps doesn't trigger audio
+- Changing `< event >` plays the event (good).
+- Changing `< step >` or `< bar >` does NOT play anything.
+- Marek's expectation: stepping through bars/steps should also fire whatever event is at that position (or stay silent if empty).
+
+### Adding events from the current position
+- There used to be a way to add an event at the current step position (probably via STEP INPUT button on hardware shell, but the exact workflow is forgotten).
+- Currently no clear way to add events from this screen.
+- Needs to be re-implemented or re-documented.
+
+---
+
+## PROGRAM ASSIGN — UX cycle
+
+- Three-column layout (SOURCE TYPE → AVAILABLE SOURCES → TARGET) is excellent.
+- Missing: way to cycle through pads on the TARGET side without exiting the screen. Currently to change TARGET PAD you have to go back to main PROGRAM screen, pick a pad, come back.
+- Add pad cycling (UP/DOWN or pad picker) in TARGET column.
+
+---
+
+## PROGRAM CHOKE — copy fix
+
+- Note text says "*In PAIR mode, press hardware pads to add/remove up to two mute targets.*"
+- LoopThief is mouse-first. Change "hardware pads" → "pads".
+
+---
+
+## SONG screen — missing SEQ -
+
+- SONG screen has SEQ + / REP + / REP - / UP / DOWN buttons in the edit panel.
+- `SEQ -` button is missing (asymmetric with SEQ +).
+- Easy add.
+
+---
+
+## NEXT SEQ — multiple issues
+
+### Inconsistent softkey labels
+- All other screens use `F1 LABEL` / `F2 LABEL` etc. format.
+- NEXT SEQ uses bare labels: SELECT PAD / BAR END / ACTIVE / QUEUED / [empty] / F6 EXIT.
+- Either add F-prefixes here OR strip them everywhere. Pick one and apply consistently.
+
+### Sequence list shows only active
+- Left panel shows only the currently active sequence (SEQ01).
+- Should show grid of all 16 sequences so user can queue any of them, like SEQUENCE screen does.
+
+### CHANGE AT timing options
+- Currently only "BAR END" is implied via softkey.
+- MPC offers: instant / next beat / bar end / phrase end / pattern end.
+- Add these timing options if true queue behavior is intended.
+
+---
+
+## NOTE REPEAT — missing features
+
+- No LATCH option (classic MPC: hold note repeat to keep it on after releasing pad).
+- No visual feedback when NOTE REPEAT is active (pad pulse animation? indicator?).
+- Could show tempo hint (e.g., "1/16 @ 94 BPM ≈ 6.27 Hz" or a visual pulse).
+
+---
+
+## PAD MUTE / TRACK MUTE — visual state
+
+- All pads currently show "LIVE" in the same visual style.
+- No clear visual difference for a MUTED pad (red border? dim background? "MUTED" label instead of "LIVE"?).
+- In live performance you must see mute state at a glance.
+
+### HOLD mode clarity
+- F4 HOLD — what does it actually do? Held-mute mode (MPC style, where you hold a pad to select mute targets)?
+- Either clarify in UI text or rename.
+
+### GROUP doesn't work
+- Already on the main backlog (TRACK MUTE GROUP and PAD MUTE GROUP both broken).
+
+---
+
+## 16 LEVELS — minor UX (in addition to the critical bug above)
+
+- PARAMETER field shows VELOCITY but it's not clear it's cyclable through (VELOCITY / TUNING / ATTACK / DECAY / FILTER).
+- Add `< VELOCITY >` arrows or a "(1/5)" indicator so users know it's cyclable.
+
+---
+
+## TC (TIMING CORRECT) — copy
+
+- F4 button labeled "DO IT".
+- In MPC lineage "DO IT" is typically used for destructive operations after parameter setup.
+- For applying timing settings, "APPLY" reads cleaner.
+- Optional rename.
+
+---
+
+## MAIN screen — visual polish
+
+- Giant POSITION display `002.04.24` dominates the screen.
+- Already on Marek's list — confirm: dim / smaller / move to corner.
+
+---
+
+## RECORD — verify FREE MEM is real
+
+- FREE MEM shows `25:00`.
+- Is this a real memory limit (like MPC4000 RAM), or a display-only placeholder?
+- If display-only → it's a fake control per project's own Fake UI Policy. Either wire to real memory tracking or remove.
+
+---
+
+## SETTINGS — MASTER VOL scale bug
+
+- MASTER VOL shows `1500%`.
+- This is almost certainly a display or scale bug. Should probably be 100% or 0 dB.
+- Investigate the scale: is the slider mapping 0-15 to 0-1500% incorrectly?
+
+---
+
+## CHOP — LOOP BPM EST sanity
+
+- For a 433ms sample with LOOP BARS = 4, LOOP BPM EST shows `2217.09`.
+- Math is correct given the inputs but the result is nonsensical.
+- Suggestion: clamp display when BPM estimate falls outside a musical range (e.g., 40–300 BPM), or show "—" when LOOP BARS doesn't match sample length plausibly.
+- Alternatively: auto-suggest LOOP BARS based on detected sample length so the user doesn't get nonsense values by default.
+
+---
+
+## UNDO screen — empty F4/F5
+
+- F4 and F5 softkeys are blank (no labels).
+- Either remove the slots visually so it doesn't look like missing labels, or fill with something useful (HISTORY, DETAIL, GO TO, etc.).
+
+---
+
+## SYSTEMIC — audio feedback audit
+
+Marek's intuition during review: 16 LEVELS bug may be one example of a broader pattern. Possible systemic issue: places where clicking should auto-preview but currently doesn't.
+
+Suggested CC task — full audit of click-to-sound consistency across all screens:
+
+- 16 LEVELS — source pad selection, pad clicks (CONFIRMED BROKEN)
+- PROGRAM ASSIGN — source selection, preview
+- DISK — F2 PREVIEW (appears to work)
+- CHOP — sample selection, slice triggers (mostly works per Marek)
+- STEP — clicking event in list (preview the event?)
+- RECORD — last sample preview
+- SETTINGS — any sample preview spots
+
+Run this as a single sweep task, fix anywhere preview should fire automatically.
+
+---
+
+## GO TO screen — minor
+
+- TARGET panel is empty when no category is selected on the left.
+- Add hint text "Select category on the left" or auto-select the first option.
+
+---
+
+## Aesthetic / global observations
+
+These are positive findings from the review, captured here for reference:
+
+- Phosphor green LCD aesthetic is consistent across all 24 screens reviewed — strong design language.
+- Header pattern (`ACTIVE SCREEN` / TITLE / utility subtitle) is uniform — good.
+- F1–F6 softkey layout is mostly consistent — fix NEXT SEQ inconsistency.
+- Three-column layouts (PROGRAM ASSIGN, DISK, SETTINGS) work well.
+- Fake UI policy is being honored — explicit `VISUAL ONLY` / `Future workflow` labels seen in PROGRAM FX SEND and ERASE. Continue this pattern.
+- `roadmap_v2.md` Phase A is consistent with what the screens reveal as missing.
+
+---
+
+## How to use this list
+
+- This is a **holding list**, not the prioritized backlog.
+- When planning a CC session, pull items from here into a focused task (e.g., "fix 16 LEVELS audio feedback", or "audio feedback sweep across all screens").
+- Critical items (16 LEVELS, STEP event nav) should go into Phase A1 of `roadmap_v2.md`.
+- Cosmetic items (copy fixes, empty softkeys, dim position display) can batch into a single "polish pass" session.

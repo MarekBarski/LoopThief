@@ -31,6 +31,26 @@ Before making ANY code changes, read in this order:
 6. `docs/02_ai_rules/CODEX_COLLABORATION_RULES.md` — applies to Claude Code identically
 7. `docs/02_ai_rules/MAREK_COLLABORATION_RULES.md` — how to communicate with Marek
 8. `docs/Loopthief_Handoff_Document.pdf` — current state of code, architecture decisions, known WIP. **This is the most up-to-date description of what actually works in the codebase** — read it carefully.
+9. `docs/SESSION_LOG.md` — **cross-session memory**. Records what previous sessions attempted, what worked, what didn't, and what was decided. Read the most recent 5–10 entries minimum, more if continuing related work. **Mandatory.**
+
+### Session Protocol — START and END of EVERY session
+
+**START of session:**
+1. Read this file (`CLAUDE.md`).
+2. Read required reading documents above.
+3. Read `docs/SESSION_LOG.md` recent entries.
+4. Read `docs/01_development/UX_AUDIT_FINDINGS.md` if working on UX / bug-fix tasks.
+
+**END of session — MANDATORY:**
+Before reporting completion or signing off, APPEND a new entry to `docs/SESSION_LOG.md` following its template. Include:
+- What was attempted
+- What worked
+- What didn't work / pitfalls hit (this is the MOST valuable part for future sessions)
+- Decisions made (anything Marek confirmed or rejected)
+- Open issues / followups
+- Files modified
+
+**This is not optional.** Skipping the session log means the next session will repeat your mistakes. The session log is the only memory across sessions.
 
 ### Active work scope
 
