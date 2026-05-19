@@ -11,7 +11,7 @@ import thiefHeadphonesIdle from "../../../assets/ui/mascot/thief_headphones_idle
 import logoImg from "../../../assets/ui/logo/loopthief_logo.png";
 
 import { useLayoutStore } from "../../store/useLayoutStore";
-import { useAppStore } from "../../store/useAppStore";
+import { isPadVisuallyTriggered, useAppStore } from "../../store/useAppStore";
 import type { LayoutElement } from "../../types/layout";
 import { ScreenViewport } from "./ScreenViewport";
 import { TopBar } from "./TopBar";
@@ -67,7 +67,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const waitPadEnabled = useAppStore((state) => state.waitPadEnabled);
   const transportPhase = useAppStore((state) => state.transportPhase);
   const padBank = useAppStore((state) => state.padBank);
-  const nextPadBank = useAppStore((state) => state.nextPadBank);
+  const setPadBank = useAppStore((state) => state.setPadBank);
 
   const commonStyle = {
     left: element.x,
@@ -116,7 +116,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   }
 
   if (element.type === "pad") {
-    const isTriggered = Boolean(element.label && triggeredPads[element.label]);
+    const isTriggered = Boolean(element.label && isPadVisuallyTriggered(triggeredPads, padBank, element.label));
 
     return (
       <button
@@ -152,7 +152,11 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
         className="absolute"
         style={commonStyle}
         disabled={editMode}
-        onClick={nextPadBank}
+        onClick={() => {
+          if (element.label === "A" || element.label === "B" || element.label === "C" || element.label === "D") {
+            setPadBank(element.label);
+          }
+        }}
       >
         <span
           className={`block h-full w-full text-center text-[16px] uppercase tracking-[0.24em] ${

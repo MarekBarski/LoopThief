@@ -10,6 +10,7 @@ export function StepScreen() {
   const timingCorrect = useAppStore((state) => state.timingCorrect);
   const swing = useAppStore((state) => state.swing);
   const activeTrack = useAppStore((state) => state.activeTrack);
+  const currentTrackId = useAppStore((state) => state.currentTrackId);
   const stepEvents = useAppStore((state) => state.stepEvents);
   const selectedEventIndex = useAppStore((state) => state.selectedEventIndex);
   const selectedEventId = useAppStore((state) => state.selectedEventId);
@@ -20,18 +21,29 @@ export function StepScreen() {
   const padBank = useAppStore((state) => state.padBank);
   const setEventEditMode = useAppStore((state) => state.setEventEditMode);
   const adjustSelectedEvent = useAppStore((state) => state.adjustSelectedEvent);
-  const cycleSelectedEventTrack = useAppStore((state) => state.cycleSelectedEventTrack);
+  const selectStepEvent = useAppStore((state) => state.selectStepEvent);
+  const cycleStepTrack = useAppStore((state) => state.cycleStepTrack);
+  const previousStepEvent = useAppStore((state) => state.previousStepEvent);
+  const nextStepEvent = useAppStore((state) => state.nextStepEvent);
   const deleteSelectedEvent = useAppStore((state) => state.deleteSelectedEvent);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
 
+  const trackEvents = useMemo(
+    () => stepEvents.filter((event) => event.trackId === currentTrackId),
+    [currentTrackId, stepEvents],
+  );
+  const selectedTrackEventIndex = Math.max(
+    trackEvents.findIndex((event) => event.id === selectedEventId),
+    0,
+  );
   const visibleRowCount = 16;
   const windowStart = Math.min(
-    Math.max(selectedEventIndex - Math.floor(visibleRowCount / 2), 0),
-    Math.max(stepEvents.length - visibleRowCount, 0),
+    Math.max(selectedTrackEventIndex - Math.floor(visibleRowCount / 2), 0),
+    Math.max(trackEvents.length - visibleRowCount, 0),
   );
   const visibleEvents = useMemo(
-    () => stepEvents.slice(windowStart, windowStart + visibleRowCount),
-    [stepEvents, windowStart],
+    () => trackEvents.slice(windowStart, windowStart + visibleRowCount),
+    [trackEvents, windowStart],
   );
   const selectedEvent = stepEvents[selectedEventIndex];
 
@@ -47,10 +59,9 @@ export function StepScreen() {
               <span>TR</span>
             </div>
             <div className="grid content-start overflow-hidden">
-              {visibleEvents.map((event, index) => {
-                const absoluteIndex = windowStart + index;
-                const muted = performanceTracks.find((track) => track.name === event.trackId)?.muted ?? false;
-                const selected = absoluteIndex === selectedEventIndex;
+              {visibleEvents.map((event) => {
+                const muted = performanceTracks.find((track) => track.name === event.trackId || track.id === event.trackId)?.muted ?? false;
+                const selected = event.id === selectedEventId;
                 const playing = !muted && eventStepIndex(event.step) === currentStepIndex;
                 const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
                 const eventBank = event.padBank ?? "A";
@@ -58,8 +69,10 @@ export function StepScreen() {
                 const eventPad = `P${String(eventPadNumber).padStart(2, "0")}`;
                 const assigned = isPadAssigned({ padAssignments, padBank: eventBank }, eventPad);
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={event.id}
+                    onClick={() => selectStepEvent(event.id)}
                     className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.46fr] px-[3%] py-[1.35%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
                       muted
                         ? "text-[#556046]"
@@ -74,7 +87,7 @@ export function StepScreen() {
                     <span>{assigned ? `${eventBank}${String(eventPadNumber).padStart(2, "0")}` : "UNASSIGNED PAD"}</span>
                     <span>{String(event.velocity).padStart(3, "0")}</span>
                     <span>{tag}</span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -82,11 +95,12 @@ export function StepScreen() {
 
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
             <p className="text-[#91a477]">SELECTED EVENT {selectedEventId ?? "---"}</p>
+            <StepNav label="EVENT" value={selectedEvent ? String(selectedTrackEventIndex + 1).padStart(3, "0") : "---"} onPrevious={previousStepEvent} onNext={nextStepEvent} />
+            <StepNav label="TRACK" value={activeTrack} onPrevious={() => cycleStepTrack(-1)} onNext={() => cycleStepTrack(1)} />
             <Info active={eventEditMode === "VELOCITY"} label="VELOCITY" value={selectedEvent ? String(selectedEvent.velocity) : "---"} />
             <Info active={eventEditMode === "OFFSET"} label="OFFSET" value={selectedEvent ? formatSigned(selectedEvent.timingOffset) : "---"} />
             <Info active={eventEditMode === "DURATION"} label="DURATION" value={selectedEvent ? String(selectedEvent.duration) : "---"} />
             <Info active={eventEditMode === "PROBABILITY"} label="PROBABILITY" value={selectedEvent ? `${selectedEvent.probability}%` : "---"} />
-            <Info active={eventEditMode === "TRACK"} label="TRACK" value={selectedEvent?.trackId ?? "---"} onClick={() => { setEventEditMode("TRACK"); cycleSelectedEventTrack(); }} />
             <Info label="PARAM VALUE" value={selectedEvent?.parameterValue == null ? "---" : String(selectedEvent.parameterValue)} />
           </section>
 
@@ -120,6 +134,35 @@ function Info({ label, value, active = false, onClick }: { label: string; value:
       <span className={active ? "text-amber-200" : "text-[#91a477]"}>{label}</span>
       <span>{value}</span>
     </button>
+  );
+}
+
+function StepNav({
+  label,
+  value,
+  onPrevious,
+  onNext,
+}: {
+  label: string;
+  value: string;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-[1fr_1.4fr] items-center gap-[8px]">
+      <span className="text-[#91a477]">{label}</span>
+      <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
+        <button type="button" onClick={onPrevious} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+          &lt;
+        </button>
+        <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
+          {value}
+        </button>
+        <button type="button" onClick={onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+          &gt;
+        </button>
+      </div>
+    </div>
   );
 }
 

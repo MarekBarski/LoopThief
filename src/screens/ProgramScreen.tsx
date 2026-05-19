@@ -22,6 +22,9 @@ export function ProgramScreen() {
   const setProgramView = useAppStore((state) => state.setProgramView);
   const cycleMuteTargetMode = useAppStore((state) => state.cycleMuteTargetMode);
   const toggleMuteTargetForSelectedPad = useAppStore((state) => state.toggleMuteTargetForSelectedPad);
+  const cycleSelectedPadFilterType = useAppStore((state) => state.cycleSelectedPadFilterType);
+  const previousProgram = useAppStore((state) => state.previousProgram);
+  const nextProgram = useAppStore((state) => state.nextProgram);
   const createProgram = useAppStore((state) => state.createProgram);
   const [assignOpen, setAssignOpen] = useState(false);
   const [sourceType, setSourceType] = useState<"SAMPLES" | "SLICES" | "PROGRAM POOL">("SAMPLES");
@@ -89,30 +92,23 @@ export function ProgramScreen() {
             </div>
           </section>
 
-          <section className="grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-[3%] overflow-hidden border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
-            <div className="grid grid-cols-2 gap-[3%] border-b border-[#46533b] pb-[3%]">
-              <Info label="PROGRAM" value={activeProgram} />
+          <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-[2.4%] overflow-hidden border border-[#46533b] bg-black/20 p-[3.2%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <div className="grid grid-cols-2 gap-x-[3%] gap-y-[6px] border-b border-[#46533b] pb-[2.4%]">
+              <ProgramSwitcher value={activeProgram} onPrevious={previousProgram} onNext={nextProgram} />
               <Info label="PAD BANK" value={padBank} />
               <Info label="SELECTED PAD" value={selectedAssignment.pad} />
               <Info label="ASSIGNED" value={selectedAssignment.assignment} />
               <Info label="SOURCE TYPE" value={assignedSourceType} />
               <Info label="SOURCE LIST" value={`${sourceType} ${activeSources.length}`} />
-              <Info label="PLAY MODE" value={selectedAssignment.mode} />
-              <Info label="POLY / MONO" value={selectedAssignment.voiceMode} />
-              <Info label="CHOKE GROUP" value={formatChokeGroup(selectedAssignment.chokeGroup)} />
-              <Info label="MUTE TARGETS" value={formatMuteTargets(padBank, selectedAssignment.muteTargets)} />
-            </div>
-
-            <div>
-              {currentPadMode === "STEP_INPUT" && (
-                <div className="border border-amber-300/50 bg-amber-200/10 px-[3%] py-[2.5%] text-amber-100">
-                  STEP INPUT MODE: BASE PAD {selectedAssignment.pad}
-                </div>
-              )}
             </div>
 
             {programView === "PARAMS" ? (
-            <div className="grid content-start grid-cols-2 gap-x-[5%] gap-y-[3%]">
+            <div className="grid min-h-0 content-start grid-cols-2 gap-x-[4%] gap-y-[6px] overflow-hidden">
+              {currentPadMode === "STEP_INPUT" && (
+                <div className="col-span-2 border border-amber-300/50 bg-amber-200/10 px-[3%] py-[2.5%] text-amber-100">
+                  STEP INPUT MODE: BASE PAD {selectedAssignment.pad}
+                </div>
+              )}
               <Param label="MODE" value={selectedAssignment.mode} onMinus={toggleSelectedPadMode} onPlus={toggleSelectedPadMode} />
               <Param label="VOICE" value={selectedAssignment.voiceMode} onMinus={toggleSelectedPadVoiceMode} onPlus={toggleSelectedPadVoiceMode} />
               <Param
@@ -126,6 +122,12 @@ export function ProgramScreen() {
                 value={selectedAssignment.tune}
                 onMinus={() => updateSelectedPadParam("tune", -1)}
                 onPlus={() => updateSelectedPadParam("tune", 1)}
+              />
+              <Param
+                label="FINE"
+                value={selectedAssignment.fineTune}
+                onMinus={() => updateSelectedPadParam("fineTune", -1)}
+                onPlus={() => updateSelectedPadParam("fineTune", 1)}
               />
               <Param
                 label="PAN"
@@ -152,12 +154,46 @@ export function ProgramScreen() {
                 onPlus={() => updateSelectedPadParam("chokeGroup", 1)}
               />
             </div>
-            ) : (
+            ) : programView === "FILTER" ? (
+              <div className="grid min-h-0 content-start gap-[8px]">
+                <FilterParam
+                  label="FILTER TYPE"
+                  value={selectedAssignment.filterType}
+                  onPrevious={() => cycleSelectedPadFilterType(-1)}
+                  onNext={() => cycleSelectedPadFilterType(1)}
+                />
+                <FilterParam
+                  label="CUTOFF"
+                  value={String(selectedAssignment.filterCutoff)}
+                  onPrevious={() => updateSelectedPadParam("filterCutoff", -1)}
+                  onNext={() => updateSelectedPadParam("filterCutoff", 1)}
+                />
+                <FilterParam
+                  label="RESONANCE"
+                  value={String(selectedAssignment.filterResonance)}
+                  onPrevious={() => updateSelectedPadParam("filterResonance", -1)}
+                  onNext={() => updateSelectedPadParam("filterResonance", 1)}
+                />
+              </div>
+            ) : programView === "FX" ? (
               <div className="grid min-h-0 content-start gap-[10px]">
                 <div className="grid grid-cols-2 gap-[8px]">
                   <Info label="SELECTED PAD" value={`${padBank}${selectedAssignment.pad.slice(1)}`} />
+                  <Info label="FX SEND" value={String(selectedAssignment.fxSend)} />
+                  <Info label="AUDIO FX" value="NOT ROUTED" />
+                  <Info label="STATUS" value="VISUAL ONLY" />
+                </div>
+                <Param
+                  label="FX SEND"
+                  value={selectedAssignment.fxSend}
+                  onMinus={() => updateSelectedPadParam("fxSend", -1)}
+                  onPlus={() => updateSelectedPadParam("fxSend", 1)}
+                />
+              </div>
+            ) : (
+              <div className="grid min-h-0 content-start gap-[10px]">
+                <div className="grid grid-cols-2 gap-[8px]">
                   <Info label="MUTE MODE" value={selectedAssignment.muteTargetMode} />
-                  <Info label="CHOKE GROUP" value={formatChokeGroup(selectedAssignment.chokeGroup)} />
                   <Info label="MUTE TARGETS" value={formatMuteTargets(padBank, selectedAssignment.muteTargets)} />
                 </div>
                 <div className="border border-[#46533b] bg-black/15 p-[2.4%]">
@@ -240,6 +276,8 @@ export function ProgramScreen() {
                 if (button === "F1 ASSIGN") setAssignOpen(true);
                 if (button === "F2 PARAMS") setProgramView("PARAMS");
                 if (button === "F3 CHOKE") setProgramView("CHOKE");
+                if (button === "F4 FILTER") setProgramView("FILTER");
+                if (button === "F5 FX SEND") setProgramView("FX");
                 if (button === "F6 SAVE PGM") createProgram();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
@@ -276,9 +314,32 @@ function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid gap-[4%]">
+    <div className="grid min-w-0 gap-[3px]">
       <span className="text-[#91a477]">{label}</span>
       <span className="truncate text-[#eef6d8]">{value}</span>
+    </div>
+  );
+}
+
+function ProgramSwitcher({
+  value,
+  onPrevious,
+  onNext,
+}: {
+  value: string;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="grid min-w-0 gap-[3px]">
+      <span className="text-[#91a477]">PROGRAM</span>
+      <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
+        <BracketButton label="<" onClick={onPrevious} />
+        <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
+          {value}
+        </button>
+        <BracketButton label=">" onClick={onNext} />
+      </div>
     </div>
   );
 }
@@ -295,7 +356,7 @@ function Param({
   onPlus: () => void;
 }) {
   return (
-    <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-[6px] border border-[#46533b] bg-black/15 px-[4%] py-[3%]">
+    <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-[6px] border border-[#46533b] bg-black/15 px-[3%] py-[2.2%]">
       <span className="text-[#91a477]">{label}</span>
       <button type="button" onClick={onMinus} className="px-1 text-[#eef6d8]">
         -
@@ -305,6 +366,39 @@ function Param({
         +
       </button>
     </div>
+  );
+}
+
+function FilterParam({
+  label,
+  value,
+  onPrevious,
+  onNext,
+}: {
+  label: string;
+  value: string;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-[0.78fr_1fr] items-center gap-[10px] border border-[#46533b] bg-black/15 px-[4%] py-[3%]">
+      <span className="text-[#91a477]">{label}</span>
+      <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
+        <BracketButton label="<" onClick={onPrevious} />
+        <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
+          {value}
+        </button>
+        <BracketButton label=">" onClick={onNext} />
+      </div>
+    </div>
+  );
+}
+
+function BracketButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+      {label}
+    </button>
   );
 }
 

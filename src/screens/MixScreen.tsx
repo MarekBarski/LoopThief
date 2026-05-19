@@ -1,5 +1,5 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { useAppStore } from "../store/useAppStore";
+import { isPadVisuallyTriggered, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 
@@ -10,7 +10,6 @@ export function MixScreen() {
   const selectedPad = useAppStore((state) => state.selectedPad);
   const channels = useAppStore((state) => state.padMixer[padBank]);
   const triggeredPads = useAppStore((state) => state.triggeredPads);
-  const isPlaying = useAppStore((state) => state.isPlaying);
   const selectedChannel = channels.find((channel) => channel.pad === selectedPad) ?? channels[0];
   const selectMixerPad = useAppStore((state) => state.selectMixerPad);
   const setMixerChannelValue = useAppStore((state) => state.setMixerChannelValue);
@@ -45,7 +44,8 @@ export function MixScreen() {
                   channel={channel}
                   selected={channel.pad === selectedPad}
                   audible={audible}
-                  meterActive={audible && (isPlaying || Boolean(triggeredPads[channel.pad]))}
+                  meterActive={audible && isPadVisuallyTriggered(triggeredPads, padBank, channel.pad)}
+                  meterLevel={audible ? channel.level / 127 : 0}
                   onSelect={() => selectMixerPad(channel.pad)}
                   onLevel={(value) => setMixerChannelValue(channel.pad, "level", value)}
                   onPan={(value) => setMixerChannelValue(channel.pad, "pan", value)}
@@ -93,6 +93,7 @@ function ChannelStrip({
   selected,
   audible,
   meterActive,
+  meterLevel,
   onSelect,
   onLevel,
   onPan,
@@ -104,6 +105,7 @@ function ChannelStrip({
   selected: boolean;
   audible: boolean;
   meterActive: boolean;
+  meterLevel: number;
   onSelect: () => void;
   onLevel: (value: number) => void;
   onPan: (value: number) => void;
@@ -122,7 +124,7 @@ function ChannelStrip({
       <PanKnob value={channel.pan} onChange={onPan} />
       <Fader value={channel.level} onChange={onLevel} />
       <FxSend value={channel.fxSend} onChange={onFxSend} />
-      <Meter active={meterActive} seed={Number(channel.pad.slice(1))} />
+      <Meter active={meterActive} level={meterLevel} />
       <div className="grid grid-cols-2 gap-[2px]">
         <button
           type="button"
@@ -189,19 +191,22 @@ function FxSend({ value, onChange }: { value: number; onChange: (value: number) 
   );
 }
 
-function Meter({ active, seed }: { active: boolean; seed: number }) {
+function Meter({ active, level: targetLevel }: { active: boolean; level: number }) {
   const [level, setLevel] = useState(0.04);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setLevel(active ? 0.18 + Math.random() * 0.78 : 0.04);
-    }, 140 + seed * 5);
+      setLevel((current) => {
+        const target = active ? Math.max(0.08, targetLevel) : 0;
+        return current + (target - current) * (active ? 0.42 : 0.22);
+      });
+    }, 80);
     return () => window.clearInterval(interval);
-  }, [active, seed]);
+  }, [active, targetLevel]);
 
   return (
     <div className="h-[5px] border border-[#46533b] bg-black/30">
-      <div className="h-full bg-[#d8e3b7]" style={{ width: `${Math.round(level * 100)}%` }} />
+      <div className="h-full bg-[#d8e3b7] transition-[width] duration-75" style={{ width: `${Math.round(level * 100)}%` }} />
     </div>
   );
 }

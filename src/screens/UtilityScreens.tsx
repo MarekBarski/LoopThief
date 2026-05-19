@@ -60,6 +60,7 @@ export function TrackMuteUtilityScreen() {
   const tracks = useAppStore((s) => s.performanceTracks);
   const mode = useAppStore((s) => s.trackMuteMode);
   const setTrackMuteMode = useAppStore((s) => s.setTrackMuteMode);
+  const togglePerformanceTrack = useAppStore((s) => s.togglePerformanceTrack);
   const clearTrackMutes = useAppStore((s) => s.clearTrackMutes);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
   const soloTrack = tracks.find((track) => track.solo)?.name ?? "OFF";
@@ -67,33 +68,32 @@ export function TrackMuteUtilityScreen() {
     <ScreenFrame title="TRACK MUTE" subtitle="Live performance mute">
       {shell(
         <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
-            {tracks.map((track, index) => (
-              <div
-                key={track.name}
-                className={`grid grid-cols-[auto_1fr_auto_0.8fr] items-center gap-[8px] border px-[4%] py-[3%] ${
-                  track.solo
-                    ? "border-amber-300 bg-amber-200/15 text-amber-100"
-                    : track.muted
-                      ? "border-[#46533b] bg-black/25 text-[#70805c]"
-                      : "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
-                }`}
-              >
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <span>{track.name}</span>
-                <span>{track.solo ? "SOLO" : track.muted ? "MUTE" : "LIVE"}</span>
-                <span className="grid grid-cols-5 gap-[2px]">
-                  {Array.from({ length: 5 }, (_, meterIndex) => (
-                    <i
-                      key={meterIndex}
-                      className={`h-[8px] ${
-                        !track.muted && track.activity >= (meterIndex + 1) * 20 ? "bg-[#d8e3b7]" : "bg-[#34402d]"
-                      }`}
-                    />
-                  ))}
-                </span>
-              </div>
-            ))}
+          <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
+            {Array.from({ length: 16 }, (_, index) => {
+              const track = tracks[index];
+              const status = track?.solo ? "SOLO" : track?.muted ? "MUTED" : track ? "LIVE" : "---";
+              return (
+                <button
+                  key={index}
+                  type="button"
+                  disabled={!track}
+                  onClick={() => togglePerformanceTrack(index)}
+                  className={`grid content-between border p-[8%] text-left ${
+                    track?.solo
+                      ? "border-amber-300 bg-amber-200/15 text-amber-100"
+                      : track?.muted
+                        ? "border-[#46533b] bg-black/25 text-[#70805c]"
+                        : track
+                          ? "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
+                          : "border-[#293225] bg-black/10 text-[#3f4b35]"
+                  }`}
+                >
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <span className="truncate">{track?.name ?? "EMPTY"}</span>
+                  <span className="text-[#91a477]">{status}</span>
+                </button>
+              );
+            })}
           </section>
           <Panel rows={[["MODE", mode], ["SOLO TRACK", soloTrack], ["MUTED", String(tracks.filter((track) => track.muted).length).padStart(2, "0")], ["ACTIVE", String(tracks.filter((track) => !track.muted).length).padStart(2, "0")]]} />
         </div>,
@@ -144,17 +144,17 @@ export function NextSeqUtilityScreen() {
                 }`}
               >
                 <p>{seq.name}</p>
-                <p className="text-[#91a477]">{seq.id === queued ? "QUEUED" : seq.id === current ? "ACTIVE" : "READY"}</p>
+                <p className="text-[#91a477]">{seq.id === queued ? "QUEUED BAR END" : seq.id === current ? "ACTIVE" : "READY"}</p>
               </button>
             ))}
           </section>
           <Panel rows={[
             ["CURRENT", sequences.find((seq) => seq.id === current)?.name ?? "---"],
             ["QUEUED", sequences.find((seq) => seq.id === queued)?.name ?? "---"],
-            ["SWITCH IN", queued ? `${String(queuedBarsRemaining).padStart(2, "0")} BAR` : "---"],
+            ["CHANGE AT", queued ? `END OF BAR / ${String(queuedBarsRemaining).padStart(2, "0")}` : "---"],
           ]} />
         </div>,
-        ["F1 QUEUE","F2 CHAIN","F3 HOLD","F4 DUP","F5 BPM",{ label: "F6 EXIT", onClick: exit }],
+        ["SELECT PAD","BAR END","ACTIVE","QUEUED","",{ label: "F6 EXIT", onClick: exit }],
         exit,
       )}
     </ScreenFrame>

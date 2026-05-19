@@ -16,10 +16,25 @@ type Voice = {
   source: AudioBufferSourceNode;
   gain: GainNode;
   pan: StereoPannerNode;
+  filter?: BiquadFilterNode;
   startedAt: number;
   channelKey?: string;
   previewGroup?: string;
   voiceGroup?: string;
+};
+
+type PlayOptions = {
+  gain: number;
+  pan: number;
+  channelKey?: string;
+  previewGroup?: string;
+  voiceGroup?: string;
+  mono?: boolean;
+  filter?: {
+    type: BiquadFilterType;
+    frequency: number;
+    q: number;
+  };
 };
 
 class SamplerEngine {
@@ -58,7 +73,7 @@ class SamplerEngine {
     return this.context.decodeAudioData(data.slice(0));
   }
 
-  play(sample: PlayableSample, options: { gain: number; pan: number; channelKey?: string; previewGroup?: string; voiceGroup?: string; mono?: boolean }) {
+  play(sample: PlayableSample, options: PlayOptions) {
     void this.playInternal(sample, options);
   }
 
@@ -80,12 +95,19 @@ class SamplerEngine {
     }
   }
 
+  updateChannelFilter(channelKey: string, filterOptions?: PlayOptions["filter"]) {
+    for (const voice of this.voices) {
+      if (voice.channelKey !== channelKey) continue;
+      this.updateVoiceFilter(voice, filterOptions);
+    }
+  }
+
   setMasterVolume(masterVolume: number) {
     this.masterVolume = clamp(masterVolume, 0, 2000);
     this.applyMasterVolume();
   }
 
-  private async playInternal(sample: PlayableSample, options: { gain: number; pan: number; channelKey?: string; previewGroup?: string; voiceGroup?: string; mono?: boolean }) {
+  private async playInternal(sample: PlayableSample, options: PlayOptions) {
     if (!(await this.ensureReady()) || !this.context) return;
     const buffer = this.getBuffer(sample);
     const start = clamp(sample.sampleStart ?? 0, 0, 1);
@@ -100,16 +122,26 @@ class SamplerEngine {
     const source = this.context.createBufferSource();
     const gain = this.context.createGain();
     const pan = this.context.createStereoPanner();
+    const filterOptions = options.filter;
+    const filter = filterOptions ? this.context.createBiquadFilter() : null;
     source.buffer = buffer;
     source.playbackRate.value = sample.playbackRate ?? 1;
     gain.gain.value = clamp(options.gain, 0, 2);
     pan.pan.value = clamp(options.pan, -1, 1);
-    source.connect(gain).connect(pan).connect(this.ensureMasterGain());
+    if (filter && filterOptions) {
+      filter.type = filterOptions.type;
+      filter.frequency.value = clamp(filterOptions.frequency, 20, this.context.sampleRate / 2);
+      filter.Q.value = clamp(filterOptions.q, 0.0001, 30);
+      source.connect(filter).connect(gain).connect(pan).connect(this.ensureMasterGain());
+    } else {
+      source.connect(gain).connect(pan).connect(this.ensureMasterGain());
+    }
 
     const voice: Voice = {
       source,
       gain,
       pan,
+      filter: filter ?? undefined,
       startedAt: this.context.currentTime,
       channelKey: options.channelKey,
       previewGroup: options.previewGroup,
@@ -174,6 +206,37 @@ class SamplerEngine {
 
   private stopPreviewGroup(previewGroup: string) {
     this.stopVoices((voice) => voice.previewGroup === previewGroup);
+  }
+
+  private updateVoiceFilter(voice: Voice, filterOptions?: PlayOptions["filter"]) {
+    if (!this.context) return;
+
+    if (!filterOptions) {
+      try {
+        voice.source.disconnect();
+        voice.filter?.disconnect();
+        voice.source.connect(voice.gain);
+        voice.filter = undefined;
+      } catch {
+        // voice may have ended while the UI changed
+      }
+      return;
+    }
+
+    const filter = voice.filter ?? this.context.createBiquadFilter();
+    filter.type = filterOptions.type;
+    filter.frequency.value = clamp(filterOptions.frequency, 20, this.context.sampleRate / 2);
+    filter.Q.value = clamp(filterOptions.q, 0.0001, 30);
+
+    if (!voice.filter) {
+      try {
+        voice.source.disconnect();
+        voice.source.connect(filter).connect(voice.gain);
+        voice.filter = filter;
+      } catch {
+        // voice may have ended while the UI changed
+      }
+    }
   }
 
   private stopVoices(predicate: (voice: Voice) => boolean) {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useAppStore } from "../store/useAppStore";
+import { isPadVisuallyTriggered, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 
@@ -66,7 +66,7 @@ export function PadPlayScreen() {
             <p className="text-[#91a477]">PAD OVERVIEW</p>
             <div className="grid grid-cols-4 gap-[8px]">
               {assignments.map((assignment) => {
-                const active = Boolean(triggeredPads[assignment.pad]);
+                const active = isPadVisuallyTriggered(triggeredPads, padBank, assignment.pad);
                 const muted = assignment.muteTargetMode !== "OFF" || assignment.chokeGroup > 0;
                 return (
                   <div
