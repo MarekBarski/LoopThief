@@ -25,11 +25,18 @@ Before making ANY code changes, read in this order:
 
 1. `docs/SESSION_BOOT.md` — quick boot rules, summary of architectural constraints
 2. `docs/00_project_vision/LOOPTHIEF_DESIGN_BIBLE.md` — product vision, UX principles, screen architecture
-3. `docs/01_development/DEVELOPMENT_ROADMAP.md` — stages, MVP definition
-4. `docs/02_ai_rules/AI_WORKFLOW_RULES.md` — hard rules for AI edits
-5. `docs/02_ai_rules/CODEX_COLLABORATION_RULES.md` — applies to Claude Code identically
-6. `docs/02_ai_rules/MAREK_COLLABORATION_RULES.md` — how to communicate with Marek
-7. `docs/Loopthief_Handoff_Document.pdf` — current state of code, architecture decisions, known WIP. **This is the most up-to-date description of what actually works in the codebase** — read it carefully.
+3. `docs/01_development/DEVELOPMENT_ROADMAP.md` — original stages, MVP definition (historical context)
+4. `docs/01_development/roadmap_v2.md` — **current active roadmap**, phased plan, anti-features list. This supersedes the original roadmap for active work.
+5. `docs/02_ai_rules/AI_WORKFLOW_RULES.md` — hard rules for AI edits
+6. `docs/02_ai_rules/CODEX_COLLABORATION_RULES.md` — applies to Claude Code identically
+7. `docs/02_ai_rules/MAREK_COLLABORATION_RULES.md` — how to communicate with Marek
+8. `docs/Loopthief_Handoff_Document.pdf` — current state of code, architecture decisions, known WIP. **This is the most up-to-date description of what actually works in the codebase** — read it carefully.
+
+### Active work scope
+
+Active work is **Phase A of `roadmap_v2.md`**. Phase B (productization, Tauri integration) is planned but not active. Phase C is post-1.0.
+
+**Anti-features in `roadmap_v2.md` are non-negotiable.** Do not propose them, do not "leave hooks for" them, do not implement them on request without first flagging that they are anti-features.
 
 ### Other reference folders inside `docs/`
 
