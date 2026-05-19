@@ -111,7 +111,8 @@ export function ChopScreen() {
   const loopLengthMs = sample ? Math.max(0, loopEnd - loopStart) * sample.durationMs : 0;
   const timeSignatureNumerator = 4;
   const loopBeats = loopBars * timeSignatureNumerator;
-  const bpmEstimate = loopEnabled && loopLengthMs > 0 ? (60 * loopBeats) / (loopLengthMs / 1000) : null;
+  const rawBpmEstimate = loopEnabled && loopLengthMs > 0 ? (60 * loopBeats) / (loopLengthMs / 1000) : null;
+  const bpmEstimate = rawBpmEstimate !== null && rawBpmEstimate >= 40 && rawBpmEstimate <= 1000 ? rawBpmEstimate : null;
 
   useEffect(() => {
     const displayedCount = chopSliceMode === "MANUAL" ? sliceMarkers.length : autoSliceCount;

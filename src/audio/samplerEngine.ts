@@ -40,7 +40,7 @@ type PlayOptions = {
 class SamplerEngine {
   private context: AudioContext | null = null;
   private masterGain: GainNode | null = null;
-  private masterVolume = 1500;
+  private masterVolume = 100;
   private buffers = new Map<string, AudioBuffer>();
   private voices = new Set<Voice>();
   private readonly maxVoices = 32;

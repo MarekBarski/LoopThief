@@ -234,7 +234,7 @@ export function TimingCorrectUtilityScreen() {
           { label: "F1 NOTE", onClick: cycleTimingCorrect },
           { label: "F2 SWING", onClick: () => adjustSwing(1) },
           { label: "F3 STRENGTH", onClick: () => adjustQuantizeStrength(5) },
-          { label: "F4 DO IT", onClick: cycleTimingApplyTo },
+          { label: "F4 APPLY", onClick: cycleTimingApplyTo },
           { label: "F5 RESET", onClick: resetTimingCorrect },
           { label: "F6 EXIT", onClick: exit },
         ],
@@ -437,8 +437,8 @@ export function UndoUtilityScreen() {
           { label: "F1 UNDO", onClick: undoLastAction },
           { label: "F2 REDO", onClick: redoLastAction },
           { label: "F3 CLEAR", onClick: clearUndoHistory },
-          { label: "F4", onClick: undefined },
-          { label: "F5", onClick: undefined },
+          { label: "—", onClick: undefined },
+          { label: "—", onClick: undefined },
           { label: "F6 EXIT", onClick: exit },
         ],
       )}
@@ -530,7 +530,7 @@ type Softkey =
 function Softkeys({ labels, onExit }: { labels: Softkey[]; onExit?: () => void }) {
   return (
     <div className="grid grid-cols-6 gap-[1.4%]">
-      {labels.map((softkey) => {
+      {labels.map((softkey, index) => {
         const label = typeof softkey === "string" ? softkey : softkey.label;
         const onClick =
           typeof softkey === "string"
@@ -541,7 +541,7 @@ function Softkeys({ labels, onExit }: { labels: Softkey[]; onExit?: () => void }
 
         return (
           <button
-            key={label}
+            key={index}
             type="button"
             onClick={onClick}
             className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-[clamp(8px,0.7vw,11px)]"

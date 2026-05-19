@@ -221,6 +221,34 @@ Prefer:
 
 ---
 
+## CSS & Window Scaling Rules
+
+LoopThief targets multiple monitor sizes from 1280×720 (HD minimum) to 4K and beyond. The app uses **proportional scaling**, not responsive breakpoints (full strategy in `roadmap_v2.md` section B6).
+
+**Use proportional units, not fixed pixels:**
+
+- `vw`, `vh` for viewport-relative sizing
+- `%` for parent-relative sizing
+- `clamp(min, preferred, max)` for fluid scaling with sensible bounds
+- `fr` units in CSS Grid for proportional layouts
+- `rem` for typography (scales with root font size)
+
+**Fixed pixel values are allowed only for:**
+- Hairline borders (1–2px)
+- Box shadows / outlines (decorative only)
+
+**Anti-patterns — do not write:**
+- `width: 800px` for layout containers
+- `font-size: 24px` for text content
+- `padding: 16px` for major layout spacing (acceptable for small inline gaps, prefer `rem` for large spacing)
+- Absolute positioning with pixel coordinates for hardware shell elements
+
+**Why:** the final `.exe` must work on every common monitor. Pixel-perfect layouts will look broken on 4K (too small) and on 1080p with DPI scaling (cut off). Use proportional units now so this works automatically later.
+
+When in doubt about CSS sizing, ask Marek before committing to a fixed value.
+
+---
+
 ## Editing Style
 
 - **Inspect first, edit second.** Read existing systems before changing them.

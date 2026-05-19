@@ -83,7 +83,7 @@ export function MainScreen() {
           <div className="grid min-h-0 grid-cols-[1fr_0.42fr] items-center gap-[4%] border-t border-[#46533b] pt-[3%]">
             <div>
               <p className="text-[clamp(9px,0.72vw,11px)] tracking-[0.18em] text-[#91a477]">POSITION</p>
-              <p className="mt-[4px] font-mono text-[clamp(38px,4.8vw,72px)] leading-none tracking-[0.06em] text-[#eef6d8]">
+              <p className="mt-[4px] font-mono text-[clamp(22px,2.6vw,48px)] leading-none tracking-[0.06em] text-[#d8e3b7]">
                 {bar}
               </p>
             </div>

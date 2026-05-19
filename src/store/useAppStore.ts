@@ -262,6 +262,7 @@ type AppState = {
   adjustSelectedSongRepeats: (delta: number) => void;
   moveSelectedSongStep: (delta: number) => void;
   cycleSelectedSongSequence: () => void;
+  cycleSelectedSongSequenceBack: () => void;
   convertSongToSequence: () => void;
   tickSongPlayback: () => void;
   toggleFullLevel: () => void;
@@ -625,7 +626,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sampleLength: "00:00.000",
   freeMemory: "25:00",
   sampleName: "SAMPLE_001",
-  inputGain: 0,
+  inputGain: 9,
   importStatus: "IDLE",
   importMessage: "WAV ONLY",
   recordedSamples: [],
@@ -695,7 +696,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     displayBrightness: 72,
     autoSave: false,
     latency: 8,
-    masterVolume: 1500,
+    masterVolume: 100,
     audioInputSource: "SYSTEM AUDIO",
   },
   triggeredPads: {},
@@ -1504,6 +1505,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       const selected = state.songSteps[state.selectedSongStepIndex];
       const currentIndex = state.sequences.findIndex((sequence) => sequence.id === selected.sequenceId);
       const nextSequence = state.sequences[(currentIndex + 1) % state.sequences.length];
+      return {
+        songSteps: state.songSteps.map((step, index) =>
+          index === state.selectedSongStepIndex ? { ...step, sequenceId: nextSequence.id } : step,
+        ),
+      };
+    }),
+  cycleSelectedSongSequenceBack: () =>
+    set((state) => {
+      const selected = state.songSteps[state.selectedSongStepIndex];
+      const currentIndex = state.sequences.findIndex((sequence) => sequence.id === selected.sequenceId);
+      const length = state.sequences.length;
+      const nextSequence = state.sequences[(currentIndex - 1 + length) % length];
       return {
         songSteps: state.songSteps.map((step, index) =>
           index === state.selectedSongStepIndex ? { ...step, sequenceId: nextSequence.id } : step,
@@ -4013,7 +4026,7 @@ function createSettingsCategories(): SettingsCategory[] {
       id: "audio",
       label: "AUDIO",
       settings: [
-        { key: "masterVolume", label: "MASTER VOL", kind: "numeric", min: 0, max: 2000, step: 5 },
+        { key: "masterVolume", label: "MASTER VOL", kind: "numeric", min: 0, max: 200, step: 5 },
         { key: "audioInputSource", label: "AUDIO INPUT", kind: "enum", options: ["SYSTEM AUDIO", "LINE IN", "USB"] },
         { key: "latency", label: "LATENCY", kind: "numeric", min: 2, max: 24, step: 1 },
       ],

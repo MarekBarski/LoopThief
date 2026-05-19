@@ -15,6 +15,7 @@ export function SongScreen() {
   const adjustSelectedSongRepeats = useAppStore((state) => state.adjustSelectedSongRepeats);
   const moveSelectedSongStep = useAppStore((state) => state.moveSelectedSongStep);
   const cycleSelectedSongSequence = useAppStore((state) => state.cycleSelectedSongSequence);
+  const cycleSelectedSongSequenceBack = useAppStore((state) => state.cycleSelectedSongSequenceBack);
   const convertSongToSequence = useAppStore((state) => state.convertSongToSequence);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const performanceTracks = useAppStore((state) => state.performanceTracks);
@@ -76,6 +77,7 @@ export function SongScreen() {
             <Info label="REPEATS" value={String(selectedStep.repeats).padStart(2, "0")} />
             <div className="grid grid-cols-2 gap-[8px] pt-[4px]">
               <Action label="SEQ +" onClick={cycleSelectedSongSequence} />
+              <Action label="SEQ -" onClick={cycleSelectedSongSequenceBack} />
               <Action label="REP +" onClick={() => adjustSelectedSongRepeats(1)} />
               <Action label="REP -" onClick={() => adjustSelectedSongRepeats(-1)} />
               <Action label="UP" onClick={() => moveSelectedSongStep(-1)} />

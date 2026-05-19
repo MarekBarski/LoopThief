@@ -183,10 +183,38 @@ Goal: ship as a real desktop application.
 
 ### B2. Native audio
 
-- WASAPI loopback recording (replaces browser system audio capture)
+- WASAPI loopback recording (replaces browser system audio capture) — **CRITICAL: see rationale below**
 - low-latency audio output
 - proper audio device selection and persistence
 - ASIO support (research first)
+
+#### Why WASAPI loopback is non-negotiable (product-defining requirement)
+
+The flagship LoopThief workflow is **instant capture from system audio**. Hardware MPC philosophy: pressing REC starts recording in the same millisecond. No prompts, no friction, no "are you sure?". This is what makes a sampler feel like an instrument instead of an app.
+
+The current browser implementation (`getDisplayMedia`) violates this in a fatal way:
+
+1. User presses START
+2. Browser shows permission popup: "Choose what to share — entire screen / window / browser tab"
+3. User clicks selection
+4. Browser shows second popup: "Share audio too?"
+5. User clicks yes
+6. **Only now** recording begins.
+
+Between pressing START and actual recording: ~3–4 seconds of clicks and two permission dialogs. **The sound the user wanted to capture is long gone.** This destroys the spontaneity that defines a sampler. You hear something interesting in a YouTube video, you want to grab THAT moment — with popups, you're already too late.
+
+**WASAPI loopback solves this:**
+
+- User grants audio device permission once at first run (OS-level, not per-session)
+- From then on, START = recording in the same frame
+- No popups, no choices, no friction
+- Whatever the system outputs (YouTube, Spotify, a game, another DAW) is already in the capture path
+
+This is what makes LoopThief a real instrument for digital crate digging instead of a constrained web app. Without WASAPI loopback, LoopThief is "a nice sampler". With it, it's **a tool for instant capture from anywhere on the computer** — which is the actual product.
+
+**Implementation constraint:** WASAPI loopback is Windows-only. macOS equivalent is BlackHole / virtual audio device (research needed). Linux equivalent is PulseAudio monitor source (also research). For 1.0 release Windows-only is acceptable; cross-platform native audio is a separate decision for later.
+
+**Fallback strategy:** if WASAPI loopback fails (driver issues, unusual hardware), fall back to ASIO loopback or a virtual cable device. Never fall back to browser `getDisplayMedia` in the native build — that would defeat the entire point.
 
 ### B3. Native filesystem
 
@@ -211,6 +239,70 @@ Goal: ship as a real desktop application.
 - accessibility pass (keyboard nav, contrast)
 - loading / error states (proper, not just "..." spinners)
 - theme polish (lock in the final look)
+
+### B6. Window scaling & multi-monitor support
+
+LoopThief must work on every common desktop monitor without requiring a specific resolution. The scaling strategy is **proportional, aspect-ratio locked**.
+
+#### Core principle
+
+The entire UI — hardware shell, LCD viewport, pads, transport — scales as a single unit when the window resizes. Nothing breaks layout. Nothing collapses or rearranges based on size. The hardware shell is persistent and unified at all sizes.
+
+This is NOT responsive design in the web sense (no breakpoints, no element reflow). It is **proportional scaling** like resizing a photo — everything stays in the same relative position, just bigger or smaller.
+
+#### Aspect ratio: 16:9 locked
+
+- Window enforces 16:9 aspect ratio at all times.
+- Resizing the window resizes both dimensions proportionally.
+- On non-16:9 monitors (ultrawide 21:9, 16:10, etc.), the app renders at native 16:9 with letterboxing (centered with bars). Never stretched, never cropped.
+
+#### Window size limits
+
+- **Minimum window size**: 1280×720 (HD). Below this, UI becomes unreadable.
+- **Maximum window size**: unlimited. App scales to fill 4K (3840×2160), 5K, 8K without quality loss.
+- **Default startup size**: 1600×900 (good fit for most laptops and 1080p monitors with room around the window).
+- **Fullscreen mode**: supported. App fills the largest 16:9 area available on the monitor.
+
+#### DPI scaling
+
+- Respect Windows DPI scaling settings (100%, 125%, 150%, 175%, 200%).
+- Tauri handles DPI awareness natively — the app already gets DPI-correct dimensions from the OS.
+- At 150% DPI on a 1920×1080 monitor, the app effectively renders at 1280×720 logical pixels — still above minimum.
+
+#### Multi-monitor
+
+- App can be moved between monitors. Window remembers last position and size on next launch (persistent setting).
+- Moving from a 1080p monitor to a 4K monitor: window stays the same logical size but renders sharper (DPI handled by OS).
+- Moving to fullscreen on the destination monitor: respects that monitor's resolution and DPI.
+
+#### Implementation requirements (apply throughout development, not just Phase B)
+
+All CSS must use proportional units instead of fixed pixels:
+- `vw`, `vh` for viewport-relative sizing
+- `%` for parent-relative sizing
+- `clamp(min, preferred, max)` for fluid scaling with bounds
+- `fr` units in CSS Grid for proportional column/row layouts
+- `rem` for typography (scales with root font size, which scales with viewport)
+
+**Anti-patterns to avoid:**
+- Hardcoded `px` values for component sizes, positions, or fonts (except for hairline borders 1-2px)
+- Fixed-width containers that don't scale
+- Manually positioned absolute elements with pixel coordinates (the F2 layout editor handles hardware shell positioning, but its output must store **proportions**, not pixel offsets)
+
+**The current state of the codebase** uses a mix of fixed pixels and proportional units. A full audit and refactor to proportional units is required before Phase B ships. This is added to UX_AUDIT_FINDINGS.md as a deferred cleanup task.
+
+#### F2 layout editor implications
+
+The F2 layout editor (dev-only tool for positioning hardware shell elements) currently uses pixel positioning. Before B6 ships, it must be refactored to store positions as **percentages or viewport units** so layouts work at any window size.
+
+This is a Phase B task, not Phase A. Document the requirement now; do not refactor F2 editor during Phase A unless a layout change is needed.
+
+#### What this does NOT mean
+
+- No responsive breakpoints (the app is a fixed instrument layout, not a website).
+- No mobile/tablet layout (anti-feature per roadmap).
+- No collapsing/hiding elements at small sizes (instead: minimum window size enforced).
+- No "tablet mode" or "touch mode" (mouse-first remains absolute).
 
 ### B6. Remove dev-only tooling
 

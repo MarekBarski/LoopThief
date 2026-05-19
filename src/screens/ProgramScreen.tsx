@@ -216,7 +216,7 @@ export function ProgramScreen() {
                   />
                 </div>
                 <p className="text-[clamp(8px,0.66vw,10px)] leading-tight text-[#91a477]">
-                  In PAIR mode, press hardware pads to add/remove up to two mute targets.
+                  In PAIR mode, press pads to add/remove up to two mute targets.
                 </p>
               </div>
             )}

@@ -186,6 +186,67 @@ Run this as a single sweep task, fix anywhere preview should fire automatically.
 
 ---
 
+## COUNT IN / METRONOME — visual beat indicators (CONFIRMED WORKING)
+
+Four rectangular slots below the "METRONOME" header in the right column.
+
+**Confirmed by Marek:** these pulse with the metronome in 4/4 time (beat 1, 2, 3, 4 cycle). This is the MPC-style hardware LED indicator translated to the LCD. Working feature, not a bug.
+
+Minor cosmetic suggestion (low priority):
+- In static state (metronome off), the empty slots can read as broken placeholders.
+- Consider adding a subtle muted dot or `1` `2` `3` `4` labels inside each slot at low opacity, so the resting state visually communicates "armed beat counter" rather than "empty boxes".
+- Optional — this is polish, not a bug.
+
+### COUNT IN / METRONOME — label clarity
+
+- `WAIT PAD COMPAT` is unclear. What does COMPAT refer to? Legacy WAIT PAD mode? Hardware MPC compatibility? Consider:
+  - Rename to something self-explanatory (e.g., `LEGACY WAIT PAD`, `WAIT PAD MODE`, or simply explain what it toggles).
+  - Or add a one-line inline description like the one in PROGRAM CHOKE.
+- `TC COUNT` — probably means "count-in respects current Timing Correct". OK as label but a brief help text would help.
+
+### COUNT IN / METRONOME — unit consistency
+
+- `CLICK VOL: 70` has no unit. Is it 0–100%, 0–127 (MIDI), or dB?
+- Decide on a project-wide convention for volume values (suggest 0–100 to match MPC tradition) and apply consistently to MASTER VOL, CLICK VOL, pad LVL, etc.
+
+---
+
+## RECORDING CHAIN — soft clipper needed (future)
+
+Current input chain: stream → InputGain → MediaRecorder. Loud source material can still cause brick wall clipping despite conservative default gain (+9 dB).
+
+Hardware samplers (MPC, SP-1200) had natural soft clipping via input transformers. Software equivalent: WaveShaperNode with tanh curve placed between InputGain and MediaRecorder.
+
+Suggested implementation:
+- Threshold: ~-0.5 dBFS
+- Soft knee: 6 dB
+- Curve type: tanh
+- Optional bypass toggle in SETTINGS
+
+Not urgent — current +9 dB default works for most browser captures. Add when doing recording chain polish pass.
+
+---
+
+## CSS — proportional units audit (Phase B preparation)
+
+Codebase currently mixes fixed `px` values with proportional units (`vw`, `vh`, `%`, `clamp`, `fr`). For Phase B window scaling to work properly (see `roadmap_v2.md` B6), all layout-relevant CSS must use proportional units.
+
+Audit task (do NOT do this during Phase A unless touching a screen for another reason — this is a Phase B preparation task):
+
+1. Sweep `src/**/*.tsx` and `src/**/*.css` for hardcoded `px` values
+2. Categorize each occurrence:
+   - **Keep**: hairline borders (1–2px), decorative shadows
+   - **Refactor**: layout dimensions, fonts, padding/margin on layout containers
+   - **Review with Marek**: edge cases that aren't clearly one or the other
+3. Refactor identified items to `vw` / `vh` / `%` / `clamp` / `fr` / `rem` as appropriate
+4. Verify each screen renders correctly at 1280×720, 1600×900, 1920×1080, and 3840×2160
+
+This is a significant task. Estimate: dedicated session for the audit, then 2–3 sessions for refactor depending on scope. Better to do after Phase A1 backlog is closed but before starting Phase B Tauri integration.
+
+**Rule in effect now (per CLAUDE.md):** all NEW CSS written from this point uses proportional units. Existing code is audited later.
+
+---
+
 ## Aesthetic / global observations
 
 These are positive findings from the review, captured here for reference:
