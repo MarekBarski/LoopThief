@@ -342,6 +342,7 @@ type AppState = {
   selectSetting: (index: number) => void;
   adjustSelectedSetting: (delta: number) => void;
   toggleSelectedSetting: () => void;
+  createProjectSnapshot: () => ProjectSnapshot;
 };
 
 type PadAssignment = {
@@ -351,9 +352,13 @@ type PadAssignment = {
   voiceMode: "POLY" | "MONO";
   level: number;
   tune: number;
+  fineTune: number;
   pan: number;
   attack: number;
   decay: number;
+  filterCutoff: number;
+  filterResonance: number;
+  fxSend: number;
   chokeGroup: number;
   muteTargetMode: "OFF" | "PAIR" | "GROUP";
   muteTargets: string[];
@@ -363,12 +368,14 @@ type StepEvent = {
   id: string;
   step: string;
   pad: string;
+  padNumber: number;
   trackId: string;
   trackName?: string;
   physicalPad?: string;
   sourcePad?: string;
   sourceAssignment?: string;
   padBank?: PadBank;
+  programId?: string;
   appliedParameter?: AppState["sixteenLevelsParameter"];
   appliedValue?: number;
   parameterValue?: number;
@@ -389,13 +396,50 @@ type Sequence = {
   lengthBars: number;
   timeSignature: TimeSignature;
   bpm: number;
-  tracks: string[];
+  tracks: Track[];
   events: StepEvent[];
+};
+
+type Track = {
+  id: string;
+  name: string;
+  programId: string;
+  mute: boolean;
+  solo: boolean;
+  type: "DRUM" | "MIDI" | "AUDIO";
+  output: "MAIN" | "OUT1" | "OUT2" | "OUT3";
 };
 
 type Program = {
   id: string;
   name: string;
+  padAssignments: Record<PadBank, PadAssignment[]>;
+  padMixer: Record<PadBank, MixerChannel[]>;
+  filter: ProgramFilterSettings;
+  fx: ProgramFxSettings;
+};
+
+type ProgramFilterSettings = {
+  type: "OFF" | "LOWPASS" | "HIGHPASS";
+  cutoff: number;
+  resonance: number;
+};
+
+type ProgramFxSettings = {
+  sendLevel: number;
+  type: "OFF" | "DELAY" | "REVERB";
+};
+
+type ProjectSnapshot = {
+  version: 1;
+  sequences: Sequence[];
+  currentSequence: string;
+  currentTrackId: string;
+  programs: Program[];
+  currentProgramId: string;
+  songSteps: SongStep[];
+  settingsValues: SettingsValues;
+  samples: Array<Pick<RecordedSample, "id" | "name" | "audioBufferId" | "durationMs" | "duration" | "sampleRate" | "channelCount" | "keptSlices" | "editState">>;
 };
 
 type SongStep = {
@@ -421,6 +465,7 @@ type MixerChannel = {
 };
 
 type PerformanceTrack = {
+  id: string;
   name: string;
   muted: boolean;
   solo: boolean;
@@ -604,14 +649,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   ],
   padMixer: createPadMixer(),
   performanceTracks: [
-    { name: "TRACK01", muted: false, solo: false, activity: 28 },
+    { id: "TRACK01", name: "TRACK01", muted: false, solo: false, activity: 28 },
   ],
   trackMuteMode: "MUTE",
   lastPerformanceMessage: "",
   songSteps: [
     { sequenceId: "01", repeats: 2 },
-    { sequenceId: "02", repeats: 1 },
-    { sequenceId: "03", repeats: 1 },
   ],
   selectedSongStepIndex: 0,
   currentSongStepIndex: 0,
@@ -921,14 +964,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           const muteTargets = hasTarget
             ? currentPad.muteTargets.filter((target) => target !== selectedPad)
             : [...currentPad.muteTargets, selectedPad].slice(-2);
+          const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
+            pad.pad === state.selectedPad ? { ...pad, muteTargetMode: "PAIR", muteTargets } : pad,
+          );
           return {
             triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
-            padAssignments: {
-              ...state.padAssignments,
-              [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
-                pad.pad === state.selectedPad ? { ...pad, muteTargetMode: "PAIR", muteTargets } : pad,
-              ),
-            },
+            padAssignments,
+            programs: syncCurrentProgram(state, { padAssignments }),
           };
         }
       }
@@ -965,14 +1007,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         const channels = state.padMixer[state.padBank].map((channel) =>
           channel.pad === selectedPad ? { ...channel, muted: !channel.muted } : channel,
         );
-        syncMixerBankToAudio(state.padBank, channels);
+        syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+        const padMixer = {
+          ...state.padMixer,
+          [state.padBank]: channels,
+        };
         return {
           selectedPad,
           triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
-          padMixer: {
-            ...state.padMixer,
-            [state.padBank]: channels,
-          },
+          padMixer,
+          programs: syncCurrentProgram(state, { padMixer }),
         };
       }
 
@@ -1214,6 +1258,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         id,
         name: `SEQ${id}`,
         events: current.events.map((event) => ({ ...event })),
+        tracks: current.tracks.map((track) => ({ ...track })),
       };
       return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
     }),
@@ -1264,11 +1309,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   createProgram: () =>
     set((state) => {
       const id = nextProgramId(state.programs);
-      const program = { id, name: id };
+      const program = createProgramDefinition(id);
       return {
-        programs: [...state.programs, program],
+        programs: [...syncCurrentProgram(state), program],
         currentProgramId: id,
         activeProgram: program.name,
+        padAssignments: program.padAssignments,
+        padMixer: program.padMixer,
       };
     }),
   adjustSequenceLengthBars: (delta) =>
@@ -1442,11 +1489,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   convertSongToSequence: () =>
     set((state) => {
       const id = nextSequenceId(state.sequences);
+      let accumulatedTicks = 0;
+      let lengthBars = 0;
       const flattenedEvents = state.songSteps.flatMap((step) => {
         const sequence = state.sequences.find((item) => item.id === step.sequenceId);
-        return Array.from({ length: step.repeats }, () => sequence?.events ?? []).flat().map((event) => ({ ...event }));
+        if (!sequence) return [];
+        const sequenceTicks = sequence.lengthBars * 384;
+        const copied = Array.from({ length: step.repeats }, (_, repeatIndex) => {
+          const offsetTicks = accumulatedTicks + repeatIndex * sequenceTicks;
+          return sequence.events.map((event) =>
+            offsetStepEvent(
+              { ...event, programId: event.programId ?? getTrackProgramId(sequence, event.trackId) },
+              offsetTicks,
+            ),
+          );
+        }).flat();
+        accumulatedTicks += sequenceTicks * step.repeats;
+        lengthBars += sequence.lengthBars * step.repeats;
+        return copied;
       });
-      const sequence = createSequence(id, "SONG_CONVERT", state.bpm, flattenedEvents);
+      const songTracks = uniqueSongTracks(state);
+      const sequence = {
+        ...createSequence(id, "SONG_CONVERT", state.bpm, flattenedEvents),
+        lengthBars: Math.max(1, lengthBars),
+        tracks: songTracks.length > 0 ? songTracks : createDefaultSequenceTracks(),
+      };
       return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
     }),
   tickSongPlayback: () =>
@@ -1707,14 +1774,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         (item, index) => index === actualIndex || !item.name.startsWith(`${baseName}_S`),
       );
       const padAssignments = createProgram
-        ? {
-            ...state.padAssignments,
-            [targetBank]: state.padAssignments[targetBank].map((pad, index) =>
-              sliceSamples[index]
-                ? { ...pad, assignment: sliceSamples[index].name }
-                : pad,
-            ),
-          }
+        ? updatePadAssignmentsForProgram(state, targetBank, (pad, index) =>
+            sliceSamples[index] ? { ...pad, assignment: sliceSamples[index].name } : pad,
+          )
         : state.padAssignments;
       return {
         recordedSamples: [
@@ -1726,6 +1788,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...sliceSamples,
         ],
         padAssignments,
+        programs: createProgram ? syncCurrentProgram(state, { padAssignments }) : state.programs,
         chopMarkers: state.sliceMarkers,
         chopEditMode: "TRIM",
         selectedMarker: "sampleStart",
@@ -1749,24 +1812,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const latestSample = state.recordedSamples[state.chopSelectedSampleIndex] ?? state.recordedSamples.at(-1);
       if (!latestSample) return state;
       const assignment = `${latestSample.name} / S${String(state.selectedSlice).padStart(2, "0")}`;
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
+        pad.pad === state.selectedPad ? { ...pad, assignment } : pad,
+      );
       return {
-        padAssignments: {
-          ...state.padAssignments,
-          [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
-            pad.pad === state.selectedPad ? { ...pad, assignment } : pad,
-          ),
-        },
+        padAssignments,
+        programs: syncCurrentProgram(state, { padAssignments }),
       };
     }),
   assignSourceToSelectedPad: (sourceName) =>
-    set((state) => ({
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
-          pad.pad === state.selectedPad ? { ...pad, assignment: sourceName } : pad,
-        ),
-      },
-    })),
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
+        pad.pad === state.selectedPad ? { ...pad, assignment: sourceName } : pad,
+      );
+      return { padAssignments, programs: syncCurrentProgram(state, { padAssignments }) };
+    }),
   previewSource: (sourceName) => {
     const state = get();
     const resolved = resolveAssignedSample(state, sourceName);
@@ -1779,47 +1839,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   nextChopSample: () =>
     set((state) => switchChopSample(state, 1)),
   updateSelectedPadParam: (field, delta) =>
-    set((state) => ({
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad) => {
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) => {
           if (pad.pad !== state.selectedPad) return pad;
           const limits = getParamLimits(field);
           return {
             ...pad,
             [field]: clamp(pad[field] + delta, limits.min, limits.max),
           };
-        }),
-      },
-    })),
+        });
+      return { padAssignments, programs: syncCurrentProgram(state, { padAssignments }) };
+    }),
   toggleSelectedPadMode: () =>
-    set((state) => ({
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
           pad.pad === state.selectedPad
             ? { ...pad, mode: pad.mode === "ONE SHOT" ? "NOTE ON" : "ONE SHOT" }
             : pad,
-        ),
-      },
-    })),
+        );
+      return { padAssignments, programs: syncCurrentProgram(state, { padAssignments }) };
+    }),
   toggleSelectedPadVoiceMode: () =>
-    set((state) => ({
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad) =>
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
           pad.pad === state.selectedPad
             ? { ...pad, voiceMode: pad.voiceMode === "POLY" ? "MONO" : "POLY" }
             : pad,
-        ),
-      },
-    })),
+        );
+      return { padAssignments, programs: syncCurrentProgram(state, { padAssignments }) };
+    }),
   setProgramView: (programView) => set({ programView }),
   cycleMuteTargetMode: () =>
-    set((state) => ({
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad) => {
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) => {
           if (pad.pad !== state.selectedPad) return pad;
           const order: PadAssignment["muteTargetMode"][] = ["OFF", "PAIR", "GROUP"];
           const muteTargetMode = order[(order.indexOf(pad.muteTargetMode) + 1) % order.length];
@@ -1828,14 +1880,12 @@ export const useAppStore = create<AppState>((set, get) => ({
             muteTargetMode,
             muteTargets: muteTargetMode === "PAIR" ? pad.muteTargets : [],
           };
-        }),
-      },
-    })),
+        });
+      return { padAssignments, programs: syncCurrentProgram(state, { padAssignments }) };
+    }),
   toggleMuteTargetForSelectedPad: (targetPad) =>
-    set((state) => ({
-      padAssignments: {
-        ...state.padAssignments,
-        [state.padBank]: state.padAssignments[state.padBank].map((pad) => {
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) => {
           if (pad.pad !== state.selectedPad || pad.pad === targetPad) return pad;
           const hasTarget = pad.muteTargets.includes(targetPad);
           return {
@@ -1845,9 +1895,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               ? pad.muteTargets.filter((target) => target !== targetPad)
               : [...pad.muteTargets, targetPad].slice(-2),
           };
-        }),
-      },
-    })),
+        });
+      return { padAssignments, programs: syncCurrentProgram(state, { padAssignments }) };
+    }),
   nextStepEvent: () =>
     set((state) => selectedEventPatch(state.stepEvents, Math.min(state.selectedEventIndex + 1, state.stepEvents.length - 1))),
   previousStepEvent: () =>
@@ -1884,10 +1934,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const event = state.stepEvents[state.selectedEventIndex];
       if (!event) return state;
       const tracks = getCurrentSequence(state).tracks;
-      const currentIndex = tracks.indexOf(event.trackId);
-      const trackId = tracks[(currentIndex + 1 + tracks.length) % tracks.length];
+      const currentIndex = tracks.findIndex((track) => track.id === event.trackId);
+      const track = tracks[(Math.max(currentIndex, 0) + 1 + tracks.length) % tracks.length];
+      const trackId = track.id;
       const stepEvents = state.stepEvents.map((item, index) =>
-        index === state.selectedEventIndex ? { ...item, trackId, trackName: trackId } : item,
+        index === state.selectedEventIndex ? { ...item, trackId, trackName: track.name, programId: track.programId } : item,
       );
       return { stepEvents, sequences: updateCurrentSequenceEvents(state, stepEvents) };
     }),
@@ -1981,8 +2032,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         const limits = getMixerLimits(field);
         return { ...channel, [field]: clamp(channel[field] + delta, limits.min, limits.max) };
       });
-      syncMixerBankToAudio(state.padBank, channels);
-      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+      syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return { padMixer, programs: syncCurrentProgram(state, { padMixer }) };
     }),
   setMixerChannelValue: (pad, field, value) =>
     set((state) => {
@@ -1990,8 +2042,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const channels = state.padMixer[state.padBank].map((channel) =>
         channel.pad === pad ? { ...channel, [field]: clamp(value, limits.min, limits.max) } : channel,
       );
-      syncMixerBankToAudio(state.padBank, channels);
-      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+      syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return { padMixer, programs: syncCurrentProgram(state, { padMixer }) };
     }),
   selectMixerPad: (selectedPad) => set({ selectedPad }),
   toggleSelectedMixerMute: () =>
@@ -1999,45 +2052,51 @@ export const useAppStore = create<AppState>((set, get) => ({
       const channels = state.padMixer[state.padBank].map((channel) =>
         channel.pad === state.selectedPad ? { ...channel, muted: !channel.muted } : channel,
       );
-      syncMixerBankToAudio(state.padBank, channels);
-      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+      syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return { padMixer, programs: syncCurrentProgram(state, { padMixer }) };
     }),
   toggleSelectedMixerSolo: () =>
     set((state) => {
       const channels = state.padMixer[state.padBank].map((channel) =>
         channel.pad === state.selectedPad ? { ...channel, solo: !channel.solo } : channel,
       );
-      syncMixerBankToAudio(state.padBank, channels);
-      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+      syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return { padMixer, programs: syncCurrentProgram(state, { padMixer }) };
     }),
   toggleMixerChannelMute: (pad) =>
     set((state) => {
       const channels = state.padMixer[state.padBank].map((channel) =>
         channel.pad === pad ? { ...channel, muted: !channel.muted } : channel,
       );
-      syncMixerBankToAudio(state.padBank, channels);
-      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+      syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return { padMixer, programs: syncCurrentProgram(state, { padMixer }) };
     }),
   toggleMixerChannelSolo: (pad) =>
     set((state) => {
       const channels = state.padMixer[state.padBank].map((channel) =>
         channel.pad === pad ? { ...channel, solo: !channel.solo } : channel,
       );
-      syncMixerBankToAudio(state.padBank, channels);
-      return { padMixer: { ...state.padMixer, [state.padBank]: channels } };
+      syncMixerBankToAudio(state.padBank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return { padMixer, programs: syncCurrentProgram(state, { padMixer }) };
     }),
   cycleSelectedMixerOutput: () =>
     set((state) => {
       const outputs: MixerChannel["output"][] = ["MAIN", "OUT1", "OUT2", "OUT3"];
-      return {
-        padMixer: {
-          ...state.padMixer,
-          [state.padBank]: state.padMixer[state.padBank].map((channel) => {
+      const padMixer = {
+        ...state.padMixer,
+        [state.padBank]: state.padMixer[state.padBank].map((channel) => {
             if (channel.pad !== state.selectedPad) return channel;
             const nextOutput = outputs[(outputs.indexOf(channel.output) + 1) % outputs.length];
             return { ...channel, output: nextOutput };
           }),
-        },
+      };
+      return {
+        padMixer,
+        programs: syncCurrentProgram(state, { padMixer }),
       };
     }),
   cycleTrackMuteMode: () =>
@@ -2142,7 +2201,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       const folder = state.diskFolders.find((item) => item.id === state.activeDiskFolderId);
       const selected = folder?.items[state.selectedDiskItemIndex];
       if (!selected) return state;
-      if (selected.type === "PROGRAM") return { activeProgram: selected.assignedProgram };
+      if (selected.type === "PROGRAM") {
+        const syncedPrograms = syncCurrentProgram(state);
+        const program = syncedPrograms.find((item) => item.id === selected.assignedProgram);
+        return program
+          ? {
+              programs: syncedPrograms,
+              currentProgramId: program.id,
+              activeProgram: program.name,
+              padAssignments: program.padAssignments,
+              padMixer: program.padMixer,
+            }
+          : state;
+      }
       if (selected.type === "SEQUENCE") {
         const id = selected.name.match(/\d+/)?.[0];
         return id && state.sequences.some((sequence) => sequence.id === id)
@@ -2193,11 +2264,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (state.recordedSamples.some((item) => item.id !== sample.id && item.name === nextName)) {
         return { importStatus: "ERROR", importMessage: "NAME EXISTS" };
       }
+      const padAssignments = renameSampleAssignments(state.padAssignments, sample.name, nextName);
       return {
         recordedSamples: state.recordedSamples.map((item) =>
           item.id === sample.id ? { ...item, name: nextName } : item,
         ),
-        padAssignments: renameSampleAssignments(state.padAssignments, sample.name, nextName),
+        padAssignments,
+        programs: renameSampleInPrograms(syncCurrentProgram(state, { padAssignments }), sample.name, nextName),
         diskFolders: renameDiskSampleItems(state.diskFolders, sample.name, nextName),
         importStatus: "READY",
         importMessage: `RENAMED ${nextName}`,
@@ -2283,6 +2356,30 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
       };
     }),
+  createProjectSnapshot: () => {
+    const state = get();
+    return {
+      version: 1,
+      sequences: state.sequences,
+      currentSequence: state.currentSequence,
+      currentTrackId: state.currentTrackId,
+      programs: syncCurrentProgram(state),
+      currentProgramId: state.currentProgramId,
+      songSteps: state.songSteps,
+      settingsValues: state.settingsValues,
+      samples: state.recordedSamples.map((sample) => ({
+        id: sample.id,
+        name: sample.name,
+        audioBufferId: sample.audioBufferId,
+        durationMs: sample.durationMs,
+        duration: sample.duration,
+        sampleRate: sample.sampleRate,
+        channelCount: sample.channelCount,
+        keptSlices: sample.keptSlices,
+        editState: sample.editState,
+      })),
+    };
+  },
 }));
 
 samplerEngine.onStatusChange((audioStatus) => {
@@ -2364,15 +2461,49 @@ function eventStepIndex(step: string) {
   return (bar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24);
 }
 
+function eventStepToTicks(step: string) {
+  const [bar, beat, tick] = step.split(".").map(Number);
+  return (bar - 1) * 384 + (beat - 1) * 96 + tick;
+}
+
+function ticksToStep(ticks: number) {
+  const bounded = Math.max(0, Math.round(ticks));
+  const bar = Math.floor(bounded / 384) + 1;
+  const tickInBar = bounded % 384;
+  const beat = Math.floor(tickInBar / 96) + 1;
+  const tick = tickInBar % 96;
+  return `${String(bar).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`;
+}
+
+function offsetStepEvent(event: StepEvent, offsetTicks: number): StepEvent {
+  return {
+    ...event,
+    id: nextEventId(),
+    step: ticksToStep(eventStepToTicks(event.step) + offsetTicks),
+    padBank: event.padBank ?? "A",
+    padNumber: event.padNumber ?? padNumberFromPad(event.pad),
+  };
+}
+
+function uniqueSongTracks(state: AppState) {
+  const tracks = new Map<string, Track>();
+  state.songSteps.forEach((step) => {
+    const sequence = state.sequences.find((item) => item.id === step.sequenceId);
+    sequence?.tracks.forEach((track) => tracks.set(track.id, { ...track }));
+  });
+  return [...tracks.values()];
+}
+
 function createRecordedPadEvent(state: AppState, pad: string, velocity: number) {
   const position = getRecordedEventPosition(state);
   const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
   return createStepEventAtPosition(position.stepIndex, position.tickOffset, pad, velocity, state.noteRepeatGate, {
     trackId: state.currentTrackId,
-    trackName: state.currentTrackId,
+    trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
     sourcePad: pad,
     sourceAssignment: assignment?.assignment === "---" ? undefined : assignment?.assignment,
     padBank: state.padBank,
+    programId: state.currentProgramId,
     variation: "REC",
   });
 }
@@ -2429,7 +2560,9 @@ function createRepeatedNoteEvents(state: AppState, pad: string, rate: AppState["
     const swingOffset = index % 2 === 1 ? Math.round((state.swing - 50) / 5) : 0;
     return createStepEventFromIndex(stepIndex, pad, velocity, state.noteRepeatGate, swingOffset, {
       trackId: state.currentTrackId,
-      trackName: state.currentTrackId,
+      trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
+      padBank: state.padBank,
+      programId: state.currentProgramId,
       noteRepeatGenerated: true,
     });
   });
@@ -2468,6 +2601,7 @@ function createStepEventFromIndex(
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${beat}.${String(tick).padStart(2, "0")}`,
     pad,
+    padNumber: padNumberFromPad(pad),
     trackId: "TRACK01",
     trackName: "TRACK01",
     velocity,
@@ -2499,6 +2633,7 @@ function createStepEventAtPosition(
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`,
     pad,
+    padNumber: padNumberFromPad(pad),
     trackId: "TRACK01",
     trackName: "TRACK01",
     velocity,
@@ -2511,6 +2646,14 @@ function createStepEventAtPosition(
     muted: false,
     ...extra,
   };
+}
+
+function padNumberFromPad(pad: string) {
+  return clamp(Number(pad.replace(/^P/, "")) || 1, 1, 16);
+}
+
+function padFromEvent(event: StepEvent) {
+  return `P${String(event.padNumber ?? padNumberFromPad(event.pad)).padStart(2, "0")}`;
 }
 
 function getSixteenLevelsValue(state: AppState, padNumber: number) {
@@ -2748,17 +2891,31 @@ function playPadFromState(state: AppState, pad: string, options: { allowUtilityP
 }
 
 function playAssignedPadFromState(state: AppState, pad: string) {
-  const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
-  const mix = state.padMixer[state.padBank].find((item) => item.pad === pad);
-  if (!assignment || assignment.assignment === "---" || !mix || !isMixerChannelAudible(state.padMixer[state.padBank], pad)) {
+  playAssignedPadWithContext(state, {
+    pad,
+    bank: state.padBank,
+    programId: state.currentProgramId,
+  });
+}
+
+function playAssignedPadWithContext(
+  state: AppState,
+  context: { pad: string; bank: PadBank; programId?: string },
+) {
+  const program = getProgramForPlayback(state, context.programId);
+  const padAssignments = program?.padAssignments ?? state.padAssignments;
+  const padMixer = program?.padMixer ?? state.padMixer;
+  const assignment = padAssignments[context.bank].find((item) => item.pad === context.pad);
+  const mix = padMixer[context.bank].find((item) => item.pad === context.pad);
+  if (!assignment || assignment.assignment === "---" || !mix || !isMixerChannelAudible(padMixer[context.bank], context.pad)) {
     useAppStore.setState({ lastAudioMessage: "UNASSIGNED PAD" });
     return;
   }
   const resolved = resolveAssignedSample(state, assignment.assignment);
   if (!resolved) return;
   useAppStore.setState({ lastAudioMessage: assignment.assignment });
-  const voiceGroup = mixerChannelKey(state.padBank, pad);
-  samplerEngine.stopVoiceGroups(getMuteStopGroups(state, assignment, pad));
+  const voiceGroup = mixerChannelKey(context.bank, context.pad, program?.id);
+  samplerEngine.stopVoiceGroups(getMuteStopGroups(state, assignment, context.pad, context.bank, padAssignments, program?.id));
   samplerEngine.play(resolved, {
     gain: mix.level / 100,
     pan: mix.pan / 64,
@@ -2775,14 +2932,17 @@ function shouldPlayStepEvent(state: AppState, event: StepEvent) {
 }
 
 function playStepEventFromState(state: AppState, event: StepEvent, delayMs: number) {
+  const eventBank = event.padBank ?? "A";
+  const eventPad = padFromEvent(event);
+  const eventProgramId = event.programId ?? getTrackProgramId(getCurrentSequence(state), event.trackId) ?? state.currentProgramId;
   if (delayMs <= 0) {
-    playAssignedPadFromState(state, event.pad);
+    playAssignedPadWithContext(state, { pad: eventPad, bank: eventBank, programId: eventProgramId });
     return;
   }
   window.setTimeout(() => {
     const liveState = useAppStore.getState();
     if (!liveState.isPlaying || liveState.currentSequence !== state.currentSequence) return;
-    playAssignedPadFromState(liveState, event.pad);
+    playAssignedPadWithContext(liveState, { pad: eventPad, bank: eventBank, programId: eventProgramId });
   }, delayMs);
 }
 
@@ -2968,9 +3128,12 @@ function getSampleRegion(sample: RecordedSample) {
 
 function getAssignedPads(state: AppState, sampleName: string) {
   const assigned: string[] = [];
-  for (const [bank, assignments] of Object.entries(state.padAssignments)) {
-    for (const assignment of assignments) {
-      if (assignmentMatchesSample(assignment.assignment, sampleName)) assigned.push(`${bank}${assignment.pad.slice(1)}`);
+  const programs = syncCurrentProgram(state);
+  for (const program of programs) {
+    for (const [bank, assignments] of Object.entries(program.padAssignments)) {
+      for (const assignment of assignments) {
+        if (assignmentMatchesSample(assignment.assignment, sampleName)) assigned.push(`${program.id}:${bank}${assignment.pad.slice(1)}`);
+      }
     }
   }
   return assigned;
@@ -2986,6 +3149,13 @@ function renameSampleAssignments(
     const [, slicePart] = assignment.split("/").map((part) => part.trim());
     return slicePart ? `${newName} / ${slicePart}` : newName;
   });
+}
+
+function renameSampleInPrograms(programs: Program[], oldName: string, newName: string) {
+  return programs.map((program) => ({
+    ...program,
+    padAssignments: renameSampleAssignments(program.padAssignments, oldName, newName),
+  }));
 }
 
 function mapPadAssignments(
@@ -3030,7 +3200,7 @@ function downloadBytes(fileName: string, bytes: ArrayBuffer, mimeType: string) {
 }
 
 function isTrackMuted(state: AppState, trackId: string) {
-  return state.performanceTracks.find((track) => track.name === trackId)?.muted ?? false;
+  return state.performanceTracks.find((track) => track.id === trackId || track.name === trackId)?.muted ?? false;
 }
 
 function isMixerChannelAudible(channels: MixerChannel[], pad: string) {
@@ -3040,26 +3210,33 @@ function isMixerChannelAudible(channels: MixerChannel[], pad: string) {
   return !hasSolo || channel.solo;
 }
 
-function mixerChannelKey(bank: PadBank, pad: string) {
-  return `${bank}:${pad}`;
+function mixerChannelKey(bank: PadBank, pad: string, programId?: string) {
+  return programId ? `${programId}:${bank}:${pad}` : `${bank}:${pad}`;
 }
 
-function getMuteStopGroups(state: AppState, assignment: PadAssignment, pad: string) {
+function getMuteStopGroups(
+  state: AppState,
+  assignment: PadAssignment,
+  pad: string,
+  bank = state.padBank,
+  padAssignments = state.padAssignments,
+  programId?: string,
+) {
   const targets = new Set<string>();
-  assignment.muteTargets.forEach((targetPad) => targets.add(mixerChannelKey(state.padBank, targetPad)));
+  assignment.muteTargets.forEach((targetPad) => targets.add(mixerChannelKey(bank, targetPad, programId)));
   if (assignment.chokeGroup > 0) {
-    state.padAssignments[state.padBank].forEach((candidate) => {
+    padAssignments[bank].forEach((candidate) => {
       if (candidate.pad !== pad && candidate.chokeGroup === assignment.chokeGroup) {
-        targets.add(mixerChannelKey(state.padBank, candidate.pad));
+        targets.add(mixerChannelKey(bank, candidate.pad, programId));
       }
     });
   }
   return [...targets];
 }
 
-function syncMixerBankToAudio(bank: PadBank, channels: MixerChannel[]) {
+function syncMixerBankToAudio(bank: PadBank, channels: MixerChannel[], programId?: string) {
   channels.forEach((channel) => {
-    samplerEngine.updateChannelMix(mixerChannelKey(bank, channel.pad), {
+    samplerEngine.updateChannelMix(mixerChannelKey(bank, channel.pad, programId), {
       gain: channel.level / 100,
       pan: channel.pan / 64,
       audible: isMixerChannelAudible(channels, channel.pad),
@@ -3087,9 +3264,13 @@ function createBankAssignments() {
     voiceMode: "POLY" as const,
     level: 100,
     tune: 0,
+    fineTune: 0,
     pan: 0,
     attack: 0,
     decay: 100,
+    filterCutoff: 100,
+    filterResonance: 0,
+    fxSend: 0,
     chokeGroup: 0,
     muteTargetMode: "OFF" as const,
     muteTargets: [],
@@ -3148,15 +3329,70 @@ function createSequence(id: string, name: string, bpm: number, events: StepEvent
 }
 
 function createDefaultSequenceTracks() {
-  return ["TRACK01"];
+  return [createTrack("TRACK01", "TRACK01", "PRG01")];
 }
 
 function createPrograms(): Program[] {
-  return [{ id: "PRG01", name: "PRG01" }];
+  return [createProgramDefinition("PRG01")];
+}
+
+function createProgramDefinition(id: string): Program {
+  return {
+    id,
+    name: id,
+    padAssignments: createPadAssignments(),
+    padMixer: createPadMixer(),
+    filter: { type: "OFF", cutoff: 100, resonance: 0 },
+    fx: { type: "OFF", sendLevel: 0 },
+  };
+}
+
+function createTrack(id: string, name: string, programId: string): Track {
+  return { id, name, programId, mute: false, solo: false, type: "DRUM", output: "MAIN" };
 }
 
 function getCurrentSequence(state: Pick<AppState, "sequences" | "currentSequence">) {
   return state.sequences.find((sequence) => sequence.id === state.currentSequence) ?? state.sequences[0];
+}
+
+function getTrackName(sequence: Sequence, trackId: string) {
+  return sequence.tracks.find((track) => track.id === trackId)?.name ?? trackId;
+}
+
+function getTrackProgramId(sequence: Sequence, trackId: string) {
+  return sequence.tracks.find((track) => track.id === trackId)?.programId;
+}
+
+function getProgramForPlayback(state: AppState, programId?: string) {
+  return state.programs.find((program) => program.id === programId) ??
+    state.programs.find((program) => program.id === state.currentProgramId) ??
+    state.programs[0];
+}
+
+function syncCurrentProgram(
+  state: Pick<AppState, "programs" | "currentProgramId" | "padAssignments" | "padMixer">,
+  overrides: Partial<Pick<Program, "padAssignments" | "padMixer">> = {},
+) {
+  return state.programs.map((program) =>
+    program.id === state.currentProgramId
+      ? {
+          ...program,
+          padAssignments: overrides.padAssignments ?? state.padAssignments,
+          padMixer: overrides.padMixer ?? state.padMixer,
+        }
+      : program,
+  );
+}
+
+function updatePadAssignmentsForProgram(
+  state: Pick<AppState, "padAssignments">,
+  bank: PadBank,
+  mapper: (pad: PadAssignment, index: number) => PadAssignment,
+) {
+  return {
+    ...state.padAssignments,
+    [bank]: state.padAssignments[bank].map(mapper),
+  };
 }
 
 function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, id: string) {
@@ -3166,9 +3402,9 @@ function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, i
       ? (state.performanceTracks as PerformanceTrack[])
       : [];
   const priorTrackId =
-    "currentTrackId" in state && sequence.tracks.includes(state.currentTrackId as string)
+    "currentTrackId" in state && sequence.tracks.some((track) => track.id === state.currentTrackId)
       ? (state.currentTrackId as string)
-      : sequence.tracks[0] ?? "TRACK01";
+      : sequence.tracks[0]?.id ?? "TRACK01";
   return {
     ...state,
     sequence: sequence.id,
@@ -3179,10 +3415,10 @@ function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, i
     bpm: sequence.bpm,
     stepEvents: sequence.events,
     currentTrackId: priorTrackId,
-    activeTrack: formatTrackName(priorTrackId, sequence.tracks.indexOf(priorTrackId)),
-    performanceTracks: sequence.tracks.map((name, index) => {
-      const previous = priorTracks.find((track) => track.name === name);
-      return previous ?? { name, muted: false, solo: false, activity: 28 + index * 8 };
+    activeTrack: formatTrackName(getTrackName(sequence, priorTrackId), sequence.tracks.findIndex((track) => track.id === priorTrackId)),
+    performanceTracks: sequence.tracks.map((track, index) => {
+      const previous = priorTracks.find((item) => item.id === track.id || item.name === track.name);
+      return previous ?? { id: track.id, name: track.name, muted: track.mute, solo: track.solo, activity: 28 + index * 8 };
     }),
     currentBar: 1,
     currentStep: 1,
@@ -3212,73 +3448,80 @@ function moveCurrentSequence(state: AppState, delta: number): Partial<AppState> 
 function moveCurrentTrack(state: AppState, delta: number): Partial<AppState> {
   const sequence = getCurrentSequence(state);
   const tracks = sequence.tracks.length > 0 ? sequence.tracks : createDefaultSequenceTracks();
-  const currentIndex = Math.max(tracks.indexOf(state.currentTrackId), 0);
+  const currentIndex = Math.max(tracks.findIndex((track) => track.id === state.currentTrackId), 0);
   if (delta > 0 && currentIndex === tracks.length - 1) return createNextTrack(state, tracks);
   const nextIndex = (currentIndex + delta + tracks.length) % tracks.length;
-  const currentTrackId = tracks[nextIndex];
+  const currentTrackId = tracks[nextIndex].id;
   return {
     currentTrackId,
-    activeTrack: formatTrackName(currentTrackId, nextIndex),
+    activeTrack: formatTrackName(tracks[nextIndex].name, nextIndex),
   };
 }
 
-function createNextTrack(state: AppState, tracks: string[]): Partial<AppState> {
+function createNextTrack(state: AppState, tracks: Track[]): Partial<AppState> {
   const currentTrackId = nextTrackId(tracks);
-  const nextTracks = [...tracks, currentTrackId];
+  const nextTrack = createTrack(currentTrackId, currentTrackId, state.currentProgramId);
+  const nextTracks = [...tracks, nextTrack];
   return {
     currentTrackId,
-    activeTrack: formatTrackName(currentTrackId, nextTracks.length - 1),
+    activeTrack: formatTrackName(nextTrack.name, nextTracks.length - 1),
     sequences: state.sequences.map((item) =>
       item.id === state.currentSequence ? { ...item, tracks: nextTracks } : item,
     ),
-    performanceTracks: [...state.performanceTracks, { name: currentTrackId, muted: false, solo: false, activity: 28 }],
+    performanceTracks: [...state.performanceTracks, { id: currentTrackId, name: nextTrack.name, muted: false, solo: false, activity: 28 }],
     mixerTracks: [...state.mixerTracks, { name: currentTrackId, level: 100, muted: false, solo: false }],
   };
 }
 
-function nextTrackId(tracks: string[]) {
-  const next = Math.max(...tracks.map((track) => Number(track.replace(/^TRACK/, ""))), 0) + 1;
+function nextTrackId(tracks: Track[]) {
+  const next = Math.max(...tracks.map((track) => Number(track.id.replace(/^TRACK/, ""))), 0) + 1;
   return `TRACK${String(next).padStart(2, "0")}`;
 }
 
 function renameCurrentTrack(state: AppState, name: string): Partial<AppState> {
   const sequence = getCurrentSequence(state);
   const tracks = sequence.tracks.length > 0 ? sequence.tracks : createDefaultSequenceTracks();
-  const currentIndex = Math.max(tracks.indexOf(state.currentTrackId), 0);
-  const currentTrackId = normalizeSequenceOrTrackName(name, tracks[currentIndex] ?? `TRACK${String(currentIndex + 1).padStart(2, "0")}`);
-  const nextTracks = tracks.map((track, index) => (index === currentIndex ? currentTrackId : track));
+  const currentIndex = Math.max(tracks.findIndex((track) => track.id === state.currentTrackId), 0);
+  const currentTrack = tracks[currentIndex] ?? createTrack(`TRACK${String(currentIndex + 1).padStart(2, "0")}`, `TRACK${String(currentIndex + 1).padStart(2, "0")}`, state.currentProgramId);
+  const nextName = normalizeSequenceOrTrackName(name, currentTrack.name);
+  const nextTracks = tracks.map((track, index) => (index === currentIndex ? { ...track, name: nextName } : track));
   const stepEvents = state.stepEvents.map((event) =>
-    event.trackId === state.currentTrackId ? { ...event, trackId: currentTrackId, trackName: currentTrackId } : event,
+    event.trackId === state.currentTrackId ? { ...event, trackName: nextName } : event,
   );
   return {
-    currentTrackId,
-    activeTrack: formatTrackName(currentTrackId, currentIndex),
+    activeTrack: formatTrackName(nextName, currentIndex),
     stepEvents,
     sequences: state.sequences.map((item) =>
       item.id === state.currentSequence ? { ...item, tracks: nextTracks, events: stepEvents } : item,
     ),
     performanceTracks: state.performanceTracks.map((track) =>
-      track.name === state.currentTrackId ? { ...track, name: currentTrackId } : track,
+      track.id === state.currentTrackId ? { ...track, name: nextName } : track,
     ),
   };
 }
 
 function moveCurrentProgram(state: AppState, delta: number): Partial<AppState> {
   const currentIndex = state.programs.findIndex((program) => program.id === state.currentProgramId);
+  const syncedPrograms = syncCurrentProgram(state);
   if (delta > 0 && currentIndex === state.programs.length - 1) {
     const id = nextProgramId(state.programs);
-    const program = { id, name: id };
+    const program = createProgramDefinition(id);
     return {
-      programs: [...state.programs, program],
+      programs: [...syncedPrograms, program],
       currentProgramId: id,
       activeProgram: program.name,
+      padAssignments: program.padAssignments,
+      padMixer: program.padMixer,
     };
   }
   const nextIndex = (Math.max(currentIndex, 0) + delta + state.programs.length) % state.programs.length;
-  const program = state.programs[nextIndex] ?? state.programs[0];
+  const program = syncedPrograms[nextIndex] ?? syncedPrograms[0];
   return {
+    programs: syncedPrograms,
     currentProgramId: program.id,
     activeProgram: program.name,
+    padAssignments: program.padAssignments,
+    padMixer: program.padMixer,
   };
 }
 
@@ -3308,8 +3551,11 @@ function createStepEvent(bar: number, step: number, pad: string, velocity: numbe
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${quarter}.${String(tick).padStart(2, "0")}`,
     pad,
+    padNumber: padNumberFromPad(pad),
     trackId: "TRACK01",
     trackName: "TRACK01",
+    padBank: "A",
+    programId: "PRG01",
     velocity,
     length: pad === "P08" ? 12 : 24,
     duration: pad === "P08" ? 12 : 24,

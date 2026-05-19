@@ -53,7 +53,10 @@ export function StepScreen() {
                 const selected = absoluteIndex === selectedEventIndex;
                 const playing = !muted && eventStepIndex(event.step) === currentStepIndex;
                 const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
-                const assigned = isPadAssigned({ padAssignments, padBank }, event.pad);
+                const eventBank = event.padBank ?? "A";
+                const eventPadNumber = event.padNumber ?? (Number(event.pad.replace(/^P/, "")) || 1);
+                const eventPad = `P${String(eventPadNumber).padStart(2, "0")}`;
+                const assigned = isPadAssigned({ padAssignments, padBank: eventBank }, eventPad);
                 return (
                   <div
                     key={event.id}
@@ -68,7 +71,7 @@ export function StepScreen() {
                     }`}
                   >
                     <span>{event.step}</span>
-                    <span>{assigned ? event.pad : "UNASSIGNED PAD"}</span>
+                    <span>{assigned ? `${eventBank}${String(eventPadNumber).padStart(2, "0")}` : "UNASSIGNED PAD"}</span>
                     <span>{String(event.velocity).padStart(3, "0")}</span>
                     <span>{tag}</span>
                   </div>
@@ -94,7 +97,7 @@ export function StepScreen() {
             <Info label="TRACK" value={activeTrack} />
             <Info label="SEQ" value={`${sequence} ${sequenceName}`} />
             <Info label="TYPE" value={selectedEvent ? (selectedEvent.noteRepeatGenerated ? "NOTE REPEAT" : selectedEvent.appliedParameter ? "16 LEVELS" : selectedEvent.type) : "---"} />
-            <Info label="PAD STATUS" value={selectedEvent && isPadAssigned({ padAssignments, padBank }, selectedEvent.pad) ? "ASSIGNED" : "UNASSIGNED PAD"} />
+            <Info label="PAD STATUS" value={selectedEvent && isPadAssigned({ padAssignments, padBank: selectedEvent.padBank ?? "A" }, formatEventPad(selectedEvent)) ? "ASSIGNED" : "UNASSIGNED PAD"} />
           </section>
         </div>
 
@@ -135,6 +138,11 @@ function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
 function eventStepIndex(step: string) {
   const [eventBar, beat, tick] = step.split(".").map(Number);
   return (eventBar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24);
+}
+
+function formatEventPad(event: { pad: string; padNumber?: number }) {
+  const padNumber = event.padNumber ?? (Number(event.pad.replace(/^P/, "")) || 1);
+  return `P${String(padNumber).padStart(2, "0")}`;
 }
 
 function formatSigned(value: number) {
