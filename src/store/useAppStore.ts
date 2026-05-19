@@ -3,8 +3,10 @@ import type { ScreenId } from "../types/navigation";
 import { startRecordingCapture, type ActiveRecordingCapture, type RecordingInputSource } from "../audio/recordingCapture";
 import { samplerEngine } from "../audio/samplerEngine";
 import { createSampleId, createWaveformCache, encodeWavRegion, getSampleAudioRef, registerSampleAudio } from "../audio/sampleLibrary";
+import metronomeSampleUrl from "../../assets/Samples/Metronome.wav?url";
 
 type PadBank = "A" | "B" | "C" | "D";
+type TimeSignature = "2/4" | "3/4" | "4/4" | "5/4" | "6/8" | "7/8";
 type ChopMarkerSelection = "sampleStart" | "sampleEnd" | "loopStart" | "loopEnd" | `slice:${number}` | null;
 type RecordedSample = {
   id: string;
@@ -36,7 +38,7 @@ type AppState = {
   sequences: Sequence[];
   currentSequence: string;
   sequenceLengthBars: number;
-  timeSignature: "4/4";
+  timeSignature: TimeSignature;
   sequenceName: string;
   bar: string;
   bpm: number;
@@ -51,7 +53,10 @@ type AppState = {
   noteRepeatGate: number;
   noteRepeatLinkToTC: boolean;
   noteRepeatTriplet: boolean;
+  currentTrackId: string;
   activeTrack: string;
+  programs: Program[];
+  currentProgramId: string;
   activeProgram: string;
   currentBar: number;
   currentStep: number;
@@ -68,6 +73,10 @@ type AppState = {
   countInMode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR";
   countInClickDuring: "REC ONLY" | "PLAY+REC" | "ALWAYS" | "OFF";
   countInClickVolume: number;
+  metronomeEnabled: boolean;
+  metronomeDuringRecord: boolean;
+  metronomeCountInBars: number;
+  metronomeVolume: number;
   timingCorrectionCountEnabled: boolean;
   waitPadCompatEnabled: boolean;
   transportPhase: "IDLE" | "WAIT_PAD" | "COUNT_IN";
@@ -98,6 +107,7 @@ type AppState = {
     velocityMode: "FIXED" | "PAD";
     timingCorrection: "1/4" | "1/8" | "1/16" | "1/16T" | "1/32" | "1/32T";
   };
+  overdubEnabled: boolean;
   isPlaying: boolean;
   isSequenceRecording: boolean;
   isSamplingArmed: boolean;
@@ -171,11 +181,16 @@ type AppState = {
   togglePlay: () => void;
   stopPlayback: () => void;
   toggleSequenceRecording: () => void;
+  toggleOverdub: () => void;
   toggleWaitPad: () => void;
   openCountInUtility: () => void;
   setCountInMode: (mode: AppState["countInMode"]) => void;
   cycleCountInClickDuring: () => void;
   adjustCountInClickVolume: (delta: number) => void;
+  toggleMetronomeEnabled: () => void;
+  toggleMetronomeDuringRecord: () => void;
+  adjustMetronomeCountInBars: (delta: number) => void;
+  adjustMetronomeVolume: (delta: number) => void;
   toggleTimingCorrectionCount: () => void;
   toggleWaitPadCompat: () => void;
   requestTransportStart: (action: "PLAY" | "REC") => void;
@@ -212,7 +227,20 @@ type AppState = {
   duplicateCurrentSequence: () => void;
   deleteCurrentSequence: () => void;
   renameCurrentSequence: () => void;
+  setCurrentSequenceName: (name: string) => void;
+  setCurrentTrackName: (name: string) => void;
+  setCurrentProgramName: (name: string) => void;
+  previousSequence: () => void;
+  nextSequence: () => void;
+  previousTrack: () => void;
+  nextTrack: () => void;
+  previousProgram: () => void;
+  nextProgram: () => void;
+  createProgram: () => void;
   cycleTimingCorrect: () => void;
+  adjustSequenceLengthBars: (delta: number) => void;
+  cycleTimeSignature: (delta: number) => void;
+  adjustBpm: (delta: number) => void;
   adjustSwing: (delta: number) => void;
   adjustQuantizeStrength: (delta: number) => void;
   cycleTimingApplyTo: () => void;
@@ -339,6 +367,8 @@ type StepEvent = {
   trackName?: string;
   physicalPad?: string;
   sourcePad?: string;
+  sourceAssignment?: string;
+  padBank?: PadBank;
   appliedParameter?: AppState["sixteenLevelsParameter"];
   appliedValue?: number;
   parameterValue?: number;
@@ -357,10 +387,15 @@ type Sequence = {
   id: string;
   name: string;
   lengthBars: number;
-  timeSignature: "4/4";
+  timeSignature: TimeSignature;
   bpm: number;
   tracks: string[];
   events: StepEvent[];
+};
+
+type Program = {
+  id: string;
+  name: string;
 };
 
 type SongStep = {
@@ -428,6 +463,9 @@ type SettingsValues = {
   bpmSync: boolean;
   midiClock: "OFF" | "IN" | "OUT";
   metronomeEnabled: boolean;
+  metronomeDuringRecord: boolean;
+  metronomeCountInBars: number;
+  metronomeVolume: number;
   padCurve: "SOFT" | "LINEAR" | "HARD";
   displayBrightness: number;
   autoSave: boolean;
@@ -438,8 +476,11 @@ type SettingsValues = {
 
 let eventIdCounter = 0;
 let activeRecordingCapture: ActiveRecordingCapture | null = null;
+let sequenceStepStartedAt = typeof performance !== "undefined" ? performance.now() : 0;
+let metronomeBufferId: string | null = null;
+let metronomeLoadPromise: Promise<string | null> | null = null;
 
-const initialStepEvents = createStepEvents();
+const initialStepEvents: StepEvent[] = [];
 
 export const useAppStore = create<AppState>((set, get) => ({
   activeScreen: "MAIN",
@@ -450,7 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentSequence: "01",
   sequenceLengthBars: 4,
   timeSignature: "4/4",
-  sequenceName: "SEQ 01",
+  sequenceName: "SEQ01",
   bar: "001.01.00",
   bpm: 94,
   swing: 54,
@@ -464,8 +505,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   noteRepeatGate: 75,
   noteRepeatLinkToTC: true,
   noteRepeatTriplet: false,
-  activeTrack: "01 DRUMS",
-  activeProgram: "KIT A",
+  currentTrackId: "TRACK01",
+  activeTrack: formatTrackName("TRACK01", 0),
+  programs: createPrograms(),
+  currentProgramId: "PRG01",
+  activeProgram: "PRG01",
   currentBar: 1,
   currentStep: 1,
   currentEvent: 1,
@@ -476,9 +520,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentPadMode: "PAD_PLAY",
   fullLevelEnabled: false,
   waitPadEnabled: false,
-  countInMode: "OFF",
-  countInClickDuring: "PLAY+REC",
+  countInMode: "1 BAR",
+  countInClickDuring: "REC ONLY",
   countInClickVolume: 70,
+  metronomeEnabled: true,
+  metronomeDuringRecord: true,
+  metronomeCountInBars: 1,
+  metronomeVolume: 70,
   timingCorrectionCountEnabled: true,
   waitPadCompatEnabled: true,
   transportPhase: "IDLE",
@@ -503,6 +551,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sixteenLevelsRangeMax: 127,
   lastSixteenLevelsValue: 96,
   noteRepeat: { rate: "1/16", gate: 75, swing: 54, velocityMode: "PAD", timingCorrection: "1/16" },
+  overdubEnabled: true,
   isPlaying: false,
   isSequenceRecording: false,
   isSamplingArmed: false,
@@ -551,19 +600,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   eventEditMode: "VELOCITY",
   currentStepIndex: 0,
   mixerTracks: [
-    { name: "01 DRUMS", level: 100, muted: false, solo: false },
-    { name: "02 BASS", level: 96, muted: false, solo: false },
-    { name: "03 CHOPS", level: 104, muted: false, solo: false },
-    { name: "04 TEXTURE", level: 88, muted: false, solo: false },
+    { name: "TRACK01", level: 100, muted: false, solo: false },
   ],
   padMixer: createPadMixer(),
   performanceTracks: [
-    { name: "DRUMS", muted: false, solo: false, activity: 78 },
-    { name: "BASS", muted: false, solo: false, activity: 62 },
-    { name: "CHOPS", muted: false, solo: false, activity: 54 },
-    { name: "FX", muted: false, solo: false, activity: 36 },
-    { name: "TEXTURE", muted: false, solo: false, activity: 44 },
-    { name: "VOX", muted: false, solo: false, activity: 28 },
+    { name: "TRACK01", muted: false, solo: false, activity: 28 },
   ],
   trackMuteMode: "MUTE",
   lastPerformanceMessage: "",
@@ -588,6 +629,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     bpmSync: true,
     midiClock: "OUT",
     metronomeEnabled: true,
+    metronomeDuringRecord: true,
+    metronomeCountInBars: 1,
+    metronomeVolume: 70,
     padCurve: "LINEAR",
     displayBrightness: 72,
     autoSave: false,
@@ -636,22 +680,81 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       return;
     }
+    if (state.isPlaying) {
+      if (state.metronomeEnabled && state.metronomeCountInBars > 0) {
+        set({
+          transportPhase: "COUNT_IN",
+          transportPendingAction: "REC",
+          transportCountInBeatsRemaining: state.metronomeCountInBars * beatsPerBar(state),
+          transportCountInPulse: 0,
+          transportAnnouncement: "COUNT IN...",
+        });
+        playMetronomeClick(state, true);
+        return;
+      }
+      set({ isSequenceRecording: true, transportAnnouncement: "RECORDING..." });
+      return;
+    }
     requestTransportStartImpl("REC", set, get);
   },
+  toggleOverdub: () => set((state) => ({ overdubEnabled: !state.overdubEnabled })),
   toggleWaitPad: () => set((state) => ({ waitPadEnabled: !state.waitPadEnabled })),
   openCountInUtility: () =>
     set((state) => ({
       activeScreen: "COUNT_IN",
       utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
     })),
-  setCountInMode: (countInMode) => set({ countInMode }),
+  setCountInMode: (countInMode) =>
+    set((state) => {
+      const metronomeCountInBars = countInModeToBars(countInMode);
+      return {
+        countInMode,
+        metronomeCountInBars,
+        settingsValues: { ...state.settingsValues, metronomeCountInBars },
+      };
+    }),
   cycleCountInClickDuring: () =>
     set((state) => {
       const order: AppState["countInClickDuring"][] = ["REC ONLY", "PLAY+REC", "ALWAYS", "OFF"];
       return { countInClickDuring: order[(order.indexOf(state.countInClickDuring) + 1) % order.length] };
     }),
   adjustCountInClickVolume: (delta) =>
-    set((state) => ({ countInClickVolume: clamp(state.countInClickVolume + delta, 0, 100) })),
+    set((state) => {
+      const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 100);
+      return {
+        countInClickVolume: metronomeVolume,
+        metronomeVolume,
+        settingsValues: { ...state.settingsValues, metronomeVolume },
+      };
+    }),
+  toggleMetronomeEnabled: () =>
+    set((state) => ({
+      metronomeEnabled: !state.metronomeEnabled,
+      settingsValues: { ...state.settingsValues, metronomeEnabled: !state.metronomeEnabled },
+    })),
+  toggleMetronomeDuringRecord: () =>
+    set((state) => ({
+      metronomeDuringRecord: !state.metronomeDuringRecord,
+      settingsValues: { ...state.settingsValues, metronomeDuringRecord: !state.metronomeDuringRecord },
+    })),
+  adjustMetronomeCountInBars: (delta) =>
+    set((state) => {
+      const metronomeCountInBars = clamp(state.metronomeCountInBars + delta, 0, 4);
+      return {
+        metronomeCountInBars,
+        countInMode: countInBarsToMode(metronomeCountInBars),
+        settingsValues: { ...state.settingsValues, metronomeCountInBars },
+      };
+    }),
+  adjustMetronomeVolume: (delta) =>
+    set((state) => {
+      const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 100);
+      return {
+        metronomeVolume,
+        countInClickVolume: metronomeVolume,
+        settingsValues: { ...state.settingsValues, metronomeVolume },
+      };
+    }),
   toggleTimingCorrectionCount: () =>
     set((state) => ({ timingCorrectionCountEnabled: !state.timingCorrectionCountEnabled })),
   toggleWaitPadCompat: () => set((state) => ({ waitPadCompatEnabled: !state.waitPadCompatEnabled })),
@@ -797,7 +900,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? state.timingCorrect
           : state.noteRepeatRate;
         const repeatedEvents = createRepeatedNoteEvents(state, selectedPad, rate);
-        const events = state.isSequenceRecording
+        const events = state.isSequenceRecording && state.isPlaying
           ? [...state.stepEvents, ...repeatedEvents].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step))
           : state.stepEvents;
         return {
@@ -886,8 +989,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (state.transportPhase === "WAIT_PAD" && state.transportPendingAction) {
         const pendingAction = state.transportPendingAction;
-        const countInBeats = countInModeToBeats(state.countInMode);
+        const countInBeats =
+          pendingAction === "REC" && state.metronomeEnabled
+            ? state.metronomeCountInBars * beatsPerBar(state)
+            : 0;
         if (countInBeats > 0) {
+          playMetronomeClick(state, true);
           return {
             selectedPad,
             lastTriggeredPad: selectedPad,
@@ -896,7 +1003,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             transportPendingAction: pendingAction,
             transportCountInBeatsRemaining: countInBeats,
             transportCountInPulse: 0,
-            transportAnnouncement: `COUNT IN ${state.countInMode}`,
+            transportAnnouncement: "COUNT IN...",
             triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
           };
         }
@@ -923,6 +1030,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           {
             physicalPad: selectedPad,
             sourcePad: state.sixteenLevelsSourcePad,
+            trackId: state.currentTrackId,
+            trackName: state.currentTrackId,
             appliedParameter: state.sixteenLevelsParameter,
             appliedValue,
             parameterValue: appliedValue,
@@ -957,11 +1066,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.recordedSamples.length > 0 &&
         padNumber >= 1 &&
         padNumber <= state.chopMarkers.length;
+      const velocity = state.fullLevelEnabled ? 127 : 72 + ((padNumber * 17 + Date.now()) % 48);
+      const recordedEvent =
+        state.isSequenceRecording && state.isPlaying
+          ? createRecordedPadEvent(state, selectedPad, velocity)
+          : null;
+      const events = recordedEvent
+        ? [...state.stepEvents, recordedEvent].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step))
+        : state.stepEvents;
 
       return {
         selectedPad,
         lastTriggeredPad: selectedPad,
-        lastPadVelocity: state.fullLevelEnabled ? 127 : 72 + ((padNumber * 17 + Date.now()) % 48),
+        lastPadVelocity: velocity,
+        stepEvents: events,
+        sequences: recordedEvent ? updateCurrentSequenceEvents(state, events) : state.sequences,
+        lastAction: recordedEvent && !state.overdubEnabled ? "TODO REPLACE MODE - OVERDUB OFF" : state.lastAction,
         selectedSlice: canSelectSlice ? padNumber : state.selectedSlice,
         chopCursor: canSelectSlice ? state.chopMarkers[padNumber - 1] : state.chopCursor,
         triggeredPads: { ...state.triggeredPads, [selectedPad]: true },
@@ -1082,7 +1202,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   createSequence: () =>
     set((state) => {
       const id = nextSequenceId(state.sequences);
-      const sequence = createSequence(id, `SEQ ${id}`, state.bpm, []);
+      const sequence = createSequence(id, `SEQ${id}`, state.bpm, []);
       return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
     }),
   duplicateCurrentSequence: () =>
@@ -1092,7 +1212,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const sequence = {
         ...current,
         id,
-        name: `${current.name} COPY`,
+        name: `SEQ${id}`,
         events: current.events.map((event) => ({ ...event })),
       };
       return applyCurrentSequence({ ...state, sequences: [...state.sequences, sequence] }, id);
@@ -1115,6 +1235,65 @@ export const useAppStore = create<AppState>((set, get) => ({
         sequenceName: nextName,
       };
     }),
+  setCurrentSequenceName: (name) =>
+    set((state) => {
+      const nextName = normalizeSequenceOrTrackName(name, state.sequenceName);
+      return {
+        sequenceName: nextName,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, name: nextName } : sequence,
+        ),
+      };
+    }),
+  setCurrentTrackName: (name) =>
+    set((state) => renameCurrentTrack(state, name)),
+  setCurrentProgramName: (name) =>
+    set((state) => renameCurrentProgram(state, name)),
+  previousSequence: () =>
+    set((state) => moveCurrentSequence(state, -1)),
+  nextSequence: () =>
+    set((state) => moveCurrentSequence(state, 1)),
+  previousTrack: () =>
+    set((state) => moveCurrentTrack(state, -1)),
+  nextTrack: () =>
+    set((state) => moveCurrentTrack(state, 1)),
+  previousProgram: () =>
+    set((state) => moveCurrentProgram(state, -1)),
+  nextProgram: () =>
+    set((state) => moveCurrentProgram(state, 1)),
+  createProgram: () =>
+    set((state) => {
+      const id = nextProgramId(state.programs);
+      const program = { id, name: id };
+      return {
+        programs: [...state.programs, program],
+        currentProgramId: id,
+        activeProgram: program.name,
+      };
+    }),
+  adjustSequenceLengthBars: (delta) =>
+    set((state) => {
+      const sequenceLengthBars = clamp(state.sequenceLengthBars + delta, 1, 999);
+      return {
+        ...clampTransportToSequenceLength(state, sequenceLengthBars),
+        sequenceLengthBars,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, lengthBars: sequenceLengthBars } : sequence,
+        ),
+      };
+    }),
+  cycleTimeSignature: (delta) =>
+    set((state) => {
+      const values: TimeSignature[] = ["2/4", "3/4", "4/4", "5/4", "6/8", "7/8"];
+      const currentIndex = values.indexOf(state.timeSignature);
+      const timeSignature = values[(Math.max(currentIndex, 0) + delta + values.length) % values.length];
+      return {
+        timeSignature,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, timeSignature } : sequence,
+        ),
+      };
+    }),
   cycleTimingCorrect: () =>
     set((state) => {
       const values: AppState["timingCorrect"][] = ["OFF", "1/4", "1/8", "1/16", "1/16T", "1/32", "1/32T"];
@@ -1125,6 +1304,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         noteRepeat: state.noteRepeatLinkToTC
           ? { ...state.noteRepeat, rate: timingCorrect === "OFF" ? state.noteRepeat.rate : timingCorrect, timingCorrection: timingCorrect === "OFF" ? state.noteRepeat.timingCorrection : timingCorrect }
           : state.noteRepeat,
+      };
+    }),
+  adjustBpm: (delta) =>
+    set((state) => {
+      const bpm = clamp(Math.round((state.bpm + delta) * 100) / 100, 40, 240);
+      return {
+        bpm,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, bpm } : sequence,
+        ),
       };
     }),
   adjustSwing: (delta) =>
@@ -1757,10 +1946,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (!state.isPlaying) return;
     const currentStepIndex = (state.currentStepIndex + 1) % (state.sequenceLengthBars * 16);
-    const eventsAtStep = state.stepEvents.filter(
-      (event) => eventStepIndex(event.step) === currentStepIndex && !isTrackMuted(state, event.trackId),
+    sequenceStepStartedAt = performance.now();
+    const nextStepIndex = (currentStepIndex + 1) % (state.sequenceLengthBars * 16);
+    const ppqMs = 60_000 / state.bpm / 96;
+    const stepMs = ppqMs * 24;
+    const eventsAtStep = state.stepEvents.filter((event) =>
+      eventStepIndex(event.step) === currentStepIndex &&
+      event.timingOffset >= 0 &&
+      shouldPlayStepEvent(state, event)
     );
-    eventsAtStep.forEach((event) => playAssignedPadFromState(state, event.pad));
+    const earlyNextEvents = state.stepEvents.filter((event) =>
+      eventStepIndex(event.step) === nextStepIndex &&
+      event.timingOffset < 0 &&
+      shouldPlayStepEvent(state, event)
+    );
+    eventsAtStep.forEach((event) => playStepEventFromState(state, event, event.timingOffset * ppqMs));
+    earlyNextEvents.forEach((event) => playStepEventFromState(state, event, stepMs + event.timingOffset * ppqMs));
     const currentBar = Math.floor(currentStepIndex / 16) + 1;
     const currentStep = (currentStepIndex % 16) + 1;
     const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
@@ -1885,25 +2086,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   tickTransport: (deltaMs) =>
     set((state) => {
-      if (state.transportPhase !== "COUNT_IN" || state.transportCountInBeatsRemaining <= 0) return state;
+      if (state.transportPhase !== "COUNT_IN" || state.transportCountInBeatsRemaining <= 0) {
+        if (state.isPlaying && state.isSequenceRecording && shouldClickDuringRecord(state)) {
+          const beatMs = 60000 / state.bpm;
+          const nextPulse = state.transportCountInPulse + deltaMs;
+          if (nextPulse < beatMs) return { transportCountInPulse: nextPulse };
+          playMetronomeClick(state, isFirstBeatOfBar(state.currentStepIndex + 1, state));
+          return { transportCountInPulse: nextPulse - beatMs };
+        }
+        return state;
+      }
       const beatMs = 60000 / state.bpm;
       const nextPulse = state.transportCountInPulse + deltaMs;
       if (nextPulse < beatMs) return { transportCountInPulse: nextPulse };
       const remaining = state.transportCountInBeatsRemaining - 1;
       if (remaining <= 0 && state.transportPendingAction) {
+        if (state.transportPendingAction === "REC" && state.isPlaying) {
+          return {
+            isSequenceRecording: true,
+            transportPhase: "IDLE",
+            transportPendingAction: null,
+            transportCountInBeatsRemaining: 0,
+            transportCountInPulse: 0,
+            transportAnnouncement: "RECORDING...",
+          };
+        }
         startTransportAction(state.transportPendingAction, set, get);
         return {
           transportPhase: "IDLE",
           transportPendingAction: null,
           transportCountInBeatsRemaining: 0,
           transportCountInPulse: 0,
-          transportAnnouncement: "",
+          transportAnnouncement: state.transportPendingAction === "REC" ? "RECORDING..." : "",
         };
       }
+      playMetronomeClick(state, remaining % beatsPerBar(state) === 0);
       return {
         transportCountInBeatsRemaining: remaining,
         transportCountInPulse: nextPulse - beatMs,
-        transportAnnouncement: `COUNT IN ${state.countInMode}`,
+        transportAnnouncement: "COUNT IN...",
       };
     }),
   openDiskFolder: (activeDiskFolderId) => set({ activeDiskFolderId, selectedDiskItemIndex: 0 }),
@@ -2033,6 +2254,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const nextValue = clamp(current + delta * (setting.step ?? 1), setting.min ?? current, setting.max ?? current);
         if (setting.key === "masterVolume") samplerEngine.setMasterVolume(nextValue);
         return {
+          ...metronomeSettingPatch(setting.key, nextValue),
           settingsValues: {
             ...state.settingsValues,
             [setting.key]: nextValue,
@@ -2052,10 +2274,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       const category = state.settingsCategories.find((item) => item.id === state.activeSettingsCategoryId);
       const setting = category?.settings[state.selectedSettingIndex];
       if (!setting || setting.kind !== "toggle") return state;
+      const nextValue = !state.settingsValues[setting.key];
       return {
+        ...metronomeSettingPatch(setting.key, nextValue),
         settingsValues: {
           ...state.settingsValues,
-          [setting.key]: !state.settingsValues[setting.key],
+          [setting.key]: nextValue,
         },
       };
     }),
@@ -2087,6 +2311,16 @@ function pushHistory(history: string[], action: string) {
   return [...history, action].slice(-8);
 }
 
+function metronomeSettingPatch(key: keyof SettingsValues, value: SettingsValues[keyof SettingsValues]): Partial<AppState> {
+  if (key === "metronomeEnabled" && typeof value === "boolean") return { metronomeEnabled: value };
+  if (key === "metronomeDuringRecord" && typeof value === "boolean") return { metronomeDuringRecord: value };
+  if (key === "metronomeCountInBars" && typeof value === "number") {
+    return { metronomeCountInBars: value, countInMode: countInBarsToMode(value) };
+  }
+  if (key === "metronomeVolume" && typeof value === "number") return { metronomeVolume: value, countInClickVolume: value };
+  return {};
+}
+
 function nearestEventAtOrAfter(events: StepEvent[], stepIndex: number) {
   if (events.length === 0) return 0;
   const nextIndex = events.findIndex((event) => eventStepIndex(event.step) >= stepIndex);
@@ -2102,6 +2336,23 @@ function selectedEventPatch(events: StepEvent[], selectedEventIndex: number) {
   };
 }
 
+function clampTransportToSequenceLength(state: AppState, sequenceLengthBars: number): Partial<AppState> {
+  const maxStepIndex = sequenceLengthBars * 16 - 1;
+  const currentStepIndex = clamp(state.currentStepIndex, state.currentStepIndex < 0 ? -1 : 0, maxStepIndex);
+  if (currentStepIndex < 0) return { currentBar: 1, currentStep: 1, currentStepIndex, bar: "001.01.00" };
+  const currentBar = Math.floor(currentStepIndex / 16) + 1;
+  const currentStep = (currentStepIndex % 16) + 1;
+  const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
+  return {
+    currentBar,
+    currentStep,
+    currentStepIndex,
+    currentEvent: selectedStepEventIndex + 1,
+    ...selectedEventPatch(state.stepEvents, selectedStepEventIndex),
+    bar: formatBarPosition(currentBar, currentStep),
+  };
+}
+
 function updateCurrentSequenceEvents(state: Pick<AppState, "sequences" | "currentSequence">, events: StepEvent[]) {
   return state.sequences.map((sequence) =>
     sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
@@ -2111,6 +2362,55 @@ function updateCurrentSequenceEvents(state: Pick<AppState, "sequences" | "curren
 function eventStepIndex(step: string) {
   const [bar, beat, tick] = step.split(".").map(Number);
   return (bar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24);
+}
+
+function createRecordedPadEvent(state: AppState, pad: string, velocity: number) {
+  const position = getRecordedEventPosition(state);
+  const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
+  return createStepEventAtPosition(position.stepIndex, position.tickOffset, pad, velocity, state.noteRepeatGate, {
+    trackId: state.currentTrackId,
+    trackName: state.currentTrackId,
+    sourcePad: pad,
+    sourceAssignment: assignment?.assignment === "---" ? undefined : assignment?.assignment,
+    padBank: state.padBank,
+    variation: "REC",
+  });
+}
+
+function getRecordedEventPosition(state: AppState) {
+  const ppqMs = 60_000 / state.bpm / 96;
+  const elapsedTicks = ppqMs > 0 ? Math.round((performance.now() - sequenceStepStartedAt) / ppqMs) : 0;
+  const rawTickOffset = clamp(elapsedTicks, 0, 23);
+  const totalTicks = Math.max(0, state.currentStepIndex) * 24 + rawTickOffset;
+  const sequenceTicks = state.sequenceLengthBars * 16 * 24;
+  const quantizedTicks =
+    state.timingCorrect === "OFF"
+      ? totalTicks
+      : Math.round(totalTicks / timingCorrectGridTicks(state.timingCorrect)) * timingCorrectGridTicks(state.timingCorrect);
+  const boundedTicks = ((quantizedTicks % sequenceTicks) + sequenceTicks) % sequenceTicks;
+  return {
+    stepIndex: Math.floor(boundedTicks / 24),
+    tickOffset: boundedTicks % 24,
+  };
+}
+
+function timingCorrectGridTicks(timingCorrect: AppState["timingCorrect"]) {
+  switch (timingCorrect) {
+    case "1/4":
+      return 96;
+    case "1/8":
+      return 48;
+    case "1/16":
+      return 24;
+    case "1/16T":
+      return 16;
+    case "1/32":
+      return 12;
+    case "1/32T":
+      return 8;
+    case "OFF":
+      return 1;
+  }
 }
 
 function createRepeatedNoteEvents(state: AppState, pad: string, rate: AppState["noteRepeatRate"]) {
@@ -2128,8 +2428,8 @@ function createRepeatedNoteEvents(state: AppState, pad: string, rate: AppState["
           : 96;
     const swingOffset = index % 2 === 1 ? Math.round((state.swing - 50) / 5) : 0;
     return createStepEventFromIndex(stepIndex, pad, velocity, state.noteRepeatGate, swingOffset, {
-      trackId: "DRUMS",
-      trackName: "DRUMS",
+      trackId: state.currentTrackId,
+      trackName: state.currentTrackId,
       noteRepeatGenerated: true,
     });
   });
@@ -2168,8 +2468,8 @@ function createStepEventFromIndex(
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${beat}.${String(tick).padStart(2, "0")}`,
     pad,
-    trackId: "DRUMS",
-    trackName: "DRUMS",
+    trackId: "TRACK01",
+    trackName: "TRACK01",
     velocity,
     length: Math.max(1, Math.round((gate / 100) * 24)),
     duration: Math.max(1, Math.round((gate / 100) * 24)),
@@ -2177,6 +2477,37 @@ function createStepEventFromIndex(
     timingOffset,
     probability: 100,
     variation: "REPEAT",
+    muted: false,
+    ...extra,
+  };
+}
+
+function createStepEventAtPosition(
+  stepIndex: number,
+  tickOffset: number,
+  pad: string,
+  velocity: number,
+  gate: number,
+  extra?: Partial<StepEvent>,
+): StepEvent {
+  const bar = Math.floor(stepIndex / 16);
+  const local = stepIndex % 16;
+  const tickInBar = local * 24 + tickOffset;
+  const beat = Math.floor(tickInBar / 96) + 1;
+  const tick = tickInBar % 96;
+  return {
+    id: nextEventId(),
+    step: `${String(bar + 1).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`,
+    pad,
+    trackId: "TRACK01",
+    trackName: "TRACK01",
+    velocity,
+    length: Math.max(1, Math.round((gate / 100) * 24)),
+    duration: Math.max(1, Math.round((gate / 100) * 24)),
+    type: "NOTE",
+    timingOffset: tickOffset,
+    probability: 100,
+    variation: "REC",
     muted: false,
     ...extra,
   };
@@ -2435,6 +2766,24 @@ function playAssignedPadFromState(state: AppState, pad: string) {
     voiceGroup,
     mono: assignment.voiceMode === "MONO",
   });
+}
+
+function shouldPlayStepEvent(state: AppState, event: StepEvent) {
+  if (isTrackMuted(state, event.trackId)) return false;
+  if (event.muted) return false;
+  return event.probability >= 100 || Math.random() * 100 < event.probability;
+}
+
+function playStepEventFromState(state: AppState, event: StepEvent, delayMs: number) {
+  if (delayMs <= 0) {
+    playAssignedPadFromState(state, event.pad);
+    return;
+  }
+  window.setTimeout(() => {
+    const liveState = useAppStore.getState();
+    if (!liveState.isPlaying || liveState.currentSequence !== state.currentSequence) return;
+    playAssignedPadFromState(liveState, event.pad);
+  }, delayMs);
 }
 
 function resolveTemporaryChopPreview(state: AppState, sliceIndex: number) {
@@ -2790,15 +3139,20 @@ function createStepEvents(): StepEvent[] {
 
 function createSequences(firstSequenceEvents = createStepEvents()): Sequence[] {
   return [
-    createSequence("01", "SEQ 01", 94, firstSequenceEvents),
-    createSequence("02", "SEQ 02", 96, createStepEvents().slice(0, 18)),
-    createSequence("03", "SEQ 03", 92, createStepEvents().slice(8, 28)),
-    createSequence("04", "SEQ 04", 100, createStepEvents().slice(0, 12)),
+    createSequence("01", "SEQ01", 94, firstSequenceEvents),
   ];
 }
 
 function createSequence(id: string, name: string, bpm: number, events: StepEvent[]): Sequence {
-  return { id, name, lengthBars: 4, timeSignature: "4/4", bpm, tracks: ["DRUMS", "BASS", "CHOPS", "FX", "TEXTURE", "VOX"], events };
+  return { id, name, lengthBars: 4, timeSignature: "4/4", bpm, tracks: createDefaultSequenceTracks(), events };
+}
+
+function createDefaultSequenceTracks() {
+  return ["TRACK01"];
+}
+
+function createPrograms(): Program[] {
+  return [{ id: "PRG01", name: "PRG01" }];
 }
 
 function getCurrentSequence(state: Pick<AppState, "sequences" | "currentSequence">) {
@@ -2811,6 +3165,10 @@ function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, i
     "performanceTracks" in state
       ? (state.performanceTracks as PerformanceTrack[])
       : [];
+  const priorTrackId =
+    "currentTrackId" in state && sequence.tracks.includes(state.currentTrackId as string)
+      ? (state.currentTrackId as string)
+      : sequence.tracks[0] ?? "TRACK01";
   return {
     ...state,
     sequence: sequence.id,
@@ -2820,6 +3178,8 @@ function applyCurrentSequence<T extends Pick<AppState, "sequences">>(state: T, i
     timeSignature: sequence.timeSignature,
     bpm: sequence.bpm,
     stepEvents: sequence.events,
+    currentTrackId: priorTrackId,
+    activeTrack: formatTrackName(priorTrackId, sequence.tracks.indexOf(priorTrackId)),
     performanceTracks: sequence.tracks.map((name, index) => {
       const previous = priorTracks.find((track) => track.name === name);
       return previous ?? { name, muted: false, solo: false, activity: 28 + index * 8 };
@@ -2838,6 +3198,109 @@ function nextSequenceId(sequences: Sequence[]) {
   return String(next).padStart(2, "0");
 }
 
+function nextProgramId(programs: Program[]) {
+  const next = Math.max(...programs.map((program) => Number(program.id.replace(/^PRG/, ""))), 0) + 1;
+  return `PRG${String(next).padStart(2, "0")}`;
+}
+
+function moveCurrentSequence(state: AppState, delta: number): Partial<AppState> {
+  const currentIndex = state.sequences.findIndex((sequence) => sequence.id === state.currentSequence);
+  const nextIndex = (Math.max(currentIndex, 0) + delta + state.sequences.length) % state.sequences.length;
+  return applyCurrentSequence(state, state.sequences[nextIndex].id);
+}
+
+function moveCurrentTrack(state: AppState, delta: number): Partial<AppState> {
+  const sequence = getCurrentSequence(state);
+  const tracks = sequence.tracks.length > 0 ? sequence.tracks : createDefaultSequenceTracks();
+  const currentIndex = Math.max(tracks.indexOf(state.currentTrackId), 0);
+  if (delta > 0 && currentIndex === tracks.length - 1) return createNextTrack(state, tracks);
+  const nextIndex = (currentIndex + delta + tracks.length) % tracks.length;
+  const currentTrackId = tracks[nextIndex];
+  return {
+    currentTrackId,
+    activeTrack: formatTrackName(currentTrackId, nextIndex),
+  };
+}
+
+function createNextTrack(state: AppState, tracks: string[]): Partial<AppState> {
+  const currentTrackId = nextTrackId(tracks);
+  const nextTracks = [...tracks, currentTrackId];
+  return {
+    currentTrackId,
+    activeTrack: formatTrackName(currentTrackId, nextTracks.length - 1),
+    sequences: state.sequences.map((item) =>
+      item.id === state.currentSequence ? { ...item, tracks: nextTracks } : item,
+    ),
+    performanceTracks: [...state.performanceTracks, { name: currentTrackId, muted: false, solo: false, activity: 28 }],
+    mixerTracks: [...state.mixerTracks, { name: currentTrackId, level: 100, muted: false, solo: false }],
+  };
+}
+
+function nextTrackId(tracks: string[]) {
+  const next = Math.max(...tracks.map((track) => Number(track.replace(/^TRACK/, ""))), 0) + 1;
+  return `TRACK${String(next).padStart(2, "0")}`;
+}
+
+function renameCurrentTrack(state: AppState, name: string): Partial<AppState> {
+  const sequence = getCurrentSequence(state);
+  const tracks = sequence.tracks.length > 0 ? sequence.tracks : createDefaultSequenceTracks();
+  const currentIndex = Math.max(tracks.indexOf(state.currentTrackId), 0);
+  const currentTrackId = normalizeSequenceOrTrackName(name, tracks[currentIndex] ?? `TRACK${String(currentIndex + 1).padStart(2, "0")}`);
+  const nextTracks = tracks.map((track, index) => (index === currentIndex ? currentTrackId : track));
+  const stepEvents = state.stepEvents.map((event) =>
+    event.trackId === state.currentTrackId ? { ...event, trackId: currentTrackId, trackName: currentTrackId } : event,
+  );
+  return {
+    currentTrackId,
+    activeTrack: formatTrackName(currentTrackId, currentIndex),
+    stepEvents,
+    sequences: state.sequences.map((item) =>
+      item.id === state.currentSequence ? { ...item, tracks: nextTracks, events: stepEvents } : item,
+    ),
+    performanceTracks: state.performanceTracks.map((track) =>
+      track.name === state.currentTrackId ? { ...track, name: currentTrackId } : track,
+    ),
+  };
+}
+
+function moveCurrentProgram(state: AppState, delta: number): Partial<AppState> {
+  const currentIndex = state.programs.findIndex((program) => program.id === state.currentProgramId);
+  if (delta > 0 && currentIndex === state.programs.length - 1) {
+    const id = nextProgramId(state.programs);
+    const program = { id, name: id };
+    return {
+      programs: [...state.programs, program],
+      currentProgramId: id,
+      activeProgram: program.name,
+    };
+  }
+  const nextIndex = (Math.max(currentIndex, 0) + delta + state.programs.length) % state.programs.length;
+  const program = state.programs[nextIndex] ?? state.programs[0];
+  return {
+    currentProgramId: program.id,
+    activeProgram: program.name,
+  };
+}
+
+function renameCurrentProgram(state: AppState, name: string): Partial<AppState> {
+  const nextName = normalizeSequenceOrTrackName(name, state.activeProgram);
+  return {
+    activeProgram: nextName,
+    programs: state.programs.map((program) =>
+      program.id === state.currentProgramId ? { ...program, name: nextName } : program,
+    ),
+  };
+}
+
+function formatTrackName(trackId: string, index: number) {
+  return `${String(Math.max(index, 0) + 1).padStart(2, "0")} ${trackId}`;
+}
+
+function normalizeSequenceOrTrackName(name: string, fallback: string) {
+  const normalized = name.toUpperCase().replace(/[^A-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  return (normalized || fallback).slice(0, 16);
+}
+
 function createStepEvent(bar: number, step: number, pad: string, velocity: number): StepEvent {
   const quarter = Math.floor(step / 4) + 1;
   const tick = (step % 4) * 24;
@@ -2845,8 +3308,8 @@ function createStepEvent(bar: number, step: number, pad: string, velocity: numbe
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${quarter}.${String(tick).padStart(2, "0")}`,
     pad,
-    trackId: "DRUMS",
-    trackName: "DRUMS",
+    trackId: "TRACK01",
+    trackName: "TRACK01",
     velocity,
     length: pad === "P08" ? 12 : 24,
     duration: pad === "P08" ? 12 : 24,
@@ -2925,34 +3388,26 @@ function createDiskFolders(): DiskFolder[] {
       id: "memory",
       label: "MEMORY",
       items: [
-        createDiskItem("PROJECT_BOOT.ALL", "SAVE", "768 KB", "TODAY", "KIT A", "16", "--:--.---"),
-        createDiskItem("SEQ_01.ALL", "SEQUENCE", "12 KB", "TODAY", "KIT A", "--", "--:--.---"),
+        createDiskItem("PROJECT_BOOT.ALL", "SAVE", "128 KB", "TODAY", "PRG01", "16", "--:--.---"),
+        createDiskItem("SEQ01.ALL", "SEQUENCE", "4 KB", "TODAY", "PRG01", "--", "--:--.---"),
       ],
     },
     {
       id: "projects",
       label: "PROJECTS",
-      items: [
-        createDiskItem("LOOPTHIEF_01.ALL", "PROJECT", "1.2 MB", "05/17", "KIT A", "16", "--:--.---"),
-        createDiskItem("NIGHT_SHIFT.ALL", "PROJECT", "980 KB", "05/14", "KIT B", "12", "--:--.---"),
-      ],
+      items: [],
     },
     {
       id: "programs",
       label: "PROGRAMS",
       items: [
-        createDiskItem("KIT_A.PGM", "PROGRAM", "24 KB", "05/17", "KIT A", "16", "--:--.---"),
-        createDiskItem("KIT_B.PGM", "PROGRAM", "22 KB", "05/15", "KIT B", "14", "--:--.---"),
+        createDiskItem("PRG01.PGM", "PROGRAM", "24 KB", "TODAY", "PRG01", "16", "--:--.---"),
       ],
     },
     {
       id: "samples",
       label: "SAMPLES",
-      items: [
-        createDiskItem("DRUMS_01.WAV", "SAMPLE", "412 KB", "05/17", "KIT A", "P01,P05", "00:02.184"),
-        createDiskItem("CHOP_02.SLC", "SLICE", "188 KB", "05/17", "KIT A", "P09-P16", "00:01.024"),
-        createDiskItem("VOX_HIT.WAV", "SAMPLE", "96 KB", "05/16", "KIT B", "P12", "00:00.512"),
-      ],
+      items: [],
     },
     {
       id: "exports",
@@ -2988,13 +3443,72 @@ function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {
   return 16;
 }
 
+function countInModeToBars(mode: AppState["countInMode"]) {
+  if (mode === "OFF") return 0;
+  if (mode === "1 BAR") return 1;
+  if (mode === "2 BAR") return 2;
+  return 4;
+}
+
+function countInBarsToMode(bars: number): AppState["countInMode"] {
+  if (bars <= 0) return "OFF";
+  if (bars === 1) return "1 BAR";
+  if (bars === 2) return "2 BAR";
+  return "4 BAR";
+}
+
+function beatsPerBar(state: Pick<AppState, "timeSignature">) {
+  return state.timeSignature === "4/4" ? 4 : 4;
+}
+
+function isFirstBeatOfBar(stepIndex: number, state: Pick<AppState, "timeSignature">) {
+  return stepIndex % (beatsPerBar(state) * 4) === 0;
+}
+
+function shouldClickDuringRecord(state: Pick<AppState, "metronomeEnabled" | "metronomeDuringRecord">) {
+  return state.metronomeEnabled && state.metronomeDuringRecord;
+}
+
+function playMetronomeClick(state: Pick<AppState, "metronomeEnabled" | "metronomeVolume">, accented = false) {
+  if (!state.metronomeEnabled || state.metronomeVolume <= 0) return;
+  void loadMetronomeBuffer().then((audioBufferId) => {
+    if (!audioBufferId) return;
+    samplerEngine.play(
+      {
+        name: "METRONOME",
+        audioBufferId,
+        durationMs: 120,
+        waveform: [],
+      },
+      { gain: (state.metronomeVolume / 100) * (accented ? 1.25 : 1), pan: 0, previewGroup: "metronome" },
+    );
+  });
+}
+
+function loadMetronomeBuffer() {
+  if (metronomeBufferId) return Promise.resolve(metronomeBufferId);
+  metronomeLoadPromise ??= fetch(metronomeSampleUrl)
+    .then((response) => response.arrayBuffer())
+    .then((data) => samplerEngine.decodeAudioData(data))
+    .then((buffer) => {
+      metronomeBufferId = "metronome-click";
+      registerSampleAudio(metronomeBufferId, buffer);
+      return metronomeBufferId;
+    })
+    .catch(() => null);
+  return metronomeLoadPromise;
+}
+
 function requestTransportStartImpl(
   action: "PLAY" | "REC",
   setState: typeof useAppStore.setState,
   getState: typeof useAppStore.getState,
 ) {
   const state = getState();
-  const countInBeats = countInModeToBeats(state.countInMode);
+  const countInBeats =
+    action === "REC" && state.metronomeEnabled
+      ? state.metronomeCountInBars * beatsPerBar(state)
+      : 0;
 
   if (state.waitPadEnabled) {
     setState({
@@ -3008,18 +3522,14 @@ function requestTransportStartImpl(
   }
 
   if (countInBeats > 0) {
+    playMetronomeClick(state, true);
     setState({
       transportPhase: "COUNT_IN",
       transportPendingAction: action,
       transportCountInBeatsRemaining: countInBeats,
       transportCountInPulse: 0,
-      transportAnnouncement: `COUNT IN ${state.countInMode}`,
+      transportAnnouncement: "COUNT IN...",
     });
-    window.setTimeout(() => {
-      setState((current) =>
-        current.transportAnnouncement === `COUNT IN ${state.countInMode}` ? { transportAnnouncement: "" } : current,
-      );
-    }, 2000);
     return;
   }
 
@@ -3031,6 +3541,7 @@ function startTransportAction(
   setState: typeof useAppStore.setState,
   getState: typeof useAppStore.getState,
 ) {
+  sequenceStepStartedAt = performance.now();
   const patch = {
     transportPhase: "IDLE" as const,
     transportPendingAction: null as "PLAY" | "REC" | null,
@@ -3040,16 +3551,17 @@ function startTransportAction(
   };
 
   if (action === "PLAY") {
-    setState({ ...patch, isPlaying: true, bar: "001.01.00", currentBar: 1, currentStep: 1, currentStepIndex: 0 });
+    setState({ ...patch, isPlaying: true, bar: "001.01.00", currentBar: 1, currentStep: 1, currentStepIndex: -1 });
   } else {
     setState({
       ...patch,
       isPlaying: true,
       isSequenceRecording: true,
+      transportAnnouncement: "RECORDING...",
       bar: "001.01.00",
       currentBar: 1,
       currentStep: 1,
-      currentStepIndex: 0,
+      currentStepIndex: -1,
     });
   }
 }
@@ -3085,7 +3597,12 @@ function createSettingsCategories(): SettingsCategory[] {
     {
       id: "metronome",
       label: "METRONOME",
-      settings: [{ key: "metronomeEnabled", label: "METRONOME", kind: "toggle" }],
+      settings: [
+        { key: "metronomeEnabled", label: "METRONOME", kind: "toggle" },
+        { key: "metronomeDuringRecord", label: "DURING REC", kind: "toggle" },
+        { key: "metronomeCountInBars", label: "COUNT BARS", kind: "numeric", min: 0, max: 4, step: 1 },
+        { key: "metronomeVolume", label: "CLICK VOL", kind: "numeric", min: 0, max: 100, step: 5 },
+      ],
     },
     {
       id: "memory",

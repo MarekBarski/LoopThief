@@ -16,6 +16,7 @@ export function TopBar() {
   const lastSixteenLevelsValue = useAppStore((state) => state.lastSixteenLevelsValue);
   const lastPerformanceMessage = useAppStore((state) => state.lastPerformanceMessage);
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
+  const transportAnnouncement = useAppStore((state) => state.transportAnnouncement);
   const audioStatus = useAppStore((state) => state.audioStatus);
   const lastAudioMessage = useAppStore((state) => state.lastAudioMessage);
   const statusItems = [
@@ -42,6 +43,7 @@ export function TopBar() {
           </span>
         )}
         {lastPerformanceMessage && <span className="text-amber-200">{lastPerformanceMessage}</span>}
+        {transportAnnouncement && <span className="text-amber-200">{transportAnnouncement}</span>}
         {lastAudioMessage && <span className="text-amber-200">{lastAudioMessage}</span>}
         {noteRepeatEnabled && <span className="text-amber-200">NR {noteRepeatRate}</span>}
         {sixteenLevelsEnabled && (

@@ -216,7 +216,7 @@ export function TimingCorrectUtilityScreen() {
       {shell(
         <div className="grid h-full grid-cols-[1fr_0.7fr] gap-[2.3%]">
           <Panel rows={[
-            ["TC VALUE", timingCorrect],
+            ["NOTE VALUE", timingCorrect],
             ["SWING", `${swing}%`],
             ["STRENGTH", `${quantizeStrength}%`],
             ["APPLY TO", timingApplyTo],
@@ -231,10 +231,10 @@ export function TimingCorrectUtilityScreen() {
           </section>
         </div>,
         [
-          { label: "F1 TC", onClick: cycleTimingCorrect },
+          { label: "F1 NOTE", onClick: cycleTimingCorrect },
           { label: "F2 SWING", onClick: () => adjustSwing(1) },
           { label: "F3 STRENGTH", onClick: () => adjustQuantizeStrength(5) },
-          { label: "F4 APPLY", onClick: cycleTimingApplyTo },
+          { label: "F4 DO IT", onClick: cycleTimingApplyTo },
           { label: "F5 RESET", onClick: resetTimingCorrect },
           { label: "F6 EXIT", onClick: exit },
         ],
@@ -244,28 +244,20 @@ export function TimingCorrectUtilityScreen() {
 }
 
 export function CountInUtilityScreen() {
-  const countInMode = useAppStore((s) => s.countInMode);
-  const countInClickDuring = useAppStore((s) => s.countInClickDuring);
-  const countInClickVolume = useAppStore((s) => s.countInClickVolume);
+  const metronomeEnabled = useAppStore((s) => s.metronomeEnabled);
+  const metronomeDuringRecord = useAppStore((s) => s.metronomeDuringRecord);
+  const metronomeCountInBars = useAppStore((s) => s.metronomeCountInBars);
+  const metronomeVolume = useAppStore((s) => s.metronomeVolume);
   const timingCorrectionCountEnabled = useAppStore((s) => s.timingCorrectionCountEnabled);
   const waitPadCompatEnabled = useAppStore((s) => s.waitPadCompatEnabled);
   const transportPhase = useAppStore((s) => s.transportPhase);
   const transportCountInBeatsRemaining = useAppStore((s) => s.transportCountInBeatsRemaining);
-  const setCountInMode = useAppStore((s) => s.setCountInMode);
-  const cycleCountInClickDuring = useAppStore((s) => s.cycleCountInClickDuring);
-  const adjustCountInClickVolume = useAppStore((s) => s.adjustCountInClickVolume);
+  const toggleMetronomeEnabled = useAppStore((s) => s.toggleMetronomeEnabled);
+  const toggleMetronomeDuringRecord = useAppStore((s) => s.toggleMetronomeDuringRecord);
+  const adjustMetronomeCountInBars = useAppStore((s) => s.adjustMetronomeCountInBars);
+  const adjustMetronomeVolume = useAppStore((s) => s.adjustMetronomeVolume);
   const toggleTimingCorrectionCount = useAppStore((s) => s.toggleTimingCorrectionCount);
-  const toggleWaitPadCompat = useAppStore((s) => s.toggleWaitPadCompat);
   const setActiveScreen = useAppStore((s) => s.setActiveScreen);
-
-  const nextCountInMode = () => {
-    const modes = ["OFF", "1 BAR", "2 BAR", "4 BAR"] as const;
-    setCountInMode(modes[(modes.indexOf(countInMode) + 1) % modes.length]);
-  };
-
-  const cycleClickVolume = () => {
-    adjustCountInClickVolume(countInClickVolume >= 100 ? -100 : 10);
-  };
 
   const exitToMain = () => setActiveScreen("MAIN");
   const activeBeat =
@@ -279,9 +271,10 @@ export function CountInUtilityScreen() {
         <div className="grid h-full grid-cols-[1fr_0.62fr] gap-[2.3%]">
           <Panel
             rows={[
-              ["COUNT IN", countInMode],
-              ["CLICK DURING", countInClickDuring],
-              ["CLICK VOL", String(countInClickVolume)],
+              ["METRONOME", metronomeEnabled ? "ON" : "OFF"],
+              ["DURING REC", metronomeDuringRecord ? "ON" : "OFF"],
+              ["COUNT BARS", String(metronomeCountInBars)],
+              ["CLICK VOL", String(metronomeVolume)],
               ["TC COUNT", timingCorrectionCountEnabled ? "ON" : "OFF"],
               ["WAIT PAD COMPAT", waitPadCompatEnabled ? "ON" : "OFF"],
             ]}
@@ -310,11 +303,11 @@ export function CountInUtilityScreen() {
           </section>
         </div>,
         [
-          { label: "F1 COUNT", onClick: nextCountInMode },
-          { label: "F2 CLICK", onClick: cycleCountInClickDuring },
-          { label: "F3 VOL", onClick: cycleClickVolume },
+          { label: "F1 COUNT", onClick: () => adjustMetronomeCountInBars(1) },
+          { label: "F2 CLICK", onClick: toggleMetronomeEnabled },
+          { label: "F3 VOL", onClick: () => adjustMetronomeVolume(metronomeVolume >= 100 ? -100 : 10) },
           { label: "F4 TC", onClick: toggleTimingCorrectionCount },
-          { label: "F5 WAIT", onClick: toggleWaitPadCompat },
+          { label: "F5 REC", onClick: toggleMetronomeDuringRecord },
           { label: "F6 EXIT", onClick: exitToMain },
         ],
       )}

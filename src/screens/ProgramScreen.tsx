@@ -22,6 +22,7 @@ export function ProgramScreen() {
   const setProgramView = useAppStore((state) => state.setProgramView);
   const cycleMuteTargetMode = useAppStore((state) => state.cycleMuteTargetMode);
   const toggleMuteTargetForSelectedPad = useAppStore((state) => state.toggleMuteTargetForSelectedPad);
+  const createProgram = useAppStore((state) => state.createProgram);
   const [assignOpen, setAssignOpen] = useState(false);
   const [sourceType, setSourceType] = useState<"SAMPLES" | "SLICES" | "PROGRAM POOL">("SAMPLES");
   const [sourceIndex, setSourceIndex] = useState(0);
@@ -239,6 +240,7 @@ export function ProgramScreen() {
                 if (button === "F1 ASSIGN") setAssignOpen(true);
                 if (button === "F2 PARAMS") setProgramView("PARAMS");
                 if (button === "F3 CHOKE") setProgramView("CHOKE");
+                if (button === "F6 SAVE PGM") createProgram();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >

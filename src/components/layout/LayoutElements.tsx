@@ -36,12 +36,14 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const activeScreen = useAppStore((state) => state.activeScreen);
   const isPlaying = useAppStore((state) => state.isPlaying);
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
+  const overdubEnabled = useAppStore((state) => state.overdubEnabled);
   const triggeredPads = useAppStore((state) => state.triggeredPads);
   const triggerPad = useAppStore((state) => state.triggerPad);
   const releasePad = useAppStore((state) => state.releasePad);
   const togglePlay = useAppStore((state) => state.togglePlay);
   const stopPlayback = useAppStore((state) => state.stopPlayback);
   const toggleSequenceRecording = useAppStore((state) => state.toggleSequenceRecording);
+  const toggleOverdub = useAppStore((state) => state.toggleOverdub);
   const toggleWaitPad = useAppStore((state) => state.toggleWaitPad);
   const openCountInUtility = useAppStore((state) => state.openCountInUtility);
   const tapTempo = useAppStore((state) => state.tapTempo);
@@ -185,6 +187,8 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
             (activeScreen === "UTILITY_NOTE_REPEAT" || noteRepeatEnabled))
         : element.label === "REC"
           ? isSequenceRecording
+          : element.label === "OVERDUB"
+            ? overdubEnabled
           : element.label === "PLAY"
             ? isPlaying
             : element.label === "WAIT PAD"
@@ -243,6 +247,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
           if (element.label === "PLAY") togglePlay();
           if (element.label === "STOP") stopPlayback();
           if (element.label === "REC") toggleSequenceRecording();
+          if (element.label === "OVERDUB") toggleOverdub();
           if (element.label === "WAIT PAD") toggleWaitPad();
           if (element.label === "COUNT IN") openCountInUtility();
           if (element.label === "GO TO") openUtilityWorkflow("GO_TO");
