@@ -62,6 +62,9 @@ export function SixteenLevelsScreen() {
         : effectiveCutoff + (variationIndex - 8) / 8 * (100 - effectiveCutoff);
       return String(Math.round(cutoff));
     }
+    if (parameter === "ATTACK" || parameter === "DECAY") {
+      return String(Math.round(((variationIndex - 1) / 15) * 100));
+    }
     return String(Math.round(1 + 126 * (variationIndex - 1) / 15));
   };
 

@@ -99,7 +99,13 @@ export function StepScreen() {
             <StepNav label="TRACK" value={activeTrack} onPrevious={() => cycleStepTrack(-1)} onNext={() => cycleStepTrack(1)} />
             <Info active={eventEditMode === "VELOCITY"} label="VELOCITY" value={selectedEvent ? String(selectedEvent.velocity) : "---"} />
             <Info active={eventEditMode === "OFFSET"} label="OFFSET" value={selectedEvent ? formatSigned(selectedEvent.timingOffset) : "---"} />
-            <Info active={eventEditMode === "DURATION"} label="DURATION" value={selectedEvent ? String(selectedEvent.duration) : "---"} />
+            <EditableValue
+              active={eventEditMode === "DURATION"}
+              label="DURATION"
+              value={selectedEvent ? (selectedEvent.duration === 0 ? "FULL" : String(selectedEvent.duration)) : "---"}
+              onPrevious={selectedEvent ? () => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", -1); } : undefined}
+              onNext={selectedEvent ? () => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", 1); } : undefined}
+            />
             <Info active={eventEditMode === "PROBABILITY"} label="PROBABILITY" value={selectedEvent ? `${selectedEvent.probability}%` : "---"} />
             <Info label="PARAM TYPE" value={selectedEvent?.appliedParameter ?? "---"} />
             <Info label="PARAM VALUE" value={formatParamValue(selectedEvent)} />
@@ -135,6 +141,35 @@ function Info({ label, value, active = false, onClick }: { label: string; value:
       <span className={active ? "text-amber-200" : "text-[#91a477]"}>{label}</span>
       <span>{value}</span>
     </button>
+  );
+}
+
+function EditableValue({
+  label,
+  value,
+  active = false,
+  onPrevious,
+  onNext,
+}: {
+  label: string;
+  value: string;
+  active?: boolean;
+  onPrevious?: () => void;
+  onNext?: () => void;
+}) {
+  return (
+    <div className={`grid grid-cols-[1fr_1.4fr] items-center gap-[8px] ${active ? "text-amber-100" : ""}`}>
+      <span className={active ? "text-amber-200" : "text-[#91a477]"}>{label}</span>
+      <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
+        <button type="button" onClick={onPrevious} disabled={!onPrevious} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
+          &lt;
+        </button>
+        <span className="text-center">{value}</span>
+        <button type="button" onClick={onNext} disabled={!onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
+          &gt;
+        </button>
+      </div>
+    </div>
   );
 }
 

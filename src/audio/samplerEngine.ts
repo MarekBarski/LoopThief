@@ -14,13 +14,23 @@ export type PlayableSample = {
 
 type Voice = {
   source: AudioBufferSourceNode;
-  gain: GainNode;
+  envelopeGain: GainNode;
+  channelGain: GainNode;
   pan: StereoPannerNode;
   filter?: BiquadFilterNode;
   startedAt: number;
   channelKey?: string;
   previewGroup?: string;
   voiceGroup?: string;
+  hasEnvelope: boolean;
+  envelopeDecayMs: number;
+  sustainStopTimer?: number;
+};
+
+type Envelope = {
+  attackMs: number;
+  decayMs: number;
+  holdMode?: "ONE SHOT" | "NOTE ON";
 };
 
 type PlayOptions = {
@@ -35,7 +45,13 @@ type PlayOptions = {
     frequency: number;
     q: number;
   };
+  envelope?: Envelope;
+  sustainMs?: number;
 };
+
+type StopOptions = { releaseMs?: number };
+
+const MIN_RAMP_MS = 1;
 
 class SamplerEngine {
   private context: AudioContext | null = null;
@@ -77,24 +93,33 @@ class SamplerEngine {
     void this.playInternal(sample, options);
   }
 
-  stopVoiceGroup(voiceGroup: string) {
-    this.stopVoices((voice) => voice.voiceGroup === voiceGroup);
+  stopVoiceGroup(voiceGroup: string, options: StopOptions = {}) {
+    if (options.releaseMs && options.releaseMs > 0) {
+      this.softStopVoices((voice) => voice.voiceGroup === voiceGroup, options.releaseMs);
+    } else {
+      this.stopVoices((voice) => voice.voiceGroup === voiceGroup);
+    }
   }
 
   stopAllVoices() {
     this.stopVoices(() => true);
   }
 
-  stopVoiceGroups(voiceGroups: string[]) {
+  stopVoiceGroups(voiceGroups: string[], options: StopOptions = {}) {
     if (voiceGroups.length === 0) return;
     const groups = new Set(voiceGroups);
-    this.stopVoices((voice) => Boolean(voice.voiceGroup && groups.has(voice.voiceGroup)));
+    const predicate = (voice: Voice) => Boolean(voice.voiceGroup && groups.has(voice.voiceGroup));
+    if (options.releaseMs && options.releaseMs > 0) {
+      this.softStopVoices(predicate, options.releaseMs);
+    } else {
+      this.stopVoices(predicate);
+    }
   }
 
   updateChannelMix(channelKey: string, options: { gain: number; pan: number; audible: boolean }) {
     for (const voice of this.voices) {
       if (voice.channelKey !== channelKey) continue;
-      voice.gain.gain.value = options.audible ? clamp(options.gain, 0, 2) : 0;
+      voice.channelGain.gain.value = options.audible ? clamp(options.gain, 0, 2) : 0;
       voice.pan.pan.value = clamp(options.pan, -1, 1);
     }
   }
@@ -124,36 +149,73 @@ class SamplerEngine {
     if (this.voices.size >= this.maxVoices) this.stealOldestVoice();
 
     const source = this.context.createBufferSource();
-    const gain = this.context.createGain();
+    const envelopeGain = this.context.createGain();
+    const channelGain = this.context.createGain();
     const pan = this.context.createStereoPanner();
     const filterOptions = options.filter;
     const filter = filterOptions ? this.context.createBiquadFilter() : null;
     source.buffer = buffer;
     source.playbackRate.value = sample.playbackRate ?? 1;
-    gain.gain.value = clamp(options.gain, 0, 2);
+    channelGain.gain.value = clamp(options.gain, 0, 2);
     pan.pan.value = clamp(options.pan, -1, 1);
     if (filter && filterOptions) {
       filter.type = filterOptions.type;
       filter.frequency.value = clamp(filterOptions.frequency, 20, this.context.sampleRate / 2);
       filter.Q.value = clamp(filterOptions.q, 0.0001, 30);
-      source.connect(filter).connect(gain).connect(pan).connect(this.ensureMasterGain());
+      source.connect(filter).connect(envelopeGain).connect(channelGain).connect(pan).connect(this.ensureMasterGain());
     } else {
-      source.connect(gain).connect(pan).connect(this.ensureMasterGain());
+      source.connect(envelopeGain).connect(channelGain).connect(pan).connect(this.ensureMasterGain());
+    }
+
+    const hasEnvelope = !!options.envelope;
+    const startTime = this.context.currentTime;
+    if (hasEnvelope && options.envelope) {
+      this.applyEnvelope(envelopeGain, options.envelope, startTime);
+    } else {
+      envelopeGain.gain.value = 1;
     }
 
     const voice: Voice = {
       source,
-      gain,
+      envelopeGain,
+      channelGain,
       pan,
       filter: filter ?? undefined,
-      startedAt: this.context.currentTime,
+      startedAt: startTime,
       channelKey: options.channelKey,
       previewGroup: options.previewGroup,
       voiceGroup: options.voiceGroup,
+      hasEnvelope,
+      envelopeDecayMs: options.envelope?.decayMs ?? 0,
     };
     this.voices.add(voice);
-    source.onended = () => this.voices.delete(voice);
+    source.onended = () => {
+      if (voice.sustainStopTimer !== undefined) {
+        window.clearTimeout(voice.sustainStopTimer);
+      }
+      this.voices.delete(voice);
+    };
     source.start(0, offset, duration);
+
+    if (options.sustainMs && options.sustainMs > 0) {
+      const releaseMs = voice.envelopeDecayMs > 0 ? voice.envelopeDecayMs : MIN_RAMP_MS * 4;
+      voice.sustainStopTimer = window.setTimeout(() => {
+        this.softStopVoice(voice, releaseMs);
+      }, options.sustainMs);
+    }
+  }
+
+  private applyEnvelope(envelopeGain: GainNode, envelope: Envelope, startTime: number) {
+    const attackMs = Math.max(0, envelope.attackMs);
+    const decayMs = Math.max(0, envelope.decayMs);
+    const attackSec = Math.max(MIN_RAMP_MS, attackMs) / 1000;
+    envelopeGain.gain.cancelScheduledValues(startTime);
+    envelopeGain.gain.setValueAtTime(0, startTime);
+    envelopeGain.gain.linearRampToValueAtTime(1, startTime + attackSec);
+    if (envelope.holdMode !== "NOTE ON" && decayMs > 0) {
+      const decaySec = decayMs / 1000;
+      envelopeGain.gain.linearRampToValueAtTime(0, startTime + attackSec + decaySec);
+    }
   }
 
   private getBuffer(sample: PlayableSample) {
@@ -200,12 +262,7 @@ class SamplerEngine {
       if (!oldest || voice.startedAt < oldest.startedAt) oldest = voice;
     }
     if (!oldest) return;
-    try {
-      oldest.source.stop();
-    } catch {
-      // already ended
-    }
-    this.voices.delete(oldest);
+    this.hardStopVoice(oldest);
   }
 
   private stopPreviewGroup(previewGroup: string) {
@@ -219,7 +276,7 @@ class SamplerEngine {
       try {
         voice.source.disconnect();
         voice.filter?.disconnect();
-        voice.source.connect(voice.gain);
+        voice.source.connect(voice.envelopeGain);
         voice.filter = undefined;
       } catch {
         // voice may have ended while the UI changed
@@ -235,7 +292,7 @@ class SamplerEngine {
     if (!voice.filter) {
       try {
         voice.source.disconnect();
-        voice.source.connect(filter).connect(voice.gain);
+        voice.source.connect(filter).connect(voice.envelopeGain);
         voice.filter = filter;
       } catch {
         // voice may have ended while the UI changed
@@ -243,15 +300,51 @@ class SamplerEngine {
     }
   }
 
+  private hardStopVoice(voice: Voice) {
+    if (voice.sustainStopTimer !== undefined) {
+      window.clearTimeout(voice.sustainStopTimer);
+      voice.sustainStopTimer = undefined;
+    }
+    try {
+      voice.source.stop();
+    } catch {
+      // already ended
+    }
+    this.voices.delete(voice);
+  }
+
+  private softStopVoice(voice: Voice, releaseMs: number) {
+    if (!this.context) {
+      this.hardStopVoice(voice);
+      return;
+    }
+    if (voice.sustainStopTimer !== undefined) {
+      window.clearTimeout(voice.sustainStopTimer);
+      voice.sustainStopTimer = undefined;
+    }
+    const now = this.context.currentTime;
+    const ramp = Math.max(MIN_RAMP_MS, releaseMs) / 1000;
+    try {
+      voice.envelopeGain.gain.cancelScheduledValues(now);
+      voice.envelopeGain.gain.setValueAtTime(voice.envelopeGain.gain.value, now);
+      voice.envelopeGain.gain.linearRampToValueAtTime(0, now + ramp);
+      voice.source.stop(now + ramp);
+    } catch {
+      this.hardStopVoice(voice);
+    }
+  }
+
   private stopVoices(predicate: (voice: Voice) => boolean) {
     for (const voice of [...this.voices]) {
       if (!predicate(voice)) continue;
-      try {
-        voice.source.stop();
-      } catch {
-        // already ended
-      }
-      this.voices.delete(voice);
+      this.hardStopVoice(voice);
+    }
+  }
+
+  private softStopVoices(predicate: (voice: Voice) => boolean, releaseMs: number) {
+    for (const voice of [...this.voices]) {
+      if (!predicate(voice)) continue;
+      this.softStopVoice(voice, releaseMs);
     }
   }
 

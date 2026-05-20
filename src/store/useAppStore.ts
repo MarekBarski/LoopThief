@@ -1152,6 +1152,8 @@ export const useAppStore = create<AppState>((set, get) => ({
                   parameterValue: appliedValue,
                   appliedFilterType: sandboxFilterTypeForRecord,
                   appliedFilterResonance: sandboxFilterResonanceForRecord,
+                  duration: 0,
+                  length: 0,
                 },
               )
             : null;
@@ -1217,7 +1219,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   releasePad: (pad) => {
     const state = get();
     const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
-    if (assignment?.mode === "NOTE ON") samplerEngine.stopVoiceGroup(mixerChannelKey(state.padBank, pad, state.currentProgramId));
+    if (assignment?.mode === "NOTE ON") {
+      const releaseMs = assignment.decay >= 100 ? 0 : programValueToMs(assignment.decay);
+      samplerEngine.stopVoiceGroup(
+        mixerChannelKey(state.padBank, pad, state.currentProgramId),
+        releaseMs > 0 ? { releaseMs } : undefined,
+      );
+    }
     set((current) => ({
       triggeredPads: markPadTriggered(current.triggeredPads, current.padBank, pad, false),
     }));
@@ -1516,7 +1524,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   cycleSixteenLevelsParameter: () =>
     set((state) => {
-      const parameters: AppState["sixteenLevelsParameter"][] = ["VELOCITY", "TUNE", "FILTER"];
+      const parameters: AppState["sixteenLevelsParameter"][] = ["VELOCITY", "TUNE", "FILTER", "ATTACK", "DECAY"];
       const idx = parameters.indexOf(state.sixteenLevelsParameter);
       const next = parameters[(idx === -1 ? 0 : (idx + 1) % parameters.length)];
       return { sixteenLevelsParameter: next };
@@ -2124,7 +2132,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : field === "timingOffset"
             ? clamp(event.timingOffset + delta, -24, 24)
             : field === "duration"
-              ? clamp(event.duration + delta, 1, 96)
+              ? clamp(event.duration + delta, 0, 96)
               : clamp(event.probability + delta, 0, 100);
       const stepEvents = state.stepEvents.map((item, index) =>
         index === state.selectedEventIndex
@@ -2726,6 +2734,8 @@ function createRecordedPadEvent(state: AppState, pad: string, velocity: number) 
     padBank: state.padBank,
     programId: state.currentProgramId,
     variation: "REC",
+    duration: 0,
+    length: 0,
   });
 }
 
@@ -2894,6 +2904,9 @@ function getSixteenLevelsValue(state: AppState, padNumber: number) {
       const effectiveCutoff = state.sixteenLevelsFilterCutoff ?? getSourceFilterCutoff(state) ?? 50;
       return Math.round(computeSixteenLevelsFilterCutoff(variationIndex, effectiveCutoff));
     }
+    case "ATTACK":
+    case "DECAY":
+      return Math.round(((variationIndex - 1) / 15) * 100);
     case "VELOCITY":
     default:
       return Math.round(1 + 126 * (variationIndex - 1) / 15);
@@ -3179,6 +3192,9 @@ function playAssignedPadWithContext(
     filterCutoffOverride?: number;
     filterResonanceOverride?: number;
     filterTypeOverride?: PadAssignment["filterType"];
+    attackOverride?: number;
+    decayOverride?: number;
+    sustainMs?: number;
   },
 ) {
   const program = getProgramForPlayback(state, context.programId);
@@ -3208,6 +3224,15 @@ function playAssignedPadWithContext(
     context.fineTuneOverride ?? assignment.fineTune,
   );
   const playable = playbackRate === 1 ? resolved : { ...resolved, playbackRate: (resolved.playbackRate ?? 1) * playbackRate };
+  const effectiveAttack = context.attackOverride ?? assignment.attack;
+  const effectiveDecay = context.decayOverride ?? assignment.decay;
+  const envelope = effectiveAttack === 0 && effectiveDecay >= 100
+    ? undefined
+    : {
+        attackMs: programValueToMs(effectiveAttack),
+        decayMs: programValueToMs(effectiveDecay),
+        holdMode: assignment.mode,
+      };
   samplerEngine.play(playable, {
     gain: (context.gainOverride ?? 1) * (mix.level / 100),
     pan: mix.pan / 64,
@@ -3219,7 +3244,14 @@ function playAssignedPadWithContext(
       resonanceOverride: context.filterResonanceOverride,
       typeOverride: context.filterTypeOverride,
     }),
+    envelope,
+    sustainMs: context.sustainMs,
   });
+}
+
+function programValueToMs(value: number) {
+  const normalized = clamp(value, 0, 100) / 100;
+  return Math.pow(normalized, 3) * 5000;
 }
 
 function playSixteenLevelsVariation(state: AppState, padNumber: number) {
@@ -3232,6 +3264,8 @@ function playSixteenLevelsVariation(state: AppState, padNumber: number) {
   let filterCutoffOverride: number | undefined;
   let filterResonanceOverride: number | undefined;
   let filterTypeOverride: PadAssignment["filterType"] | undefined;
+  let attackOverride: number | undefined;
+  let decayOverride: number | undefined;
   switch (state.sixteenLevelsParameter) {
     case "VELOCITY":
       gainOverride = appliedValue / 127;
@@ -3243,6 +3277,12 @@ function playSixteenLevelsVariation(state: AppState, padNumber: number) {
       filterCutoffOverride = appliedValue;
       filterResonanceOverride = state.sixteenLevelsFilterResonance ?? undefined;
       filterTypeOverride = state.sixteenLevelsFilterType ?? undefined;
+      break;
+    case "ATTACK":
+      attackOverride = appliedValue;
+      break;
+    case "DECAY":
+      decayOverride = appliedValue;
       break;
     default:
       break;
@@ -3256,6 +3296,8 @@ function playSixteenLevelsVariation(state: AppState, padNumber: number) {
     filterCutoffOverride,
     filterResonanceOverride,
     filterTypeOverride,
+    attackOverride,
+    decayOverride,
   });
 }
 
@@ -3312,7 +3354,11 @@ function playStepEventFromState(state: AppState, event: StepEvent, delayMs: numb
   const filterCutoffOverride = event.appliedParameter === "FILTER" ? event.parameterValue ?? event.appliedValue : undefined;
   const filterTypeOverride = event.appliedParameter === "FILTER" ? event.appliedFilterType : undefined;
   const filterResonanceOverride = event.appliedParameter === "FILTER" ? event.appliedFilterResonance : undefined;
+  const attackOverride = event.appliedParameter === "ATTACK" ? event.parameterValue ?? event.appliedValue : undefined;
+  const decayOverride = event.appliedParameter === "DECAY" ? event.parameterValue ?? event.appliedValue : undefined;
   const gainOverride = event.velocity != null ? clamp(event.velocity, 0, 127) / 127 : undefined;
+  const eventDuration = event.duration ?? 0;
+  const sustainMs = eventDuration > 0 ? (eventDuration / 96) * (60_000 / state.bpm) : undefined;
   const context = {
     pad: eventPad,
     bank: eventBank,
@@ -3321,7 +3367,10 @@ function playStepEventFromState(state: AppState, event: StepEvent, delayMs: numb
     filterCutoffOverride,
     filterTypeOverride,
     filterResonanceOverride,
+    attackOverride,
+    decayOverride,
     gainOverride,
+    sustainMs,
   };
   if (delayMs <= 0) {
     playAssignedPadWithContext(state, context);
@@ -3987,8 +4036,8 @@ function createStepEvent(bar: number, step: number, pad: string, velocity: numbe
     padBank: "A",
     programId: "PRG01",
     velocity,
-    length: pad === "P08" ? 12 : 24,
-    duration: pad === "P08" ? 12 : 24,
+    length: 0,
+    duration: 0,
     type: "NOTE",
     timingOffset: step % 5 === 0 ? -2 : step % 7 === 0 ? 3 : 0,
     probability: pad === "P08" && step % 8 !== 0 ? 92 : 100,
