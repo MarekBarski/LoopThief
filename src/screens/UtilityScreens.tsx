@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { useHoldRepeat } from "../components/useHoldRepeat";
 import type { ReactNode } from "react";
 
 const shell = (children: ReactNode, softkeys: Softkey[], onExit?: () => void) => (
@@ -177,15 +179,17 @@ function PanelRow({ label, value, onClick, highlighted = false }: { label: strin
 }
 
 function ArrowRow({ label, value, onPrev, onNext, highlighted = false }: { label: string; value: string; onPrev: () => void; onNext: () => void; highlighted?: boolean }) {
+  const prevHold = useHoldRepeat(onPrev);
+  const nextHold = useHoldRepeat(onNext);
   return (
     <div className="grid content-start gap-[2px]">
       <p className="text-[#91a477]">{label}</p>
       <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
-        <button type="button" onClick={onPrev} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+        <button type="button" {...prevHold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
           &lt;
         </button>
         <span className={`text-center ${highlighted ? "text-amber-200" : ""}`}>{value}</span>
-        <button type="button" onClick={onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+        <button type="button" {...nextHold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
           &gt;
         </button>
       </div>
@@ -299,36 +303,37 @@ export function NextSeqUtilityScreen() {
 }
 
 export function NoteRepeatUtilityScreen() {
-  const data = useAppStore((s) => s.noteRepeat);
   const timingCorrect = useAppStore((s) => s.timingCorrect);
-  const noteRepeatLinkToTC = useAppStore((s) => s.noteRepeatLinkToTC);
-  const noteRepeatRate = useAppStore((s) => s.noteRepeatRate);
+  const swing = useAppStore((s) => s.swing);
   const noteRepeatGate = useAppStore((s) => s.noteRepeatGate);
-  const noteRepeatTriplet = useAppStore((s) => s.noteRepeatTriplet);
+  const tripletMode = useAppStore((s) => s.tripletMode);
+  const noteRepeatVelocityMode = useAppStore((s) => s.noteRepeatVelocityMode);
   const cycleNoteRepeatRate = useAppStore((s) => s.cycleNoteRepeatRate);
+  const cycleNoteRepeatRateBack = useAppStore((s) => s.cycleNoteRepeatRateBack);
   const adjustNoteRepeatGate = useAppStore((s) => s.adjustNoteRepeatGate);
   const adjustSwing = useAppStore((s) => s.adjustSwing);
-  const toggleNoteRepeatTriplet = useAppStore((s) => s.toggleNoteRepeatTriplet);
+  const toggleTripletMode = useAppStore((s) => s.toggleTripletMode);
   const cycleNoteRepeatVelocityMode = useAppStore((s) => s.cycleNoteRepeatVelocityMode);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
   return (
     <ScreenFrame title="NOTE REPEAT" subtitle="Repeat timing utility">
       {shell(
-        <Panel rows={[
-          ["RATE", noteRepeatLinkToTC ? timingCorrect : noteRepeatRate],
-          ["GATE", `${noteRepeatGate}%`],
-          ["SWING LINK", noteRepeatLinkToTC ? "ON" : "OFF"],
-          ["TRIPLET", noteRepeatTriplet ? "ON" : "OFF"],
-          ["VELOCITY MODE", data.velocityMode],
-        ]} />,
+        <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <ArrowRow label="RATE" value={timingCorrect === "OFF" ? "1/16" : timingCorrect} onPrev={cycleNoteRepeatRateBack} onNext={cycleNoteRepeatRate} />
+          <ArrowRow label="GATE" value={`${noteRepeatGate}%`} onPrev={() => adjustNoteRepeatGate(-1)} onNext={() => adjustNoteRepeatGate(1)} />
+          <ArrowRow label="SWING" value={`${swing}%`} onPrev={() => adjustSwing(-1)} onNext={() => adjustSwing(1)} />
+          <ArrowRow label="TRIPLET" value={tripletMode ? "ON" : "OFF"} onPrev={toggleTripletMode} onNext={toggleTripletMode} />
+          <ArrowRow label="VELOCITY MODE" value={noteRepeatVelocityMode} onPrev={cycleNoteRepeatVelocityMode} onNext={cycleNoteRepeatVelocityMode} />
+        </section>,
         [
           { label: "F1 RATE", onClick: cycleNoteRepeatRate },
           { label: "F2 GATE", onClick: () => adjustNoteRepeatGate(5) },
           { label: "F3 SWING", onClick: () => adjustSwing(1) },
-          { label: "F4 TRIPLET", onClick: toggleNoteRepeatTriplet },
+          { label: "F4 TRIPLET", onClick: toggleTripletMode },
           { label: "F5 VELOCITY", onClick: cycleNoteRepeatVelocityMode },
           { label: "F6 EXIT", onClick: exit },
         ],
+        exit,
       )}
     </ScreenFrame>
   );
@@ -337,16 +342,15 @@ export function NoteRepeatUtilityScreen() {
 export function TimingCorrectUtilityScreen() {
   const timingCorrect = useAppStore((s) => s.timingCorrect);
   const swing = useAppStore((s) => s.swing);
-  const quantizeStrength = useAppStore((s) => s.quantizeStrength);
   const timingApplyTo = useAppStore((s) => s.timingApplyTo);
-  const noteRepeatLinkedToTc = useAppStore((s) => s.noteRepeatLinkedToTc);
   const cycleTimingCorrect = useAppStore((s) => s.cycleTimingCorrect);
   const adjustSwing = useAppStore((s) => s.adjustSwing);
-  const adjustQuantizeStrength = useAppStore((s) => s.adjustQuantizeStrength);
   const cycleTimingApplyTo = useAppStore((s) => s.cycleTimingApplyTo);
-  const toggleNoteRepeatLink = useAppStore((s) => s.toggleNoteRepeatLink);
+  const applyTimingCorrectToEvents = useAppStore((s) => s.applyTimingCorrectToEvents);
   const resetTimingCorrect = useAppStore((s) => s.resetTimingCorrect);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
+
+  const swingEnabled = timingCorrect === "1/16" || timingCorrect === "1/8";
 
   return (
     <ScreenFrame title="TIMING CORRECT" subtitle="Global timing utility">
@@ -354,24 +358,20 @@ export function TimingCorrectUtilityScreen() {
         <div className="grid h-full grid-cols-[1fr_0.7fr] gap-[2.3%]">
           <Panel rows={[
             ["NOTE VALUE", timingCorrect],
-            ["SWING", `${swing}%`],
-            ["STRENGTH", `${quantizeStrength}%`],
+            ["SWING", swingEnabled ? `${swing}%` : "—"],
             ["APPLY TO", timingApplyTo],
-            ["NOTE REPEAT LINK", noteRepeatLinkedToTc ? "ON" : "OFF"],
           ]} />
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
-            <UtilityAction label="SWING +" onClick={() => adjustSwing(1)} />
-            <UtilityAction label="SWING -" onClick={() => adjustSwing(-1)} />
-            <UtilityAction label="STR +" onClick={() => adjustQuantizeStrength(5)} />
-            <UtilityAction label="STR -" onClick={() => adjustQuantizeStrength(-5)} />
-            <UtilityAction label={noteRepeatLinkedToTc ? "UNLINK NR" : "LINK NR"} onClick={toggleNoteRepeatLink} />
+            <UtilityAction label="SWING +" onClick={() => adjustSwing(1)} disabled={!swingEnabled} />
+            <UtilityAction label="SWING -" onClick={() => adjustSwing(-1)} disabled={!swingEnabled} />
+            <UtilityAction label="DO IT" onClick={applyTimingCorrectToEvents} />
           </section>
         </div>,
         [
           { label: "F1 NOTE", onClick: cycleTimingCorrect },
-          { label: "F2 SWING", onClick: () => adjustSwing(1) },
-          { label: "F3 STRENGTH", onClick: () => adjustQuantizeStrength(5) },
-          { label: "F4 APPLY", onClick: cycleTimingApplyTo },
+          { label: "F2 SWING", onClick: swingEnabled ? () => adjustSwing(1) : undefined },
+          { label: "F3 DO IT", onClick: applyTimingCorrectToEvents },
+          { label: "F4 SCOPE", onClick: cycleTimingApplyTo },
           { label: "F5 RESET", onClick: resetTimingCorrect },
           { label: "F6 EXIT", onClick: exit },
         ],
@@ -469,6 +469,7 @@ export function GoToUtilityScreen() {
         <div className="grid h-full grid-cols-[1fr_0.72fr] gap-[2.3%]">
           <SelectablePanel
             active={goToTarget}
+            onSelect={(label) => setGoToTarget(label as typeof goToTarget)}
             rows={[
               ["BAR", String(currentBar).padStart(3, "0")],
               ["STEP", String(currentStep).padStart(2, "0")],
@@ -510,6 +511,7 @@ export function EraseUtilityScreen() {
         <div className="grid h-full grid-cols-[1fr_0.72fr] gap-[2.3%]">
           <SelectablePanel
             active={eraseMode}
+            onSelect={(label) => setEraseMode(label as typeof eraseMode)}
             rows={[
               ["PAD", eraseMode === "PAD" ? "ERASE PAD" : ""],
               ["TRACK", eraseMode === "TRACK" ? "ERASE TRACK" : ""],
@@ -547,7 +549,21 @@ export function UndoUtilityScreen() {
   const redoLastAction = useAppStore((s) => s.redoLastAction);
   const clearUndoHistory = useAppStore((s) => s.clearUndoHistory);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
-  const recentActions = [...undoHistory].reverse().slice(0, 4);
+  const recentActions = [...undoHistory].reverse().slice(0, 8).map((entry) => entry.label);
+  const [confirmClear, setConfirmClear] = useState(false);
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = window.setTimeout(() => setConfirmClear(false), 3000);
+    return () => window.clearTimeout(timer);
+  }, [confirmClear]);
+  const handleClear = () => {
+    if (confirmClear) {
+      clearUndoHistory();
+      setConfirmClear(false);
+    } else {
+      setConfirmClear(true);
+    }
+  };
 
   return (
     <ScreenFrame title="UNDO" subtitle="Action history">
@@ -555,29 +571,34 @@ export function UndoUtilityScreen() {
         <div className="grid h-full grid-cols-[0.86fr_1.14fr] gap-[2.3%]">
           <Panel
             rows={[
-              ["LAST ACTION", lastAction],
+              ["LAST ACTION", lastAction || "—"],
               ["UNDO DEPTH", String(undoHistory.length)],
               ["REDO DEPTH", String(redoHistory.length)],
             ]}
           />
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
             <p className="text-[#91a477]">RECENT OPERATIONS</p>
-            {recentActions.map((action, index) => (
-              <div key={`${action}-${index}`} className="grid grid-cols-[32px_1fr] border border-[#46533b] bg-black/15 px-[4%] py-[3%]">
-                <span className="text-[#91a477]">{index + 1}.</span>
-                <span>{action}</span>
-              </div>
-            ))}
+            {recentActions.length === 0 ? (
+              <p className="text-[#46533b]">—</p>
+            ) : (
+              recentActions.map((action, index) => (
+                <div key={`${action}-${index}`} className="grid grid-cols-[32px_1fr] border border-[#46533b] bg-black/15 px-[4%] py-[3%]">
+                  <span className="text-[#91a477]">{index + 1}.</span>
+                  <span>{action}</span>
+                </div>
+              ))
+            )}
           </section>
         </div>,
         [
           { label: "F1 UNDO", onClick: undoLastAction },
           { label: "F2 REDO", onClick: redoLastAction },
-          { label: "F3 CLEAR", onClick: clearUndoHistory },
-          { label: "—", onClick: undefined },
-          { label: "—", onClick: undefined },
+          { label: confirmClear ? "F3 CONFIRM" : "F3 CLEAR", onClick: handleClear },
+          "F4 —",
+          "F5 —",
           { label: "F6 EXIT", onClick: exit },
         ],
+        exit,
       )}
     </ScreenFrame>
   );
@@ -627,32 +648,42 @@ function Panel({ rows }: { rows: [string, string][] }) {
 function SelectablePanel({
   active,
   rows,
+  onSelect,
 }: {
   active: string;
   rows: [string, string][];
+  onSelect?: (label: string) => void;
 }) {
   return (
     <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
-      {rows.map(([label, value]) => (
-        <div
-          key={label}
-          className={`grid grid-cols-[1fr_auto] border px-[4%] py-[3%] ${
-            label === active
-              ? "border-[#eef6d8] bg-[#d8e3b7]/10 text-[#eef6d8]"
-              : "border-[#46533b] text-[#aab691]"
-          }`}
-        >
-          <span>{label}</span>
-          <span>{value}</span>
-        </div>
-      ))}
+      {rows.map(([label, value]) => {
+        const className = `grid grid-cols-[1fr_auto] border px-[4%] py-[3%] text-left ${
+          label === active
+            ? "border-[#eef6d8] bg-[#d8e3b7]/10 text-[#eef6d8]"
+            : "border-[#46533b] text-[#aab691] hover:bg-black/30"
+        }`;
+        if (onSelect) {
+          return (
+            <button key={label} type="button" onClick={() => onSelect(label)} className={className}>
+              <span>{label}</span>
+              <span>{value}</span>
+            </button>
+          );
+        }
+        return (
+          <div key={label} className={className}>
+            <span>{label}</span>
+            <span>{value}</span>
+          </div>
+        );
+      })}
     </section>
   );
 }
 
-function UtilityAction({ label, onClick }: { label: string; onClick: () => void }) {
+function UtilityAction({ label, onClick, disabled = false }: { label: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <button type="button" onClick={onClick} className="border border-[#46533b] bg-black/25 px-[3%] py-[10%]">
+    <button type="button" onClick={onClick} disabled={disabled} className="border border-[#46533b] bg-black/25 px-[3%] py-[10%] disabled:opacity-40">
       {label}
     </button>
   );

@@ -99,6 +99,108 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 8 — 2026-05-20 — Undo Phase 2–5 complete: STEP/PROGRAM/MIX/SEQ/SONG actions, REC take undo, Ctrl+Z/Y shortcuts
+
+### What was attempted
+
+Marek requested completion of all remaining undo phases:
+- **Phase 2** — STEP screen actions undo
+- **Phase 3** — PROGRAM screen actions undo
+- **Phase 4** — MIX / Sequence / Song undo (CHOP excluded per AKAI MPC Sample manual)
+- **Phase 5** — Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y keyboard shortcuts + UI polish
+- **REC take undo** — whole take = ONE snapshot (MPC2000XL "UNDO SEQ" pattern). Snapshot pre-record, label-on-stop.
+
+All wiring uses existing engine: `recordUndo(state, label, bucket)` with 500ms bucket-merge collapse + 50-deep stack. No engine changes needed.
+
+### What worked
+
+**Phase 2 — STEP screen actions** (`useAppStore.ts` ~L2264–2384):
+- `adjustSelectedEvent` → `EDIT VELOCITY` / `EDIT OFFSET` / `EDIT DURATION` / `EDIT PROBABILITY` (bucket per-field-per-event for merge across rapid clicks).
+- `cycleSelectedEventTrack` → `EVENT TRACK`.
+- `deleteSelectedEvent` → `DELETE EVENT`.
+- `cycleSelectedEventAppliedParameter` → `PARAM TYPE`.
+- `adjustSelectedEventAppliedValue` → `PARAM VALUE` (bucket per-event for merge).
+- `toggleEventMuted` → `MUTE EVENT` / `UNMUTE EVENT` based on resulting state.
+- `addStepEventAtCurrentStep` / `createStepEventForPad` → `ADD EVENT`.
+
+**Phase 3 — PROGRAM screen actions** (~L1539–1561, ~L2125–2240):
+- `previousProgram` / `nextProgram` → `SWITCH PROGRAM`.
+- `createProgram` → `NEW PROGRAM`.
+- `assignCurrentSliceToSelectedPad` / `assignSourceToSelectedPad` → `ASSIGN {pad}`.
+- `updateSelectedPadParam` → field-dispatched labels: `TUNE {pad}` (tune/fineTune), `ENV {pad}` (attack/decay), `FILTER {pad}` (cutoff/resonance), `CHOKE {pad}` (chokeGroup), `MIX LEVEL/PAN/FXSEND {pad}` (mix fields fallback). Single bucket per field per pad so rapid arrow-tap collapses.
+- `toggleSelectedPadMode` → `PAD MODE {pad}`.
+- `toggleSelectedPadVoiceMode` → `VOICE MODE {pad}`.
+- `cycleSelectedPadFilterType` → `FILTER TYPE {pad}`.
+- `cycleMuteTargetMode` → `CHOKE MODE {pad}`.
+- `toggleMuteTargetForSelectedPad` → `CHOKE {pad}->{target}`.
+
+**Phase 4 — MIX / Sequence / Song** (~L1481–1620, ~L2569–2660, ~L1758–1815):
+- MIX: `updateSelectedMixerChannel` / `setMixerChannelValue` → `MIX LEVEL/PAN/FXSEND {pad}`; `toggleSelectedMixerMute` / `toggleMixerChannelMute` → `MUTE {pad}`; `toggleSelectedMixerSolo` / `toggleMixerChannelSolo` → `SOLO {pad}`; `cycleSelectedMixerOutput` → `OUTPUT {pad}`.
+- Sequence: `createSequence` → `NEW SEQ`; `duplicateCurrentSequence` → `DUPLICATE SEQ`; `deleteCurrentSequence` → `DELETE SEQ`; `renameCurrentSequence` / `setCurrentSequenceName` → `RENAME SEQ`.
+- Length / signature / BPM / swing: `adjustSequenceLengthBars` → `SEQ BARS`; `cycleTimeSignature` → `TIME SIG`; `adjustBpm` → `BPM` (bucket-merge); `adjustSwing` → `SWING` (bucket-merge).
+- Song mode: `insertSongStep` → `INSERT SONG STEP`; `deleteSelectedSongStep` → `DELETE SONG STEP`; `adjustSelectedSongRepeats` → `SONG REPEATS`; `moveSelectedSongStep` → `MOVE SONG STEP`; `cycleSelectedSongSequence` / `cycleSelectedSongSequenceBack` → `SONG SEQ`.
+
+**REC take undo** (~L3035–3060 helpers + transitions):
+- New state field `pendingRecTake: UndoEntry | null` (default `null`).
+- Helper `beginRecTakeSnapshot(state)` — if no pending, captures snapshot WITH label `REC TAKE SEQ{N} TRK{NN}` (computed from `currentSequence` + track index at REC arm time). Returns `{ pendingRecTake }` patch.
+- Helper `endRecTakeSnapshot(state)` — if pending, pushes to `undoHistory` (50-cap), clears redoHistory, sets `lastAction`, clears `pendingRecTake`. Returns full patch.
+- Wired at REC ENTER transitions: `computeRecordTransitionPatch` (action="REC"), `toggleSequenceRecording` mid-play arm, `toggleOverdub` ON path when playing.
+- Wired at REC EXIT transitions: `stopPlayback` always; `toggleSequenceRecording` disarm only if `overdubEnabled === false`; `toggleOverdub` disarm only if `isSequenceRecording === false`.
+- AUTO OVERDUB switch in `tickStepPlayback`: NOT wired (REC→OVERDUB transition keeps take pending — both modes count as one take).
+
+**Phase 5 — Keyboard shortcuts** (`KeyboardShortcuts.tsx`):
+- Ctrl+Z (no shift) → `undoLastAction`.
+- Ctrl+Shift+Z → `redoLastAction`.
+- Ctrl+Y → `redoLastAction` (Windows alt).
+- Cmd+Z / Cmd+Shift+Z / Cmd+Y also bound (event.metaKey).
+- Skip when typing in `<input>` / `<textarea>` / contentEditable → text fields use native browser undo.
+- Skip when `useLayoutStore.getState().editMode` (existing pattern preserved).
+- Listener placed BEFORE other key handlers, with early `return` to prevent double-handling.
+
+**Phase 5 — UI polish**:
+- `lastAudioMessage` format unified to `UNDO: {label}` / `REDO: {label}` (was `UNDONE: ...` / `REDONE: ...`). Matches Marek's spec.
+- Undo utility screen already had F1 UNDO + F2 REDO + F3 CLEAR softkeys (from Phase 1) — no further wiring needed.
+- Hardware UNDO button (LayoutElements L258) opens UTILITY_UNDO screen — unchanged.
+
+Build clean (`tsc + vite build`) after every phase. No TypeScript errors.
+
+### What didn't work / pitfalls hit
+
+- **TypeScript `never` narrowing in `updateSelectedPadParam` label dispatch.** First version used a chain ending with `field.toUpperCase()` fallback. TS narrowed `field` to `never` after exhausting all union members, so `.toUpperCase()` on never failed compilation. Fixed by removing the fallback (since all cases handled) and casting in the catch-all branch: `(field as string).toUpperCase()`. Lesson: when chaining `field === X ? ... : field === Y ? ...`, end with a concrete return rather than a method call on the narrowed type.
+- **REC take EXIT condition is multi-pathed.** Initially considered single `if !isRecording` check but recording exit can happen via: STOP, disarming REC alone (if overdub off), disarming OVERDUB alone (if REC off), or both at once. Each path must individually check the OTHER flag's state to decide whether the take is fully ending. AUTO OVERDUB switch (mid-tickStepPlayback) is the one transition that does NOT end the take — REC→OVERDUB is a mode change inside one take.
+- **`pendingRecTake` lives in state, NOT closure.** Considered using a module-level let for the pending snapshot but `useAppStore.ts` already uses `set/get` Zustand pattern — keeping `pendingRecTake` in state means it survives correctly across `set` calls and stays inspectable from any action. Also: would have leaked if STOP didn't fire (e.g., page reload mid-record), but that's not worse than other state leaks.
+- **Reminder noise continued.** 7+ task-tool reminders during single-edit fix-ups. All ignored. Real task tracking via TaskCreate/TaskUpdate happened at meaningful checkpoints — tasks #38–41, #56 wired through lifecycle.
+- **CHOP slice editing INTENTIONALLY excluded** per AKAI MPC Sample manual quote ("Editing slices cannot be undone or redone using the UNDO/REDO functions") — slices are non-destructive on the original sample, so no undo path is needed. Documented in this entry + open issue below.
+
+### Decisions made
+
+- **REC take = ONE snapshot from START to STOP** (MPC2000XL canonical "UNDO SEQ"). Per-loop replace, manual REC→OVERDUB switch, and AUTO OVERDUB switch all preserve the same pending take. Take only ends at STOP or full disarm.
+- **REC take label format: `REC TAKE SEQ{N} TRK{NN}`** with seq id and 2-digit padded track index at arm time. If user track-switches mid-recording, label reflects the START track, not the latest one.
+- **Global single undo stack** (no per-screen / per-context stacks). Confirmed.
+- **CHOP slice editing intentionally NOT under undo** per AKAI MPC Sample manual.
+- **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y all bound globally** with native-input-skip via `<input>` / `<textarea>` / contentEditable detection. Listener takes precedence over other keys via early `return`.
+- **Bucket strategy for high-frequency actions**: bucket key includes target identity (event id / pad id / sequence id) but NOT timestamp. This lets rapid edits on the SAME target collapse into one undo step (within 500ms window), while edits on DIFFERENT targets each get their own undo step.
+- **Discrete actions use `:${Date.now()}` bucket suffix** to defeat bucket-merge (e.g., DELETE EVENT, NEW PROGRAM, SWITCH PROGRAM). Each discrete action is its own undo step.
+- **`lastAudioMessage` format: `UNDO: {label}` / `REDO: {label}`** (uniform). Both surfaces (status bar / utility screen) read this field.
+- **No AppShell changes for UNDO/REDO buttons.** AppShell is sacred zone. UNDO hardware button stays as-is (opens UTILITY_UNDO screen). REDO is accessed via F2 softkey in that screen or via Ctrl+Shift+Z / Ctrl+Y.
+
+### Open issues / followups
+
+- **CHOP slice editing is intentionally out of undo scope** — per AKAI MPC Sample manual. If user expectation differs once they live with the build, revisit. Marek to confirm during audio test.
+- **REC take label uses START seq/track** — if track switch mid-record + label-from-end is preferred, refactor `endRecTakeSnapshot` to recompute label at push time (capture deferred track info). Flagged but not implemented.
+- **Sequence convert-to-song (`convertSongToSequence`)** NOT wired to undo — creates a new sequence via flatten, destructive enough to warrant undo? Flag.
+- **Settings adjust / toggle** (`adjustSelectedSetting`, `toggleSelectedSetting`) NOT wired. Master volume, metronome volume, etc. Probably OK to skip — settings are persistent app prefs, not project state. Confirm.
+- **TAP TEMPO** NOT wired (it adjusts BPM but only as a tap-derived calculation, not a discrete user-controlled value). BPM adjust IS wired, so manual BPM change is undoable. TAP TEMPO maps to BPM internally but doesn't pass through `adjustBpm`. Flag.
+- **TC apply DO IT** already wired in Session 6 — preserved.
+- **PAD ERASE** + **ERASE F5 EXECUTE** already wired in Session 7 — preserved.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — Phase 2/3/4/REC take/undo message format. ~50 `recordUndo` calls added. New helpers `beginRecTakeSnapshot`, `endRecTakeSnapshot`. New state field `pendingRecTake`.
+- `src/components/workstation/KeyboardShortcuts.tsx` — Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y bound (with native-input-skip).
+
+---
+
 ## Session 7 — 2026-05-20 — 16 LEVELS audio fix, transport timing bugs, NR refactor, undo Phase 1 (PAD ERASE), REC mode real continuous replace, OVERDUB workflow fix
 
 ### What was attempted

@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { useHoldRepeat } from "../components/useHoldRepeat";
 
 const softButtons = ["F1 ASSIGN", "F2 PARAMS", "F3 CHOKE", "F4 FILTER", "F5 FX SEND", "F6 SAVE PGM"];
 
@@ -225,9 +226,17 @@ export function ProgramScreen() {
             <section className="absolute inset-0 z-20 grid grid-cols-[0.72fr_1fr_0.88fr] gap-[12px] border border-[#91a477] bg-[#090c07]/95 p-[14px] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
               <AssignColumn title="SOURCE TYPE">
                 {(["SAMPLES", "SLICES", "PROGRAM POOL"] as const).map((type) => (
-                  <p key={type} className={type === sourceType ? "text-amber-200" : "text-[#9cab84]"}>
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => {
+                      setSourceType(type);
+                      setSourceIndex(0);
+                    }}
+                    className={`text-left ${type === sourceType ? "text-amber-200" : "text-[#9cab84] hover:text-[#d8e3b7]"}`}
+                  >
                     {type}
-                  </p>
+                  </button>
                 ))}
               </AssignColumn>
               <AssignColumn title="AVAILABLE SOURCES">
@@ -235,9 +244,14 @@ export function ProgramScreen() {
                   <p className="text-[#91a477]">--- EMPTY ---</p>
                 ) : (
                   activeSources.map((source, index) => (
-                    <p key={source} className={index === sourceIndex ? "bg-amber-200/10 text-amber-100" : "text-[#d8e3b7]"}>
+                    <button
+                      key={source}
+                      type="button"
+                      onClick={() => setSourceIndex(index)}
+                      className={`text-left ${index === sourceIndex ? "bg-amber-200/10 text-amber-100" : "text-[#d8e3b7] hover:bg-black/30"}`}
+                    >
                       {source}
-                    </p>
+                    </button>
                   ))
                 )}
               </AssignColumn>
@@ -355,14 +369,16 @@ function Param({
   onMinus: () => void;
   onPlus: () => void;
 }) {
+  const minusHold = useHoldRepeat(onMinus);
+  const plusHold = useHoldRepeat(onPlus);
   return (
     <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-[6px] border border-[#46533b] bg-black/15 px-[3%] py-[2.2%]">
       <span className="text-[#91a477]">{label}</span>
-      <button type="button" onClick={onMinus} className="px-1 text-[#eef6d8]">
+      <button type="button" {...minusHold} className="px-1 text-[#eef6d8]">
         -
       </button>
       <span className="min-w-[42px] text-center text-[#eef6d8]">{value}</span>
-      <button type="button" onClick={onPlus} className="px-1 text-[#eef6d8]">
+      <button type="button" {...plusHold} className="px-1 text-[#eef6d8]">
         +
       </button>
     </div>
@@ -395,8 +411,9 @@ function FilterParam({
 }
 
 function BracketButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const hold = useHoldRepeat(onClick);
   return (
-    <button type="button" onClick={onClick} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+    <button type="button" {...hold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
       {label}
     </button>
   );

@@ -17,7 +17,7 @@ export function PerformanceScreen() {
   const isPlaying = useAppStore((state) => state.isPlaying);
   const performancePulse = useAppStore((state) => state.performancePulse);
   const noteRepeatEnabled = useAppStore((state) => state.noteRepeatEnabled);
-  const noteRepeatRate = useAppStore((state) => state.noteRepeatRate);
+  const noteRepeatRate = useAppStore((state) => state.timingCorrect);
   const setNoteRepeatEnabled = useAppStore((state) => state.setNoteRepeatEnabled);
   const openUtilityWorkflow = useAppStore((state) => state.openUtilityWorkflow);
   const queuePerformanceSequence = useAppStore((state) => state.queuePerformanceSequence);

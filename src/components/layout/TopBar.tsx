@@ -9,7 +9,7 @@ export function TopBar() {
   const lastEraseMessage = useAppStore((state) => state.lastEraseMessage);
   const lastErasedCount = useAppStore((state) => state.lastErasedCount);
   const noteRepeatEnabled = useAppStore((state) => state.noteRepeatEnabled);
-  const noteRepeatRate = useAppStore((state) => state.noteRepeatRate);
+  const noteRepeatRate = useAppStore((state) => state.timingCorrect);
   const lastPerformanceMessage = useAppStore((state) => state.lastPerformanceMessage);
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
   const transportAnnouncement = useAppStore((state) => state.transportAnnouncement);

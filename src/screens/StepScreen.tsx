@@ -2,6 +2,9 @@ import { useMemo } from "react";
 import { isPadAssigned, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { useHoldRepeat } from "../components/useHoldRepeat";
+
+const noop = () => {};
 
 export function StepScreen() {
   const sequence = useAppStore((state) => state.sequence);
@@ -25,7 +28,19 @@ export function StepScreen() {
   const cycleStepTrack = useAppStore((state) => state.cycleStepTrack);
   const previousStepEvent = useAppStore((state) => state.previousStepEvent);
   const nextStepEvent = useAppStore((state) => state.nextStepEvent);
+  const stepBackward = useAppStore((state) => state.stepBackward);
+  const stepForward = useAppStore((state) => state.stepForward);
+  const barBackward = useAppStore((state) => state.barBackward);
+  const barForward = useAppStore((state) => state.barForward);
+  const currentBar = useAppStore((state) => state.currentBar);
+  const currentStep = useAppStore((state) => state.currentStep);
   const deleteSelectedEvent = useAppStore((state) => state.deleteSelectedEvent);
+  const toggleEventMuted = useAppStore((state) => state.toggleEventMuted);
+  const armAddEvent = useAppStore((state) => state.armAddEvent);
+  const createStepEventForPad = useAppStore((state) => state.createStepEventForPad);
+  const addEventArmed = useAppStore((state) => state.addEventArmed);
+  const cycleSelectedEventAppliedParameter = useAppStore((state) => state.cycleSelectedEventAppliedParameter);
+  const adjustSelectedEventAppliedValue = useAppStore((state) => state.adjustSelectedEventAppliedValue);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
 
   const trackEvents = useMemo(
@@ -51,30 +66,58 @@ export function StepScreen() {
     <ScreenFrame title="STEP" subtitle="Event edit">
       <div className="grid h-full gap-[12px]" style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}>
         <div className="grid min-h-0 grid-cols-[1.22fr_0.92fr_0.72fr] gap-[2.3%] overflow-hidden">
-          <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
-            <div className="grid grid-cols-[1fr_0.55fr_0.42fr_0.46fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
+          <section className="grid min-h-0 grid-rows-[auto_auto_1fr] border border-[#46533b] bg-black/20">
+            <button
+              type="button"
+              onClick={armAddEvent}
+              className={`border-b border-[#46533b] px-[3%] py-[2%] text-left text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] hover:bg-black/40 ${
+                addEventArmed ? "bg-amber-200/20 text-amber-100" : "bg-black/30 text-[#d8e3b7]"
+              }`}
+            >
+              {addEventArmed ? "ARMED — SELECT PAD (click again to cancel)" : "+ ADD EVENT — choose pad"}
+            </button>
+            {addEventArmed && (
+              <div className="grid grid-cols-4 gap-[4px] border-b border-[#46533b] bg-black/30 p-[3%]">
+                {Array.from({ length: 16 }, (_, index) => {
+                  const padNumber = index + 1;
+                  const padId = `P${String(padNumber).padStart(2, "0")}`;
+                  return (
+                    <button
+                      key={padId}
+                      type="button"
+                      onClick={() => createStepEventForPad(padId)}
+                      className="border border-[#46533b] bg-black/20 px-[6%] py-[12%] text-center text-[clamp(8px,0.66vw,10px)] text-[#d8e3b7] hover:bg-amber-200/15"
+                    >
+                      {padId}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
               <span>BAR.STEP.TICK</span>
               <span>PAD</span>
               <span>VEL</span>
               <span>TR</span>
+              <span>M</span>
             </div>
             <div className="grid content-start overflow-hidden">
               {visibleEvents.map((event) => {
-                const muted = performanceTracks.find((track) => track.name === event.trackId || track.id === event.trackId)?.muted ?? false;
+                const trackMuted = performanceTracks.find((track) => track.name === event.trackId || track.id === event.trackId)?.muted ?? false;
+                const eventMuted = event.muted === true;
+                const dimmed = trackMuted || eventMuted;
                 const selected = event.id === selectedEventId;
-                const playing = !muted && eventStepIndex(event.step) === currentStepIndex;
+                const playing = !dimmed && eventStepIndex(event.step) === currentStepIndex;
                 const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
                 const eventBank = event.padBank ?? "A";
                 const eventPadNumber = event.padNumber ?? (Number(event.pad.replace(/^P/, "")) || 1);
                 const eventPad = `P${String(eventPadNumber).padStart(2, "0")}`;
                 const assigned = isPadAssigned({ padAssignments, padBank: eventBank }, eventPad);
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={event.id}
-                    onClick={() => selectStepEvent(event.id)}
-                    className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.46fr] px-[3%] py-[1.35%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
-                      muted
+                    className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] items-center px-[3%] py-[1.35%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
+                      dimmed
                         ? "text-[#556046]"
                         : selected
                           ? "bg-amber-200/15 text-amber-100"
@@ -83,11 +126,18 @@ export function StepScreen() {
                             : "text-[#aab691]"
                     }`}
                   >
-                    <span>{event.step}</span>
-                    <span>{assigned ? `${eventBank}${String(eventPadNumber).padStart(2, "0")}` : "UNASSIGNED PAD"}</span>
-                    <span>{String(event.velocity).padStart(3, "0")}</span>
-                    <span>{tag}</span>
-                  </button>
+                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{event.step}</button>
+                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{assigned ? `${eventBank}${String(eventPadNumber).padStart(2, "0")}` : "UNASSIGNED PAD"}</button>
+                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{String(event.velocity).padStart(3, "0")}</button>
+                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{tag}</button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); toggleEventMuted(event.id); }}
+                      className={`text-center ${eventMuted ? "text-amber-200" : "text-[#46533b] hover:text-[#91a477]"}`}
+                    >
+                      {eventMuted ? "M" : "·"}
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -97,8 +147,22 @@ export function StepScreen() {
             <p className="text-[#91a477]">SELECTED EVENT {selectedEventId ?? "---"}</p>
             <StepNav label="EVENT" value={selectedEvent ? String(selectedTrackEventIndex + 1).padStart(3, "0") : "---"} onPrevious={previousStepEvent} onNext={nextStepEvent} />
             <StepNav label="TRACK" value={activeTrack} onPrevious={() => cycleStepTrack(-1)} onNext={() => cycleStepTrack(1)} />
-            <Info active={eventEditMode === "VELOCITY"} label="VELOCITY" value={selectedEvent ? String(selectedEvent.velocity) : "---"} />
-            <Info active={eventEditMode === "OFFSET"} label="OFFSET" value={selectedEvent ? formatSigned(selectedEvent.timingOffset) : "---"} />
+            <StepNav label="BAR" value={String(currentBar).padStart(3, "0")} onPrevious={barBackward} onNext={barForward} />
+            <StepNav label="STEP" value={String(currentStep).padStart(2, "0")} onPrevious={stepBackward} onNext={stepForward} />
+            <EditableValue
+              active={eventEditMode === "VELOCITY"}
+              label="VELOCITY"
+              value={selectedEvent ? String(selectedEvent.velocity) : "---"}
+              onPrevious={selectedEvent ? () => { setEventEditMode("VELOCITY"); adjustSelectedEvent("velocity", -1); } : undefined}
+              onNext={selectedEvent ? () => { setEventEditMode("VELOCITY"); adjustSelectedEvent("velocity", 1); } : undefined}
+            />
+            <EditableValue
+              active={eventEditMode === "OFFSET"}
+              label="OFFSET"
+              value={selectedEvent ? formatSigned(selectedEvent.timingOffset) : "---"}
+              onPrevious={selectedEvent ? () => { setEventEditMode("OFFSET"); adjustSelectedEvent("timingOffset", -1); } : undefined}
+              onNext={selectedEvent ? () => { setEventEditMode("OFFSET"); adjustSelectedEvent("timingOffset", 1); } : undefined}
+            />
             <EditableValue
               active={eventEditMode === "DURATION"}
               label="DURATION"
@@ -106,9 +170,25 @@ export function StepScreen() {
               onPrevious={selectedEvent ? () => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", -1); } : undefined}
               onNext={selectedEvent ? () => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", 1); } : undefined}
             />
-            <Info active={eventEditMode === "PROBABILITY"} label="PROBABILITY" value={selectedEvent ? `${selectedEvent.probability}%` : "---"} />
-            <Info label="PARAM TYPE" value={selectedEvent?.appliedParameter ?? "---"} />
-            <Info label="PARAM VALUE" value={formatParamValue(selectedEvent)} />
+            <EditableValue
+              active={eventEditMode === "PROBABILITY"}
+              label="PROBABILITY"
+              value={selectedEvent ? `${selectedEvent.probability}%` : "---"}
+              onPrevious={selectedEvent ? () => { setEventEditMode("PROBABILITY"); adjustSelectedEvent("probability", -5); } : undefined}
+              onNext={selectedEvent ? () => { setEventEditMode("PROBABILITY"); adjustSelectedEvent("probability", 5); } : undefined}
+            />
+            <EditableValue
+              label="PARAM TYPE"
+              value={selectedEvent?.appliedParameter ?? "NONE"}
+              onPrevious={selectedEvent ? () => cycleSelectedEventAppliedParameter(-1) : undefined}
+              onNext={selectedEvent ? () => cycleSelectedEventAppliedParameter(1) : undefined}
+            />
+            <EditableValue
+              label="PARAM VALUE"
+              value={formatParamValue(selectedEvent)}
+              onPrevious={selectedEvent?.appliedParameter ? () => adjustSelectedEventAppliedValue(-1) : undefined}
+              onNext={selectedEvent?.appliedParameter ? () => adjustSelectedEventAppliedValue(1) : undefined}
+            />
           </section>
 
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
@@ -157,15 +237,17 @@ function EditableValue({
   onPrevious?: () => void;
   onNext?: () => void;
 }) {
+  const prevHold = useHoldRepeat(onPrevious ?? noop);
+  const nextHold = useHoldRepeat(onNext ?? noop);
   return (
     <div className={`grid grid-cols-[1fr_1.4fr] items-center gap-[8px] ${active ? "text-amber-100" : ""}`}>
       <span className={active ? "text-amber-200" : "text-[#91a477]"}>{label}</span>
       <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
-        <button type="button" onClick={onPrevious} disabled={!onPrevious} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
+        <button type="button" {...prevHold} disabled={!onPrevious} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
           &lt;
         </button>
         <span className="text-center">{value}</span>
-        <button type="button" onClick={onNext} disabled={!onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
+        <button type="button" {...nextHold} disabled={!onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
           &gt;
         </button>
       </div>
@@ -184,17 +266,19 @@ function StepNav({
   onPrevious: () => void;
   onNext: () => void;
 }) {
+  const prevHold = useHoldRepeat(onPrevious);
+  const nextHold = useHoldRepeat(onNext);
   return (
     <div className="grid grid-cols-[1fr_1.4fr] items-center gap-[8px]">
       <span className="text-[#91a477]">{label}</span>
       <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
-        <button type="button" onClick={onPrevious} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+        <button type="button" {...prevHold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
           &lt;
         </button>
         <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
           {value}
         </button>
-        <button type="button" onClick={onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+        <button type="button" {...nextHold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
           &gt;
         </button>
       </div>

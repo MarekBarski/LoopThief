@@ -12,6 +12,7 @@ import { getSampleAudioRef } from "../audio/sampleLibrary";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { useHoldRepeat } from "../components/useHoldRepeat";
 
 const zoomSteps = [1, 2, 4, 8, 16];
 type MarkerId = "sampleStart" | "sampleEnd" | "loopStart" | "loopEnd" | `slice:${number}`;
@@ -63,6 +64,8 @@ export function ChopScreen() {
   const previewChopSlice = useAppStore((state) => state.previewChopSlice);
   const previousChopSample = useAppStore((state) => state.previousChopSample);
   const nextChopSample = useAppStore((state) => state.nextChopSample);
+  const prevSampleHold = useHoldRepeat(previousChopSample);
+  const nextSampleHold = useHoldRepeat(nextChopSample);
   const keepChops = useAppStore((state) => state.keepChops);
   const discardChopEdits = useAppStore((state) => state.discardChopEdits);
   const assignCurrentSliceToSelectedPad = useAppStore((state) => state.assignCurrentSliceToSelectedPad);
@@ -231,11 +234,11 @@ export function ChopScreen() {
             <div className="grid gap-[4%]">
               <span className="text-[#91a477]">SAMPLE</span>
               <span className="flex items-center gap-[6px] text-[#eef6d8]">
-                <button type="button" onClick={previousChopSample} className="text-[#91a477]">
+                <button type="button" {...prevSampleHold} className="text-[#91a477]">
                   &lt;
                 </button>
                 <span className="truncate">{sample?.name ?? "NO SAMPLE"}</span>
-                <button type="button" onClick={nextChopSample} className="text-[#91a477]">
+                <button type="button" {...nextSampleHold} className="text-[#91a477]">
                   &gt;
                 </button>
               </span>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ScreenFrame } from "./ScreenFrame";
 import { useAppStore } from "../store/useAppStore";
+import { useHoldRepeat } from "../components/useHoldRepeat";
 
 const softButtons = ["F1 TC", "F2 SEQ", "F3 TRACK", "F4 PROGRAM", "F5 SONG", "F6 WINDOW"] as const;
 
@@ -78,6 +79,11 @@ export function MainScreen() {
               <ValueRow label="SWING" value={String(swing)} onPrevious={() => adjustSwing(-1)} onNext={() => adjustSwing(1)} />
               <ValueRow label="TC" value={timingCorrect} onPrevious={cycleTimingCorrect} onNext={cycleTimingCorrect} />
             </div>
+            {timeSignature !== "4/4" && (
+              <p className="text-[clamp(8px,0.6vw,10px)] text-amber-300">
+                {timeSignature} partially supported — count-in and accent only. Full step grid in future update.
+              </p>
+            )}
           </div>
 
           <div className="grid min-h-0 grid-cols-[1fr_0.42fr] items-center gap-[4%] border-t border-[#46533b] pt-[3%]">
@@ -217,8 +223,9 @@ function StatusBox({ label, value, active }: { label: string; value: string; act
 }
 
 function StepButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const hold = useHoldRepeat(onClick);
   return (
-    <button type="button" onClick={onClick} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+    <button type="button" {...hold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
       {label}
     </button>
   );
