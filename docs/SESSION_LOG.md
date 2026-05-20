@@ -99,6 +99,91 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 14 — 2026-05-20 — Parallel state hydration fix: performanceTracks re-derived on load
+
+### What was attempted
+
+Marek reported regression: loading a `.lthief` project with 3 tracks → 3 tracks appear in events list, audio plays, but TRACK MUTE UI shows tracks 2+3 as "EMPTY ---" (rendered greyed/disabled). REPRO B (manually creating 3 tracks then loading same file) worked. Marek's diagnosis was correct: parallel state structure keyed by index, not hydrated on load.
+
+Task: full audit of parallel state structures + fix hydration. Marek preferred refactor (single source of truth) but allowed workaround if refactor too broad.
+
+### What worked
+
+**Parallel-state audit** (full state shape grep):
+- `performanceTracks: PerformanceTrack[]` — `{ id, name, muted, solo, activity }`. **Bug confirmed.** Initial state has 1 entry. Load doesn't extend.
+- `padMixer` — per-program, hydrated via `firstProgram.padMixer` ✓
+- `padAssignments` — per-program, hydrated ✓
+- `songSteps` — set from `bundle.manifest.songs` ✓
+- Track mute/solo — lives on `performanceTracks` (the bug) AND on `Track.mute/solo` (in sequence). Two sources.
+- Pad mute/solo — on `MixerChannel.muted/solo` inside `padMixer` ✓
+- Choke groups (`muteTargetMode`, `muteTargets`) — on `PadAssignment` ✓
+- ADSR (`attack`, `decay`) — on `PadAssignment` ✓
+- Filter (`filterCutoff`, `filterResonance`, `filterType`) — on `PadAssignment` ✓
+- 16 LEVELS state (`sixteenLevelsSourcePad`, `sixteenLevelsParameter`, etc.) — scalar transient editor state, reset on load is acceptable (it's a UI mode, not project data).
+- Per-track mixer state (level/pan/fxSend) — NOT a separate structure. `Track` doesn't have these fields; mixer is per-pad inside `padMixer`. ✓
+- Settings (`metronomeEnabled` etc.) — already hydrated via `applyGlobalSettings` ✓.
+
+**Conclusion: `performanceTracks` is the ONLY parallel structure with the hydration bug.**
+
+**Fix — Option B (hydration workaround):**
+- New helper `derivePerformanceTracks(sequence)` builds `PerformanceTrack[]` from `sequence.tracks` — copies `mute → muted`, `solo → solo`, generates decorative `activity = 28 + index*8`.
+- All three hydrate functions (`hydrateProjectBundle`, `hydrateAllBundle`, `hydrateSeqBundle`) now call `derivePerformanceTracks(firstSequence)` and populate the field.
+- Bonus fixes in same hydrate paths:
+  - `currentTrackId` now set to `firstSequence.tracks[0].id` (was leaving stale "TRACK01" from initial state)
+  - `activeTrack` now formatted via `formatTrackName` with correct track index
+  - `sequence` (legacy alias for `currentSequence`) set to keep status-bar / event display in sync
+- Build clean.
+
+**Why Option A (refactor delete performanceTracks) NOT done this session:**
+- Would touch PerformanceScreen, TrackMuteUtilityScreen, StepScreen, SongScreen render paths
+- `togglePerformanceTrack`, `clearTrackMutes`, and `nextPerformanceTracks` helper would all need to mutate `sequence.tracks` instead — sequencer-state mutation surface
+- `PerformanceTrack.activity` field needs an alternative (compute on the fly or store on Track)
+- Field naming inconsistency: `Track.mute` (boolean) vs `PerformanceTrack.muted` (boolean) — same data, different name; renames cascade through UI
+- Estimated 1–2h of careful refactor with UI testing. Deferred.
+
+### What didn't work / pitfalls hit
+
+- **Initial misread of bug**: thought `tracks 2/3 force-muted` meant `muted=true`. Actually UI renders absent slots as `EMPTY ---` with greyed style — visually similar to muted but mechanically different. The fix is the same regardless.
+- **`performanceTracks` audit took longer than expected** because the name suggests "Performance screen only" but it's actually a global track-state mirror. Misleading naming. Surfaced as followup.
+- **No browser test of mixed-TS save/load** from prior session — Marek to verify both this bug fix + the Session 13 non-4/4 work in same audio test session.
+- **`activity` field is dead-decorative.** Computed as `28 + index*8` for display only. Worth removing in the refactor.
+- **`PerformanceTrack.muted` vs `Track.mute` naming inconsistency** — not addressed. Would normalize as part of Option A refactor.
+- **`sequence` legacy field** (top-level alias for `currentSequence`) gets hydrated now too. It was inconsistent before — some screens read `sequence`, others read `currentSequence`. Eventually one should be removed. Not this session.
+
+### Decisions made
+
+- **Option B (hydration workaround) chosen this session.** Option A (delete `performanceTracks`, derive from `sequence.tracks` directly) is the correct long-term fix but spans ~10 call sites + naming normalization (`muted`/`mute`). Filed as followup.
+- **`derivePerformanceTracks` helper is the canonical builder.** Any future code path that wants to populate `performanceTracks` from a sequence should call this helper. Single source of truth for the derivation, even though the data is duplicated.
+- **`currentTrackId` and `activeTrack` also hydrated.** Strictly the bug was just about mute UI showing wrong, but these fields would also be stale after load (carrying over from initial "TRACK01" or previous state). Fixed in the same patch.
+- **`16 LEVELS` transient state intentionally not hydrated** — it's an editing mode, not project data. Reset to defaults on load is correct.
+
+### Open issues / followups
+
+- **Option A refactor**: delete `performanceTracks` from state. Replace UI reads with `currentSequence.tracks[i].mute/.solo`. Replace mutation actions to update `sequence.tracks`. Compute `activity` on the fly or remove. Estimated 1–2h. Future session.
+- **Naming normalization**: `Track.mute` (used in sequence) vs `PerformanceTrack.muted` (used everywhere else). Pick one. Renames cascade through ~30 files.
+- **Marek's audio test plan from spec:**
+  1. 3 tracks (track 1 active, 2 muted, 3 active) save → fresh start → load → identical mute state
+  2. Pad mute state save/load (different pads muted)
+  3. Mixer settings (level/pan/fxSend) save/load
+  4. Solo state save/load
+  5. Mute groups (choke groups) save/load
+  6. 16 LEVELS mapping save/load (NOTE: 16 LEVELS transient state intentionally not persisted; if Marek wants ramp mappings persisted, that's a new feature)
+  7. ADSR per-pad save/load
+  8. Choke groups save/load
+  9. REGRESSION REPRO B (manual create + load) still works
+  10. REGRESSION on Marek's previous test projects
+- **Activity field dead code**: `PerformanceTrack.activity` only used for visual decoration. Remove in Option A.
+- **`sequence` vs `currentSequence`**: two state fields with same purpose. Consolidate. Future cleanup.
+- **PDF reading still blocked** — could not consult AKAI manuals for canonical "what should persist on load" reference.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - New helper `derivePerformanceTracks(sequence)`
+  - `hydrateProjectBundle`, `hydrateAllBundle`, `hydrateSeqBundle` — all three populate `performanceTracks`, `currentTrackId`, `activeTrack`, `sequence` from the loaded sequence's tracks
+
+---
+
 ## Session 13 — 2026-05-20 — Non-4/4 TS refactor: metronome + REC + bar nav + formatBarPosition + legacy cleanup
 
 ### What was attempted

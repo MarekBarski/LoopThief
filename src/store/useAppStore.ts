@@ -3307,6 +3307,20 @@ function hydrateSamples(loaded: LoadedSample[]): RecordedSample[] {
   });
 }
 
+// Derived from sequence.tracks. Each PerformanceTrack mirrors mute/solo from the source track
+// plus a decorative `activity` field. Re-derive whenever loading a sequence so the count and
+// mute/solo state of state.performanceTracks always matches the active sequence's tracks.
+function derivePerformanceTracks(sequence: Sequence | undefined): PerformanceTrack[] {
+  if (!sequence) return [];
+  return sequence.tracks.map((track, index) => ({
+    id: track.id,
+    name: track.name,
+    muted: track.mute,
+    solo: track.solo,
+    activity: 28 + index * 8,
+  }));
+}
+
 function hydrateProjectBundle(
   bundle: Extract<LoadedBundle, { type: "project" }>,
   set: (partial: Partial<AppState>) => void,
@@ -3317,6 +3331,7 @@ function hydrateProjectBundle(
   const songSteps = bundle.manifest.songs as SongStep[];
   const firstProgram = programs[0];
   const firstSequence = sequences[0];
+  const firstTrackId = firstSequence?.tracks[0]?.id ?? "TRACK01";
   set({
     recordedSamples: samples,
     programs,
@@ -3326,8 +3341,14 @@ function hydrateProjectBundle(
     activeProgram: firstProgram?.name ?? "",
     sequences,
     currentSequence: firstSequence?.id ?? "",
+    sequence: firstSequence?.id ?? "",
     stepEvents: firstSequence?.events ?? [],
     sequenceName: firstSequence?.name ?? "",
+    currentTrackId: firstTrackId,
+    activeTrack: firstSequence
+      ? formatTrackName(getTrackName(firstSequence, firstTrackId), Math.max(0, firstSequence.tracks.findIndex((t) => t.id === firstTrackId)))
+      : "TRACK01",
+    performanceTracks: derivePerformanceTracks(firstSequence),
     songSteps,
     currentSongStepIndex: 0,
     selectedSongStepIndex: 0,
@@ -3343,11 +3364,18 @@ function hydrateAllBundle(
   const sequences = (bundle.manifest.sequences as Sequence[]).map(ensureTimeSignatureChanges);
   const songSteps = bundle.manifest.songs as SongStep[];
   const firstSequence = sequences[0];
+  const firstTrackId = firstSequence?.tracks[0]?.id ?? "TRACK01";
   set({
     sequences,
     currentSequence: firstSequence?.id ?? "",
+    sequence: firstSequence?.id ?? "",
     stepEvents: firstSequence?.events ?? [],
     sequenceName: firstSequence?.name ?? "",
+    currentTrackId: firstTrackId,
+    activeTrack: firstSequence
+      ? formatTrackName(getTrackName(firstSequence, firstTrackId), Math.max(0, firstSequence.tracks.findIndex((t) => t.id === firstTrackId)))
+      : "TRACK01",
+    performanceTracks: derivePerformanceTracks(firstSequence),
     songSteps,
     currentSongStepIndex: 0,
     selectedSongStepIndex: 0,
@@ -3369,11 +3397,16 @@ function hydrateSeqBundle(
   const sequences = state.sequences.some((seq) => seq.id === targetId)
     ? state.sequences.map((seq) => (seq.id === targetId ? replaced : seq))
     : [...state.sequences, replaced];
+  const firstTrackId = replaced.tracks[0]?.id ?? state.currentTrackId;
   set({
     sequences,
     currentSequence: targetId,
+    sequence: targetId,
     stepEvents: replaced.events,
     sequenceName: replaced.name,
+    currentTrackId: firstTrackId,
+    activeTrack: formatTrackName(getTrackName(replaced, firstTrackId), Math.max(0, replaced.tracks.findIndex((t) => t.id === firstTrackId))),
+    performanceTracks: derivePerformanceTracks(replaced),
     lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief-seq`,
   });
 }
