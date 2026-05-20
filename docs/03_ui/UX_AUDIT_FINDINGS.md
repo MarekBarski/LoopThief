@@ -11,6 +11,25 @@
 
 ## CRITICAL — Feature is broken / silent
 
+### PROGRAM screen — ATTACK/DECAY are fake UI (CRITICAL)
+
+PROGRAM screen has per-pad ATTACK and DECAY parameter fields, but changing their values has no audible effect on playback. This violates the project's own Fake UI Policy.
+
+Root cause: sampler engine has no ADSR envelope generator. Only static gain stage exists between sample buffer and output. `PadAssignment.attack` is never read in any playback path. `PadAssignment.decay` is read only for visual triggered-pad flash timeout (`useAppStore.ts:3019`), not for audio shaping.
+
+Fix scope (NOT for the current session):
+- Add ADSR envelope generator module
+- Integrate with `samplerEngine.play()` per-voice
+- Connect PROGRAM screen ATTACK/DECAY values to envelope
+- Connect 16 LEVELS ATTACK/DECAY parameters to envelope override
+- Re-enable ATTACK/DECAY in 16 LEVELS PARAMETER cycle
+
+This belongs to Phase A8 (Sampling foundation features) — dedicated session for ADSR engine work. Should also be evaluated for impact on choke behavior, mono voice management, step playback.
+
+Until fixed, ATTACK/DECAY fields in PROGRAM screen and 16 LEVELS are hidden / disabled with clear "—" labelling.
+
+---
+
 ### 16 LEVELS — no audio feedback (FLAGSHIP BUG)
 
 The whole feature is currently unusable because there's no sound. MPC 16 LEVELS is a **live performance feature** — clicking should always produce sound.
@@ -208,6 +227,20 @@ Minor cosmetic suggestion (low priority):
 
 - `CLICK VOL: 70` has no unit. Is it 0–100%, 0–127 (MIDI), or dB?
 - Decide on a project-wide convention for volume values (suggest 0–100 to match MPC tradition) and apply consistently to MASTER VOL, CLICK VOL, pad LVL, etc.
+
+---
+
+## STEP screen — editable appliedParameter / appliedValue (follow-up)
+
+After 16 LEVELS iter 2, recorded events carry `appliedParameter` (VELOCITY/TUNE/FILTER) and `appliedValue`. STEP screen now displays `PARAM TYPE` and `PARAM VALUE` rows (read-only, formatted), but they are not yet editable from STEP.
+
+Future work (not blocking — deferred):
+- New `eventEditMode` value(s) for editing applied parameter type and value
+- Softkey(s) for cycling parameter type on selected event (NONE / VELOCITY / TUNE / FILTER)
+- Adjust appliedValue with `<` `>` controls respecting parameter type's natural range
+- Visual feedback consistent with existing F1 VEL / F2 OFFSET / F3 DUR / F4 PROB pattern
+
+This was scoped out of the 16 LEVELS sesssion to keep core feature delivery focused. Pick up when STEP screen UX gets next polish pass.
 
 ---
 

@@ -81,6 +81,10 @@ class SamplerEngine {
     this.stopVoices((voice) => voice.voiceGroup === voiceGroup);
   }
 
+  stopAllVoices() {
+    this.stopVoices(() => true);
+  }
+
   stopVoiceGroups(voiceGroups: string[]) {
     if (voiceGroups.length === 0) return;
     const groups = new Set(voiceGroups);

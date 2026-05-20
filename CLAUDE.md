@@ -221,6 +221,53 @@ Prefer:
 
 ---
 
+## Foundation-First Development (CRITICAL PRINCIPLE)
+
+LoopThief development was previously top-down: UI first, functionality dressed onto UI where possible, placeholders where not. This produced a "house with facade but no foundation" — many fields and controls that look like they work but do not (fake UI), and many features that play sounds but don't propagate values through the full sequencer→engine pipeline.
+
+**From this point forward, all new features follow foundation-first development.**
+
+### What this means
+
+Before implementing any new feature, the AI assistant must verify and document THREE layers:
+
+1. **State layer** — Do the relevant values exist in the event/state shape? Are they typed correctly?
+2. **Persistence layer** — Are these values saved and loaded correctly? Do they survive sequencer recording, project save, etc.?
+3. **Audio layer** — Do these values actually reach `samplerEngine.play()` as runtime overrides? Do they affect the sound?
+
+**A feature is not "done" until end-to-end pipeline works.** Adding a control to the UI that doesn't fully propagate through these three layers is a Fake UI Policy violation, regardless of how good the UI looks.
+
+### When a foundation layer is missing
+
+If a required value doesn't exist in the state, isn't carried through to playback, or isn't applied as override in the audio engine — **build that layer first, then add the feature on top**. Do not work around it with placeholders, hidden values, or "we'll fix this later" — that creates more fake UI.
+
+The Marek principle (from session 4):
+> "Trzeba budować od fundamentów, muszą być wszystkie zmienne w sekwencji, potem te zmienne mają działać na dźwięk, i na tym budować funkcje. A nie tak ożywiać kukiełkę."
+
+Translated: "Build from foundations. All variables must exist in the sequence, then those variables must affect the sound, and on that we build features. Not animating a puppet."
+
+### Practical workflow for new features
+
+1. **Inspect** — does the state hold what's needed? Does playback consume it? Does the audio engine accept overrides?
+2. **Report** — surface what's missing, what's fake, what's real. Do not assume.
+3. **Foundation first** — if a layer is missing, build it before the feature
+4. **Feature on top** — implement the UI and interaction logic on top of the working foundation
+5. **End-to-end test** — verify the value flows from user input → state → sequencer → audio → audible output
+
+If at any point during implementation the AI discovers an undocumented fake layer, **stop and surface it to Marek**, don't paper over it.
+
+### Known foundation gaps (as of session 4)
+
+These are documented in `UX_AUDIT_FINDINGS.md` and require dedicated foundation work before features built on them can be considered real:
+
+- **Per-event parameter values (Note Variation)** — event state may have `appliedParameter`/`appliedValue` but recording and playback paths likely not wired
+- **ADSR envelope** — `ATTACK`/`DECAY` in PROGRAM screen are fake UI; no envelope generator in audio engine
+- **Per-event playback overrides** — sequencer→play() path may not pass all event parameters as runtime overrides
+
+When working on features that touch these areas, do foundation work first.
+
+---
+
 ## CSS & Window Scaling Rules
 
 LoopThief targets multiple monitor sizes from 1280×720 (HD minimum) to 4K and beyond. The app uses **proportional scaling**, not responsive breakpoints (full strategy in `roadmap_v2.md` section B6).

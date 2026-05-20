@@ -93,12 +93,13 @@ type AppState = {
   undoHistory: string[];
   redoHistory: string[];
   lastAction: string;
-  sixteenLevelsEnabled: boolean;
   sixteenLevelsSourcePad: string;
   sixteenLevelsParameter: "VELOCITY" | "TUNE" | "DECAY" | "FILTER" | "ATTACK";
-  sixteenLevelsRootPad: string;
-  sixteenLevelsRangeMin: number;
-  sixteenLevelsRangeMax: number;
+  sixteenLevelsRootPad: number;
+  sixteenLevelsFilterCutoff: number | null;
+  sixteenLevelsFilterResonance: number | null;
+  sixteenLevelsFilterType: "OFF" | "LOWPASS" | "HIGHPASS" | "BANDPASS" | null;
+  sixteenLevelsSourceArmed: boolean;
   lastSixteenLevelsValue: number;
   noteRepeat: {
     rate: "1/4" | "1/8" | "1/16" | "1/16T" | "1/32" | "1/32T";
@@ -253,10 +254,14 @@ type AppState = {
   toggleNoteRepeatTriplet: () => void;
   cycleNoteRepeatVelocityMode: () => void;
   cycleSixteenLevelsParameter: () => void;
-  setSixteenLevelsSourcePad: () => void;
-  setSixteenLevelsRootPad: () => void;
-  cycleSixteenLevelsRange: () => void;
-  toggleSixteenLevelsEnabled: () => void;
+  cycleSixteenLevelsSourcePad: () => void;
+  armSixteenLevelsSource: () => void;
+  setSixteenLevelsSourceFromPad: (padIdentifier: string) => void;
+  cycleSixteenLevelsRootPad: (delta: number) => void;
+  adjustSixteenLevelsFilterCutoff: (delta: number) => void;
+  adjustSixteenLevelsFilterResonance: (delta: number) => void;
+  cycleSixteenLevelsFilterType: () => void;
+  resetSixteenLevelsSandbox: () => void;
   insertSongStep: () => void;
   deleteSelectedSongStep: () => void;
   adjustSelectedSongRepeats: (delta: number) => void;
@@ -396,6 +401,8 @@ type StepEvent = {
   appliedParameter?: AppState["sixteenLevelsParameter"];
   appliedValue?: number;
   parameterValue?: number;
+  appliedFilterType?: "OFF" | "LOWPASS" | "HIGHPASS" | "BANDPASS";
+  appliedFilterResonance?: number;
   noteRepeatGenerated?: boolean;
   velocity: number;
   length: number;
@@ -541,6 +548,7 @@ let activeRecordingCapture: ActiveRecordingCapture | null = null;
 let sequenceStepStartedAt = typeof performance !== "undefined" ? performance.now() : 0;
 let metronomeBufferId: string | null = null;
 let metronomeLoadPromise: Promise<string | null> | null = null;
+let lastStopAt = 0;
 
 const initialStepEvents: StepEvent[] = [];
 
@@ -605,12 +613,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   undoHistory: ["OVERDUB", "PAD ERASE", "TC APPLY"],
   redoHistory: [],
   lastAction: "TC APPLY",
-  sixteenLevelsEnabled: false,
-  sixteenLevelsSourcePad: "P01",
+  sixteenLevelsSourcePad: "A01",
   sixteenLevelsParameter: "VELOCITY",
-  sixteenLevelsRootPad: "P01",
-  sixteenLevelsRangeMin: 1,
-  sixteenLevelsRangeMax: 127,
+  sixteenLevelsRootPad: 5,
+  sixteenLevelsFilterCutoff: null,
+  sixteenLevelsFilterResonance: null,
+  sixteenLevelsFilterType: null,
+  sixteenLevelsSourceArmed: false,
   lastSixteenLevelsValue: 96,
   noteRepeat: { rate: "1/16", gate: 75, swing: 54, velocityMode: "PAD", timingCorrection: "1/16" },
   overdubEnabled: true,
@@ -718,8 +727,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     requestTransportStartImpl("PLAY", set, get);
   },
-  stopPlayback: () =>
-    set({
+  stopPlayback: () => {
+    const now = performance.now();
+    const isDoubleStop = now - lastStopAt < 500;
+    lastStopAt = now;
+    if (isDoubleStop) {
+      samplerEngine.stopAllVoices();
+    }
+    set((state) => ({
       isPlaying: false,
       isSequenceRecording: false,
       chopCursor: 0,
@@ -727,7 +742,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       transportPendingAction: null,
       transportCountInBeatsRemaining: 0,
       transportAnnouncement: "",
-    }),
+      lastAudioMessage: isDoubleStop ? "ALL AUDIO STOPPED" : state.lastAudioMessage,
+    }));
+  },
   toggleSequenceRecording: () => {
     const state = get();
     if (state.isSequenceRecording) {
@@ -938,6 +955,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   triggerPad: (selectedPad) => {
     const padNumber = Number(selectedPad.slice(1));
+    const wasArmedSourcePick =
+      get().activeScreen === "UTILITY_16_LEVELS" && get().sixteenLevelsSourceArmed;
     set((state) => {
       if (state.eraseHoldActive) {
         const events = state.stepEvents.filter((event) => event.pad !== selectedPad);
@@ -1080,46 +1099,76 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       }
 
-      if (state.sixteenLevelsEnabled) {
+      if (state.activeScreen === "UTILITY_16_LEVELS") {
+        if (state.sixteenLevelsSourceArmed) {
+          const newSource = `${state.padBank}${selectedPad.slice(1)}`;
+          return {
+            selectedPad,
+            sixteenLevelsSourcePad: newSource,
+            sixteenLevelsSourceArmed: false,
+            sixteenLevelsFilterCutoff: null,
+            sixteenLevelsFilterResonance: null,
+            sixteenLevelsFilterType: null,
+            triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
+          };
+        }
         const appliedValue = getSixteenLevelsValue(state, padNumber);
-        const event = createStepEventFromIndex(
-          state.currentStepIndex,
-          state.sixteenLevelsSourcePad,
-          state.sixteenLevelsParameter === "VELOCITY" ? appliedValue : state.lastPadVelocity,
-          100,
-          0,
-          {
-            physicalPad: selectedPad,
-            sourcePad: state.sixteenLevelsSourcePad,
-            trackId: state.currentTrackId,
-            trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
-            padBank: state.padBank,
-            programId: state.currentProgramId,
-            appliedParameter: state.sixteenLevelsParameter,
-            appliedValue,
-            parameterValue: appliedValue,
-          },
-        );
-        const events = [...state.stepEvents, event].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step));
+        const sourceBank = state.sixteenLevelsSourcePad.slice(0, 1) as PadBank;
+        const sourceNumber = clamp(Number(state.sixteenLevelsSourcePad.slice(1)) || 1, 1, 16);
+        const sourcePadId = `P${String(sourceNumber).padStart(2, "0")}`;
+        const sourceAssignment = getSourceAssignment(state);
+        const sourceAssigned = !!sourceAssignment && sourceAssignment.assignment !== "---";
+        const eventVelocity =
+          state.sixteenLevelsParameter === "VELOCITY"
+            ? appliedValue
+            : state.fullLevelEnabled
+              ? 127
+              : 100;
+        const sandboxFilterTypeForRecord =
+          state.sixteenLevelsParameter === "FILTER"
+            ? state.sixteenLevelsFilterType ?? sourceAssignment?.filterType
+            : undefined;
+        const sandboxFilterResonanceForRecord =
+          state.sixteenLevelsParameter === "FILTER"
+            ? state.sixteenLevelsFilterResonance ?? sourceAssignment?.filterResonance
+            : undefined;
+        const recordedEvent =
+          state.isSequenceRecording && state.isPlaying && sourceAssigned
+            ? createStepEventFromIndex(
+                state.currentStepIndex,
+                sourcePadId,
+                eventVelocity,
+                100,
+                0,
+                {
+                  physicalPad: selectedPad,
+                  sourcePad: state.sixteenLevelsSourcePad,
+                  trackId: state.currentTrackId,
+                  trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
+                  padBank: sourceBank,
+                  programId: state.currentProgramId,
+                  appliedParameter: state.sixteenLevelsParameter,
+                  appliedValue,
+                  parameterValue: appliedValue,
+                  appliedFilterType: sandboxFilterTypeForRecord,
+                  appliedFilterResonance: sandboxFilterResonanceForRecord,
+                },
+              )
+            : null;
+        const events = recordedEvent
+          ? [...state.stepEvents, recordedEvent].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step))
+          : state.stepEvents;
         return {
           selectedPad,
           lastTriggeredPad: selectedPad,
-          lastPadVelocity: state.sixteenLevelsParameter === "VELOCITY" ? appliedValue : state.lastPadVelocity,
+          lastPadVelocity: state.fullLevelEnabled ? 127 : eventVelocity,
           lastSixteenLevelsValue: appliedValue,
           stepEvents: events,
-          sequences: state.sequences.map((sequence) =>
-            sequence.id === state.currentSequence ? { ...sequence, events } : sequence,
-          ),
-          triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
-        };
-      }
-
-      if (state.activeScreen === "UTILITY_16_LEVELS") {
-        return {
-          selectedPad,
-          lastTriggeredPad: selectedPad,
-          lastPadVelocity: state.fullLevelEnabled ? 127 : state.lastPadVelocity,
-          sixteenLevelsSourcePad: selectedPad,
+          sequences: recordedEvent ? updateCurrentSequenceEvents(state, events) : state.sequences,
+          lastAudioMessage:
+            !sourceAssigned && state.isSequenceRecording && state.isPlaying
+              ? "16LV: SOURCE UNASSIGNED"
+              : state.lastAudioMessage,
           triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
         };
       }
@@ -1150,13 +1199,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
       };
     });
-    const playbackState = get();
-    if (playbackState.sixteenLevelsEnabled) {
-      playSixteenLevelsPadFromState(playbackState);
-    } else {
-      playPadFromState(playbackState, selectedPad);
+    if (!wasArmedSourcePick) {
+      const playbackState = get();
+      if (playbackState.activeScreen === "UTILITY_16_LEVELS") {
+        playSixteenLevelsVariation(playbackState, padNumberFromPad(selectedPad));
+      } else {
+        playPadFromState(playbackState, selectedPad);
+      }
+      if (get().noteRepeatEnabled) playNoteRepeatBurst(get(), selectedPad);
     }
-    if (get().noteRepeatEnabled) playNoteRepeatBurst(get(), selectedPad);
     window.setTimeout(() => {
       set((state) => ({
         triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, false),
@@ -1194,7 +1245,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeScreen,
       utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
     })),
-  exitUtilityWorkflow: () => set((state) => ({ activeScreen: state.utilityReturnScreen })),
+  exitUtilityWorkflow: () =>
+    set((state) => {
+      const wasInSixteenLevels = state.activeScreen === "UTILITY_16_LEVELS";
+      return {
+        activeScreen: state.utilityReturnScreen,
+        ...(wasInSixteenLevels
+          ? {
+              sixteenLevelsFilterCutoff: null,
+              sixteenLevelsFilterResonance: null,
+              sixteenLevelsFilterType: null,
+              sixteenLevelsSourceArmed: false,
+            }
+          : {}),
+      };
+    }),
   setGoToTarget: (goToTarget) => set({ goToTarget }),
   adjustGoToValue: (delta) =>
     set((state) => {
@@ -1451,21 +1516,73 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   cycleSixteenLevelsParameter: () =>
     set((state) => {
-      const parameters: AppState["sixteenLevelsParameter"][] = ["VELOCITY", "TUNE", "DECAY", "FILTER", "ATTACK"];
-      return { sixteenLevelsParameter: parameters[(parameters.indexOf(state.sixteenLevelsParameter) + 1) % parameters.length] };
+      const parameters: AppState["sixteenLevelsParameter"][] = ["VELOCITY", "TUNE", "FILTER"];
+      const idx = parameters.indexOf(state.sixteenLevelsParameter);
+      const next = parameters[(idx === -1 ? 0 : (idx + 1) % parameters.length)];
+      return { sixteenLevelsParameter: next };
     }),
-  setSixteenLevelsSourcePad: () => set((state) => ({ sixteenLevelsSourcePad: state.selectedPad })),
-  setSixteenLevelsRootPad: () => set((state) => ({ sixteenLevelsRootPad: state.selectedPad })),
-  cycleSixteenLevelsRange: () =>
+  cycleSixteenLevelsSourcePad: () =>
     set((state) => {
-      if (state.sixteenLevelsParameter === "TUNE") {
-        return { sixteenLevelsRangeMin: -12, sixteenLevelsRangeMax: 12 };
-      }
-      return state.sixteenLevelsRangeMax === 127
-        ? { sixteenLevelsRangeMin: 0, sixteenLevelsRangeMax: 100 }
-        : { sixteenLevelsRangeMin: 1, sixteenLevelsRangeMax: 127 };
+      const banks: PadBank[] = ["A", "B", "C", "D"];
+      const currentBank = state.sixteenLevelsSourcePad.slice(0, 1) as PadBank;
+      const currentNumber = clamp(Number(state.sixteenLevelsSourcePad.slice(1)) || 1, 1, 16);
+      const bankIndex = banks.indexOf(currentBank);
+      const globalIndex = bankIndex * 16 + (currentNumber - 1);
+      const nextGlobalIndex = (globalIndex + 1) % 64;
+      const nextBank = banks[Math.floor(nextGlobalIndex / 16)];
+      const nextNumber = (nextGlobalIndex % 16) + 1;
+      return {
+        sixteenLevelsSourcePad: `${nextBank}${String(nextNumber).padStart(2, "0")}`,
+        sixteenLevelsFilterCutoff: null,
+        sixteenLevelsFilterResonance: null,
+        sixteenLevelsFilterType: null,
+      };
     }),
-  toggleSixteenLevelsEnabled: () => set((state) => ({ sixteenLevelsEnabled: !state.sixteenLevelsEnabled })),
+  armSixteenLevelsSource: () =>
+    set((state) => ({ sixteenLevelsSourceArmed: !state.sixteenLevelsSourceArmed })),
+  setSixteenLevelsSourceFromPad: (padIdentifier) =>
+    set((state) => {
+      const padNumber = clamp(Number(padIdentifier.replace(/^P/, "")) || 1, 1, 16);
+      const newSource = `${state.padBank}${String(padNumber).padStart(2, "0")}`;
+      return {
+        sixteenLevelsSourcePad: newSource,
+        sixteenLevelsSourceArmed: false,
+        sixteenLevelsFilterCutoff: null,
+        sixteenLevelsFilterResonance: null,
+        sixteenLevelsFilterType: null,
+      };
+    }),
+  cycleSixteenLevelsRootPad: (delta) =>
+    set((state) => {
+      const next = ((state.sixteenLevelsRootPad - 1 + delta) % 16 + 16) % 16 + 1;
+      return { sixteenLevelsRootPad: next };
+    }),
+  adjustSixteenLevelsFilterCutoff: (delta) =>
+    set((state) => {
+      const base = state.sixteenLevelsFilterCutoff ?? getSourceFilterCutoff(state) ?? 50;
+      return { sixteenLevelsFilterCutoff: clamp(base + delta, 0, 100) };
+    }),
+  adjustSixteenLevelsFilterResonance: (delta) =>
+    set((state) => {
+      const sourceRes = getSourceFilterResonance(state);
+      const base = state.sixteenLevelsFilterResonance ?? sourceRes ?? 0;
+      return { sixteenLevelsFilterResonance: clamp(base + delta, 0, 100) };
+    }),
+  cycleSixteenLevelsFilterType: () =>
+    set((state) => {
+      const types: ("OFF" | "LOWPASS" | "HIGHPASS" | "BANDPASS")[] = ["OFF", "LOWPASS", "HIGHPASS", "BANDPASS"];
+      const sourceType = getSourceFilterType(state) ?? "OFF";
+      const current = state.sixteenLevelsFilterType ?? sourceType;
+      const idx = types.indexOf(current);
+      const next = types[(idx === -1 ? 0 : (idx + 1) % types.length)];
+      return { sixteenLevelsFilterType: next };
+    }),
+  resetSixteenLevelsSandbox: () =>
+    set({
+      sixteenLevelsFilterCutoff: null,
+      sixteenLevelsFilterResonance: null,
+      sixteenLevelsFilterType: null,
+    }),
   insertSongStep: () =>
     set((state) => ({
       songSteps: [
@@ -2263,6 +2380,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (nextPulse < beatMs) return { transportCountInPulse: nextPulse };
       const remaining = state.transportCountInBeatsRemaining - 1;
       if (remaining <= 0 && state.transportPendingAction) {
+        playMetronomeClick(state, true);
         if (state.transportPendingAction === "REC" && state.isPlaying) {
           return {
             isSequenceRecording: true,
@@ -2759,9 +2877,57 @@ function padFromEvent(event: StepEvent) {
   return `P${String(event.padNumber ?? padNumberFromPad(event.pad)).padStart(2, "0")}`;
 }
 
+function padNumberToVariationIndex(padNumber: number) {
+  const idx = clamp(padNumber, 1, 16) - 1;
+  const row = Math.floor(idx / 4);
+  const col = idx % 4;
+  return (3 - row) * 4 + col + 1;
+}
+
 function getSixteenLevelsValue(state: AppState, padNumber: number) {
-  const ratio = (padNumber - 1) / 15;
-  return Math.round(state.sixteenLevelsRangeMin + (state.sixteenLevelsRangeMax - state.sixteenLevelsRangeMin) * ratio);
+  const variationIndex = padNumberToVariationIndex(padNumber);
+  const rootVariationIndex = padNumberToVariationIndex(state.sixteenLevelsRootPad);
+  switch (state.sixteenLevelsParameter) {
+    case "TUNE":
+      return computeSixteenLevelsTune(variationIndex, rootVariationIndex);
+    case "FILTER": {
+      const effectiveCutoff = state.sixteenLevelsFilterCutoff ?? getSourceFilterCutoff(state) ?? 50;
+      return Math.round(computeSixteenLevelsFilterCutoff(variationIndex, effectiveCutoff));
+    }
+    case "VELOCITY":
+    default:
+      return Math.round(1 + 126 * (variationIndex - 1) / 15);
+  }
+}
+
+function computeSixteenLevelsTune(variationIndex: number, rootVariationIndex: number) {
+  return clamp(variationIndex - rootVariationIndex, -12, 12);
+}
+
+function computeSixteenLevelsFilterCutoff(variationIndex: number, currentCutoff: number) {
+  if (variationIndex <= 8) return (variationIndex - 1) / 7 * currentCutoff;
+  return currentCutoff + (variationIndex - 8) / 8 * (100 - currentCutoff);
+}
+
+function getSourceAssignment(state: AppState): PadAssignment | null {
+  const sourceBank = state.sixteenLevelsSourcePad.slice(0, 1) as PadBank;
+  const sourceNumber = clamp(Number(state.sixteenLevelsSourcePad.slice(1)) || 1, 1, 16);
+  const sourcePadId = `P${String(sourceNumber).padStart(2, "0")}`;
+  const program = getProgramForPlayback(state, state.currentProgramId);
+  const assignments = program?.padAssignments ?? state.padAssignments;
+  return assignments[sourceBank]?.find((p) => p.pad === sourcePadId) ?? null;
+}
+
+function getSourceFilterCutoff(state: AppState): number | null {
+  return getSourceAssignment(state)?.filterCutoff ?? null;
+}
+
+function getSourceFilterResonance(state: AppState): number | null {
+  return getSourceAssignment(state)?.filterResonance ?? null;
+}
+
+function getSourceFilterType(state: AppState): PadAssignment["filterType"] | null {
+  return getSourceAssignment(state)?.filterType ?? null;
 }
 
 function createDefaultMarkers() {
@@ -3003,7 +3169,17 @@ function playAssignedPadFromState(state: AppState, pad: string) {
 
 function playAssignedPadWithContext(
   state: AppState,
-  context: { pad: string; bank: PadBank; programId?: string; tuneOverride?: number; fineTuneOverride?: number },
+  context: {
+    pad: string;
+    bank: PadBank;
+    programId?: string;
+    tuneOverride?: number;
+    fineTuneOverride?: number;
+    gainOverride?: number;
+    filterCutoffOverride?: number;
+    filterResonanceOverride?: number;
+    filterTypeOverride?: PadAssignment["filterType"];
+  },
 ) {
   const program = getProgramForPlayback(state, context.programId);
   const padAssignments = program?.padAssignments ?? state.padAssignments;
@@ -3033,22 +3209,53 @@ function playAssignedPadWithContext(
   );
   const playable = playbackRate === 1 ? resolved : { ...resolved, playbackRate: (resolved.playbackRate ?? 1) * playbackRate };
   samplerEngine.play(playable, {
-    gain: mix.level / 100,
+    gain: (context.gainOverride ?? 1) * (mix.level / 100),
     pan: mix.pan / 64,
     channelKey: voiceGroup,
     voiceGroup,
     mono: assignment.voiceMode === "MONO",
-    filter: createPadFilterOptions(assignment),
+    filter: createPadFilterOptions(assignment, {
+      cutoffOverride: context.filterCutoffOverride,
+      resonanceOverride: context.filterResonanceOverride,
+      typeOverride: context.filterTypeOverride,
+    }),
   });
 }
 
-function playSixteenLevelsPadFromState(state: AppState) {
-  const tuneOverride = state.sixteenLevelsParameter === "TUNE" ? state.lastSixteenLevelsValue : undefined;
+function playSixteenLevelsVariation(state: AppState, padNumber: number) {
+  const sourceBank = state.sixteenLevelsSourcePad.slice(0, 1) as PadBank;
+  const sourceNumber = clamp(Number(state.sixteenLevelsSourcePad.slice(1)) || 1, 1, 16);
+  const sourcePadId = `P${String(sourceNumber).padStart(2, "0")}`;
+  const appliedValue = getSixteenLevelsValue(state, padNumber);
+  let gainOverride: number | undefined;
+  let tuneOverride: number | undefined;
+  let filterCutoffOverride: number | undefined;
+  let filterResonanceOverride: number | undefined;
+  let filterTypeOverride: PadAssignment["filterType"] | undefined;
+  switch (state.sixteenLevelsParameter) {
+    case "VELOCITY":
+      gainOverride = appliedValue / 127;
+      break;
+    case "TUNE":
+      tuneOverride = appliedValue;
+      break;
+    case "FILTER":
+      filterCutoffOverride = appliedValue;
+      filterResonanceOverride = state.sixteenLevelsFilterResonance ?? undefined;
+      filterTypeOverride = state.sixteenLevelsFilterType ?? undefined;
+      break;
+    default:
+      break;
+  }
   playAssignedPadWithContext(state, {
-    pad: state.sixteenLevelsSourcePad,
-    bank: state.padBank,
+    pad: sourcePadId,
+    bank: sourceBank,
     programId: state.currentProgramId,
+    gainOverride,
     tuneOverride,
+    filterCutoffOverride,
+    filterResonanceOverride,
+    filterTypeOverride,
   });
 }
 
@@ -3064,9 +3271,19 @@ function tuneToPlaybackRate(semitones: number, cents: number) {
   return Math.pow(2, (semitones + cents / 100) / 12);
 }
 
-function createPadFilterOptions(assignment: PadAssignment) {
-  if (assignment.filterType === "OFF") return undefined;
-  const normalized = clamp(assignment.filterCutoff, 0, 100) / 100;
+function createPadFilterOptions(
+  assignment: PadAssignment,
+  overrides?: {
+    cutoffOverride?: number;
+    resonanceOverride?: number;
+    typeOverride?: PadAssignment["filterType"];
+  },
+) {
+  const effectiveType = overrides?.typeOverride ?? assignment.filterType;
+  if (effectiveType === "OFF") return undefined;
+  const effectiveCutoff = overrides?.cutoffOverride ?? assignment.filterCutoff;
+  const effectiveResonance = overrides?.resonanceOverride ?? assignment.filterResonance;
+  const normalized = clamp(effectiveCutoff, 0, 100) / 100;
   const minHz = 80;
   const maxHz = 18000;
   const filterType: Record<Exclude<PadAssignment["filterType"], "OFF">, BiquadFilterType> = {
@@ -3075,9 +3292,9 @@ function createPadFilterOptions(assignment: PadAssignment) {
     BANDPASS: "bandpass",
   };
   return {
-    type: filterType[assignment.filterType],
+    type: filterType[effectiveType],
     frequency: minHz * Math.pow(maxHz / minHz, normalized),
-    q: 0.0001 + clamp(assignment.filterResonance, 0, 100) / 10,
+    q: 0.0001 + clamp(effectiveResonance, 0, 100) / 10,
   };
 }
 
@@ -3092,14 +3309,28 @@ function playStepEventFromState(state: AppState, event: StepEvent, delayMs: numb
   const eventPad = padFromEvent(event);
   const eventProgramId = event.programId ?? getTrackProgramId(getCurrentSequence(state), event.trackId) ?? state.currentProgramId;
   const tuneOverride = event.appliedParameter === "TUNE" ? event.parameterValue ?? event.appliedValue : undefined;
+  const filterCutoffOverride = event.appliedParameter === "FILTER" ? event.parameterValue ?? event.appliedValue : undefined;
+  const filterTypeOverride = event.appliedParameter === "FILTER" ? event.appliedFilterType : undefined;
+  const filterResonanceOverride = event.appliedParameter === "FILTER" ? event.appliedFilterResonance : undefined;
+  const gainOverride = event.velocity != null ? clamp(event.velocity, 0, 127) / 127 : undefined;
+  const context = {
+    pad: eventPad,
+    bank: eventBank,
+    programId: eventProgramId,
+    tuneOverride,
+    filterCutoffOverride,
+    filterTypeOverride,
+    filterResonanceOverride,
+    gainOverride,
+  };
   if (delayMs <= 0) {
-    playAssignedPadWithContext(state, { pad: eventPad, bank: eventBank, programId: eventProgramId, tuneOverride });
+    playAssignedPadWithContext(state, context);
     return;
   }
   window.setTimeout(() => {
     const liveState = useAppStore.getState();
     if (!liveState.isPlaying || liveState.currentSequence !== state.currentSequence) return;
-    playAssignedPadWithContext(liveState, { pad: eventPad, bank: eventBank, programId: eventProgramId, tuneOverride });
+    playAssignedPadWithContext(liveState, context);
   }, delayMs);
 }
 
@@ -3925,7 +4156,7 @@ function playMetronomeClick(state: Pick<AppState, "metronomeEnabled" | "metronom
         durationMs: 120,
         waveform: [],
       },
-      { gain: (state.metronomeVolume / 100) * (accented ? 1.25 : 1), pan: 0, previewGroup: "metronome" },
+      { gain: (state.metronomeVolume / 100) * (accented ? 2 : 1), pan: 0, previewGroup: "metronome" },
     );
   });
 }

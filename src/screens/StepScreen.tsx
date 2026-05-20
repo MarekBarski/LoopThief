@@ -101,7 +101,8 @@ export function StepScreen() {
             <Info active={eventEditMode === "OFFSET"} label="OFFSET" value={selectedEvent ? formatSigned(selectedEvent.timingOffset) : "---"} />
             <Info active={eventEditMode === "DURATION"} label="DURATION" value={selectedEvent ? String(selectedEvent.duration) : "---"} />
             <Info active={eventEditMode === "PROBABILITY"} label="PROBABILITY" value={selectedEvent ? `${selectedEvent.probability}%` : "---"} />
-            <Info label="PARAM VALUE" value={selectedEvent?.parameterValue == null ? "---" : String(selectedEvent.parameterValue)} />
+            <Info label="PARAM TYPE" value={selectedEvent?.appliedParameter ?? "---"} />
+            <Info label="PARAM VALUE" value={formatParamValue(selectedEvent)} />
           </section>
 
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
@@ -190,4 +191,12 @@ function formatEventPad(event: { pad: string; padNumber?: number }) {
 
 function formatSigned(value: number) {
   return value > 0 ? `+${value}` : String(value);
+}
+
+function formatParamValue(event: { appliedParameter?: string; parameterValue?: number; appliedValue?: number } | undefined): string {
+  if (!event) return "---";
+  const value = event.parameterValue ?? event.appliedValue;
+  if (value == null) return "---";
+  if (event.appliedParameter === "TUNE") return formatSigned(value);
+  return String(value);
 }

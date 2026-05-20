@@ -11,48 +11,182 @@ const shell = (children: ReactNode, softkeys: Softkey[], onExit?: () => void) =>
 );
 
 export function SixteenLevelsScreen() {
-  const enabled = useAppStore((s) => s.sixteenLevelsEnabled);
   const sourcePad = useAppStore((s) => s.sixteenLevelsSourcePad);
   const parameter = useAppStore((s) => s.sixteenLevelsParameter);
   const rootPad = useAppStore((s) => s.sixteenLevelsRootPad);
-  const rangeMin = useAppStore((s) => s.sixteenLevelsRangeMin);
-  const rangeMax = useAppStore((s) => s.sixteenLevelsRangeMax);
+  const sandboxCutoff = useAppStore((s) => s.sixteenLevelsFilterCutoff);
+  const sandboxResonance = useAppStore((s) => s.sixteenLevelsFilterResonance);
+  const sandboxType = useAppStore((s) => s.sixteenLevelsFilterType);
+  const padAssignments = useAppStore((s) => s.padAssignments);
+  const programs = useAppStore((s) => s.programs);
+  const currentProgramId = useAppStore((s) => s.currentProgramId);
+  const sourceArmed = useAppStore((s) => s.sixteenLevelsSourceArmed);
+  const armSixteenLevelsSource = useAppStore((s) => s.armSixteenLevelsSource);
+  const setSixteenLevelsSourceFromPad = useAppStore((s) => s.setSixteenLevelsSourceFromPad);
   const cycleSixteenLevelsParameter = useAppStore((s) => s.cycleSixteenLevelsParameter);
-  const setSixteenLevelsSourcePad = useAppStore((s) => s.setSixteenLevelsSourcePad);
-  const setSixteenLevelsRootPad = useAppStore((s) => s.setSixteenLevelsRootPad);
-  const cycleSixteenLevelsRange = useAppStore((s) => s.cycleSixteenLevelsRange);
-  const toggleSixteenLevelsEnabled = useAppStore((s) => s.toggleSixteenLevelsEnabled);
+  const cycleSixteenLevelsRootPad = useAppStore((s) => s.cycleSixteenLevelsRootPad);
+  const adjustSixteenLevelsFilterCutoff = useAppStore((s) => s.adjustSixteenLevelsFilterCutoff);
+  const adjustSixteenLevelsFilterResonance = useAppStore((s) => s.adjustSixteenLevelsFilterResonance);
+  const cycleSixteenLevelsFilterType = useAppStore((s) => s.cycleSixteenLevelsFilterType);
+  const triggerPad = useAppStore((s) => s.triggerPad);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
+
+  const sourceBank = sourcePad.slice(0, 1) as "A" | "B" | "C" | "D";
+  const sourceNumber = Number(sourcePad.slice(1)) || 1;
+  const sourcePadId = `P${String(sourceNumber).padStart(2, "0")}`;
+  const activeProgram = programs.find((p) => p.id === currentProgramId);
+  const sourceAssignments = activeProgram?.padAssignments ?? padAssignments;
+  const sourceAssignment = sourceAssignments[sourceBank]?.find((item) => item.pad === sourcePadId);
+  const effectiveCutoff = sandboxCutoff ?? sourceAssignment?.filterCutoff ?? 50;
+  const effectiveResonance = sandboxResonance ?? sourceAssignment?.filterResonance ?? 0;
+  const effectiveType = sandboxType ?? sourceAssignment?.filterType ?? "OFF";
+
+  const padToVariation = (padNumber: number) => {
+    const idx = Math.max(0, Math.min(15, padNumber - 1));
+    const row = Math.floor(idx / 4);
+    const col = idx % 4;
+    return (3 - row) * 4 + col + 1;
+  };
+
+  const displayValue = (padNumber: number): string => {
+    const variationIndex = padToVariation(padNumber);
+    if (parameter === "TUNE") {
+      const rootVariationIndex = padToVariation(rootPad);
+      const semis = Math.max(-12, Math.min(12, variationIndex - rootVariationIndex));
+      if (semis === 0) return "0";
+      return semis > 0 ? `+${semis}` : `${semis}`;
+    }
+    if (parameter === "FILTER") {
+      const cutoff = variationIndex <= 8
+        ? (variationIndex - 1) / 7 * effectiveCutoff
+        : effectiveCutoff + (variationIndex - 8) / 8 * (100 - effectiveCutoff);
+      return String(Math.round(cutoff));
+    }
+    return String(Math.round(1 + 126 * (variationIndex - 1) / 15));
+  };
+
   return (
     <ScreenFrame title="16 LEVELS" subtitle="Pad parameter spread">
       {shell(
         <div className="grid h-full grid-cols-[0.8fr_1.2fr] gap-[2.3%]">
-          <Panel rows={[["SOURCE PAD", sourcePad], ["PARAMETER", parameter], ["ROOT PAD", rootPad], ["RANGE MIN", String(rangeMin)], ["RANGE MAX", String(rangeMax)], ["ACTIVE", enabled ? "ON" : "OFF"]]} />
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+            <PanelRow
+              label="SOURCE PAD"
+              value={sourceArmed ? `${sourcePad} ← SELECT PAD` : sourcePad}
+              highlighted={sourceArmed}
+            />
+            <PanelRow label="PARAMETER" value={parameter} />
+            {parameter === "TUNE" && (
+              <ArrowRow
+                label="ROOT PAD"
+                value={`P${String(rootPad).padStart(2, "0")}`}
+                onPrev={() => cycleSixteenLevelsRootPad(-1)}
+                onNext={() => cycleSixteenLevelsRootPad(1)}
+              />
+            )}
+            {parameter === "FILTER" && (
+              <>
+                <PanelRow
+                  label="FILTER TYPE"
+                  value={effectiveType}
+                  onClick={cycleSixteenLevelsFilterType}
+                  highlighted={sandboxType != null}
+                />
+                <ArrowRow
+                  label="CUTOFF"
+                  value={String(effectiveCutoff)}
+                  onPrev={() => adjustSixteenLevelsFilterCutoff(-1)}
+                  onNext={() => adjustSixteenLevelsFilterCutoff(1)}
+                  highlighted={sandboxCutoff != null}
+                />
+                <ArrowRow
+                  label="RESONANCE"
+                  value={String(effectiveResonance)}
+                  onPrev={() => adjustSixteenLevelsFilterResonance(-1)}
+                  onNext={() => adjustSixteenLevelsFilterResonance(1)}
+                  highlighted={sandboxResonance != null}
+                />
+              </>
+            )}
+          </section>
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
             <p className="text-[#91a477]">PREVIEW VALUES</p>
             <div className="grid grid-cols-4 gap-[8px]">
-              {Array.from({ length: 16 }, (_, index) => (
-                <div key={index} className="border border-[#46533b] bg-black/15 p-[8%]">
-                  <span className="block">P{String(index + 1).padStart(2, "0")}</span>
-                  <span className={index + 1 === Number(rootPad.slice(1)) ? "text-amber-200" : "text-[#91a477]"}>
-                    {Math.round(rangeMin + (index / 15) * (rangeMax - rangeMin))}
-                  </span>
-                </div>
-              ))}
+              {Array.from({ length: 16 }, (_, index) => {
+                const padNumber = index + 1;
+                const padId = `P${String(padNumber).padStart(2, "0")}`;
+                const isRoot = parameter === "TUNE" && padNumber === rootPad;
+                return (
+                  <button
+                    key={index}
+                    type="button"
+                    onClick={() => triggerPad(padId)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setSixteenLevelsSourceFromPad(padId);
+                    }}
+                    className="border border-[#46533b] bg-black/15 p-[8%] text-left hover:bg-black/30 active:bg-black/40"
+                  >
+                    <span className="block">{padId}</span>
+                    <span className={isRoot ? "text-amber-200" : "text-[#91a477]"}>
+                      {displayValue(padNumber)}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
+            {parameter === "FILTER" && effectiveType === "OFF" && (
+              <p className="text-[clamp(8px,0.6vw,10px)] text-amber-300">
+                Filter OFF — click FILTER TYPE above to enable LP / HP / BP.
+              </p>
+            )}
           </section>
         </div>,
         [
-          { label: "F1 PARAM", onClick: cycleSixteenLevelsParameter },
-          { label: "F2 SOURCE", onClick: setSixteenLevelsSourcePad },
-          { label: "F3 ROOT", onClick: setSixteenLevelsRootPad },
-          { label: "F4 RANGE", onClick: cycleSixteenLevelsRange },
-          { label: "F5 APPLY", onClick: toggleSixteenLevelsEnabled },
+          { label: sourceArmed ? "F1 CANCEL" : "F1 SOURCE", onClick: armSixteenLevelsSource },
+          { label: "F2 PARAM", onClick: cycleSixteenLevelsParameter },
+          "F3 —",
+          "F4 —",
+          "F5 —",
           { label: "F6 EXIT", onClick: exit },
         ],
         exit,
       )}
     </ScreenFrame>
+  );
+}
+
+function PanelRow({ label, value, onClick, highlighted = false }: { label: string; value: string; onClick?: () => void; highlighted?: boolean }) {
+  const content = (
+    <>
+      <p className="text-[#91a477]">{label}</p>
+      <p className={highlighted ? "text-amber-200" : ""}>{value}</p>
+    </>
+  );
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className="grid content-start gap-[2px] text-left">
+        {content}
+      </button>
+    );
+  }
+  return <div>{content}</div>;
+}
+
+function ArrowRow({ label, value, onPrev, onNext, highlighted = false }: { label: string; value: string; onPrev: () => void; onNext: () => void; highlighted?: boolean }) {
+  return (
+    <div className="grid content-start gap-[2px]">
+      <p className="text-[#91a477]">{label}</p>
+      <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
+        <button type="button" onClick={onPrev} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+          &lt;
+        </button>
+        <span className={`text-center ${highlighted ? "text-amber-200" : ""}`}>{value}</span>
+        <button type="button" onClick={onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+          &gt;
+        </button>
+      </div>
+    </div>
   );
 }
 

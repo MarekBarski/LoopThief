@@ -10,10 +10,6 @@ export function TopBar() {
   const lastErasedCount = useAppStore((state) => state.lastErasedCount);
   const noteRepeatEnabled = useAppStore((state) => state.noteRepeatEnabled);
   const noteRepeatRate = useAppStore((state) => state.noteRepeatRate);
-  const sixteenLevelsEnabled = useAppStore((state) => state.sixteenLevelsEnabled);
-  const sixteenLevelsParameter = useAppStore((state) => state.sixteenLevelsParameter);
-  const lastTriggeredPad = useAppStore((state) => state.lastTriggeredPad);
-  const lastSixteenLevelsValue = useAppStore((state) => state.lastSixteenLevelsValue);
   const lastPerformanceMessage = useAppStore((state) => state.lastPerformanceMessage);
   const isSequenceRecording = useAppStore((state) => state.isSequenceRecording);
   const transportAnnouncement = useAppStore((state) => state.transportAnnouncement);
@@ -46,11 +42,6 @@ export function TopBar() {
         {transportAnnouncement && <span className="text-amber-200">{transportAnnouncement}</span>}
         {lastAudioMessage && <span className="text-amber-200">{lastAudioMessage}</span>}
         {noteRepeatEnabled && <span className="text-amber-200">NR {noteRepeatRate}</span>}
-        {sixteenLevelsEnabled && (
-          <span className="text-amber-200">
-            16LV {lastTriggeredPad} {sixteenLevelsParameter} {sixteenLevelsParameter === "TUNE" && lastSixteenLevelsValue > 0 ? `+${lastSixteenLevelsValue}` : lastSixteenLevelsValue}
-          </span>
-        )}
         <span className={`h-[0.72vw] w-[0.72vw] min-h-[8px] min-w-[8px] ${isSequenceRecording ? "bg-red-500" : "bg-red-900"} shadow-[0_0_6px_rgba(220,38,38,0.55)]`} />
         <span>{isSequenceRecording ? "SEQ REC" : "REC OFF"}</span>
       </div>

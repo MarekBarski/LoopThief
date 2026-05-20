@@ -57,7 +57,6 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const setEraseHoldActive = useAppStore((state) => state.setEraseHoldActive);
   const noteRepeatEnabled = useAppStore((state) => state.noteRepeatEnabled);
   const setNoteRepeatEnabled = useAppStore((state) => state.setNoteRepeatEnabled);
-  const sixteenLevelsEnabled = useAppStore((state) => state.sixteenLevelsEnabled);
   const flashButton = useAppStore((state) => state.flashButton);
   const currentPadMode = useAppStore((state) => state.currentPadMode);
   const setPadMode = useAppStore((state) => state.setPadMode);
@@ -180,7 +179,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
           (element.label === "COUNT IN" &&
             (activeScreen === "COUNT_IN" || transportPhase === "COUNT_IN")) ||
           (element.label === "16 LEVELS" &&
-            (activeScreen === "UTILITY_16_LEVELS" || sixteenLevelsEnabled)) ||
+            activeScreen === "UTILITY_16_LEVELS") ||
           (element.label === "TRACK MUTE" &&
             activeScreen === "UTILITY_TRACK_MUTE") ||
           (element.label === "PAD MUTE" &&
