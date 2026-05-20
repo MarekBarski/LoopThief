@@ -99,6 +99,322 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 17 — 2026-05-20 — Pad button rewires + STEP INPUT feature + WAIT FOR PAD recording
+
+### What was attempted
+
+Marek's small prep session before FX phase. Four hardware button rewires:
+1. PERFORMANCE → FX (label-only change)
+2. WAIT FOR PAD — make it actually record first pad hit + start sequence
+3. STEP INPUT — toggle that records pad hits at current NOW position, with optional AUTO ADVANCE
+4. PAD PLAY → SONG (label + redirect)
+
+Each must have visible active/idle state, single source of truth in state.
+
+### What worked
+
+**1. PERFORMANCE → FX (label-only):**
+- `layout/layout.json`: changed `mode-performance` label `"PERFORMANCE"` → `"FX"`.
+- `LayoutElements.tsx`: special-case the FX label to map to the existing `PERFORMANCE` screen ID. Both the `onClick` (sets target=`"PERFORMANCE"` when label is `"FX"`) and `active` check (`activeScreen === "PERFORMANCE"` when label is `"FX"`) handle the rename without renaming the screen ID across 5 files. Internal screen-id rename deferred — when FX content lands in Phase 6, can rename then.
+
+**2. WAIT FOR PAD recording (`useAppStore.ts` triggerPad WAIT_PAD branch):**
+- Removed the count-in fallback path entirely from the WAIT_PAD branch. Per Marek's spec: "BEZ count-in, BEZ rozbiegówki."
+- For pendingAction === "REC":
+  - Build event at position 001.01.000 (stepIndex=0, tickOffset=0) for the pressed pad using `createStepEventAtPosition` with `sequence` context.
+  - Call `computeRecordTransitionPatch({ action: "REC", additionalEvent, initialStepIndex: 0 })` to start playback in REC mode at step 0 with the event included.
+  - Set `waitPadEnabled: false` so user must re-arm.
+  - `sequenceStepStartedAt = performance.now()`, `firstTickPending = true` so the first step fires immediately on the next tick.
+- For pendingAction === "PLAY":
+  - Just `startTransportAction("PLAY")` + clear WAIT_PAD phase. No event recorded.
+- `stopPlayback` now resets `waitPadEnabled: false` so STOP-during-standby exits the wait state.
+
+**3. STEP INPUT mode (`useAppStore.ts`, `StepScreen.tsx`):**
+- New state field `stepInputAutoAdvance: boolean` (default `false`).
+- New action `toggleStepInputAutoAdvance()`.
+- `triggerPad` new branch: when `state.currentPadMode === "STEP_INPUT" && !state.isPlaying`:
+  - Create event at `state.currentStepIndex` (current NOW position) with `createStepEventAtPosition(currentStepIndex, 0, pad, velocity, 100, { sequence, ...metadata })`.
+  - Merge into `stepEvents` (sorted by global step).
+  - Audio message: `"STEP INPUT: 001.01.00"` format.
+  - `recordUndo("STEP INPUT EVENT", ...)` with bucket keyed by stepIndex + Date.now() (bucket-merge 500ms lets rapid hits on same step collapse into one undo step — but Date.now() makes them distinct, so each hit gets its own undo entry).
+  - If `stepInputAutoAdvance === true`: bump `currentStepIndex` by 1 (mod totalSteps), re-derive `currentBar`/`currentStep`/`bar` via `findBarAtGlobalStep` + `formatBarPosition` (bar-aware).
+- Pad audio still plays via existing `playPadFromState` below the branch (so user hears the sample they just placed).
+- **Playback guard**: STEP_INPUT branch only fires when `!isPlaying`. During playback, pad clicks fall through to normal recording path (REC mode or just preview). Marek's option (a) per spec: "ignore klik podczas playback". Chose this over auto-stop — non-destructive, predictable.
+- **Auto-advance UI**: small toggle button below BAR/TS row in STEP screen right panel, visible only when `currentPadMode === "STEP_INPUT"`. Highlighted amber when on. Label: `AUTO ADVANCE ON/OFF`.
+
+**4. PAD PLAY → SONG (`layout.json`, `LayoutElements.tsx`):**
+- `padmode-play` element: changed `type: "padMode"` → `"mode"` and `label: "PLAY"` → `"SONG"`.
+- Mode-type click handler in LayoutElements naturally calls `setActiveScreen(element.label)` = `setActiveScreen("SONG")`. SONG screen already exists in screens/index.ts.
+- Active state: mode-type's default check `element.label === activeScreen` works (`"SONG" === activeScreen` when SONG screen open).
+- **Side effect**: explicit PAD PLAY mode toggle is gone (was the `padmode-play` button setting `PAD_PLAY` mode). Compensated by:
+  - Making STEP padMode button toggle between STEP_INPUT and PAD_PLAY (was a one-way set). Click STEP once → STEP_INPUT. Click STEP again → PAD_PLAY. Net: user can always exit STEP_INPUT via STEP button.
+
+**Active/idle visual states:**
+- FX (mode-performance): icon active when `activeScreen === "PERFORMANCE"`, via the mode-type's `active` check special-case.
+- WAIT PAD: `waitPadEnabled` flag (existing).
+- STEP (padMode): active when `currentPadMode === "STEP_INPUT"` (existing).
+- SONG (mode-song): active when `activeScreen === "SONG"`.
+- AUTO ADVANCE: amber bg when on.
+
+All four use the existing `getButtonVisual` flow that picks `buttonActive` vs `buttonIdle` icon.
+
+Build clean.
+
+### What didn't work / pitfalls hit
+
+- **No live audio test** — Marek to verify all four button behaviors.
+- **PERFORMANCE→FX is label-only**, NOT a screen-id rename. The 5 files that reference `"PERFORMANCE"` as screen ID (`useAppStore`, `navigation.ts`, `PerformanceScreen.tsx`, `layout.json`, `ModeRail.tsx`) still use `"PERFORMANCE"`. The FX label is purely cosmetic until the screen content gets rebranded in Phase 6.
+- **`PAD PLAY` mode-toggle button removed.** Compensated by STEP padMode button now being a toggle. If user gets stuck in some other padMode (TRACK_MUTE, 16_LEVELS, NEXT_SEQ, NOTE_REPEAT, PAD_MUTE, FULL_LEVEL), there's no explicit "back to PAD_PLAY" path — those modes mostly open utility screens and exiting the screen takes the mode away too. Should be fine in practice; if Marek wants a dedicated PAD PLAY restore button, file a followup.
+- **STEP INPUT during playback intentionally ignored** (not auto-stop). Chose option (a) from Marek's spec. Audio message could be added if confusing: `"STOP SEQUENCE FIRST"` — not added this session; user just sees no event added.
+- **`PadModePanel.tsx` static "PAD PLAY" label** in the decorative pad-mode side panel is unchanged. That panel is unwired display only; could be removed or updated in a UI cleanup session.
+- **STEP INPUT events have `variation: "STEP"`** — new variation tag, may not be recognized by any existing display path that switches on variation. Added for completeness; visible as a tag in STEP screen event list under TYPE column. If Marek wants different display name, easy change.
+- **Auto-advance toggle is per-app, not per-session.** Persists across STEP_INPUT mode entries until explicitly toggled. Probably what user wants but worth noting.
+- **STEP INPUT undo bucket**: each hit gets `step-input:{stepIndex}:{Date.now()}` — Date.now() makes buckets unique per hit, so bucket-merge doesn't collapse. Marek's spec said "bucket-merge 500ms - szybkie multiple events lądują w jednym undo step" — current implementation does NOT collapse. To collapse rapid hits, bucket would need to be `step-input:{stepIndex}` (no timestamp). Trade-off: collapse means undo'ing 5 quick hits is one undo press; no-collapse means each hit is its own undo. Currently no-collapse. Filed as followup if Marek wants the collapse behavior.
+
+### Decisions made
+
+- **PERFORMANCE label rename only, no screen-id refactor.** Less invasive. The FX content arrives in Phase 6 and we can rename screen ID then.
+- **STEP padMode is now a toggle (STEP_INPUT ↔ PAD_PLAY)** to give user a way back from STEP_INPUT mode after the padmode-play button got repurposed to SONG.
+- **STEP INPUT during playback: ignored** — pad clicks during playback fall through to normal preview/recording path. No auto-stop. No error message (could add later).
+- **STEP INPUT events get `variation: "STEP"`** tag for traceability.
+- **AUTO ADVANCE toggle lives in STEP screen right panel**, visible only when STEP_INPUT mode active. Co-located with BAR/TS buttons. Active state via amber background.
+- **AUTO ADVANCE respects bar boundaries** automatically — `findBarAtGlobalStep` is bar-aware (from Session 13), so advancing 1 step past a bar end correctly lands on next bar's step 0.
+- **WAIT FOR PAD first hit IS recorded** (deviation from MPC2000XL where first key was just trigger). Per Marek's explicit spec.
+- **WAIT FOR PAD count-in is skipped** even when metronomeEnabled — Marek's "BEZ count-in".
+- **Each STEP INPUT hit is its own undo step** (no bucket-merge collapse). Conservative default; can collapse later if Marek prefers single-undo-per-burst.
+
+### Open issues / followups
+
+- **PERFORMANCE screen-id rename to FX** when FX content lands. Touch points known.
+- **PadModePanel.tsx static display** still shows old labels (PAD PLAY etc.). Cleanup pass needed.
+- **STEP INPUT bucket-merge collapse** if Marek prefers grouped undo for rapid hits.
+- **STEP INPUT audio message during playback** ("STOP SEQUENCE FIRST") if Marek wants explicit feedback for ignored clicks.
+- **PadModePanel layout might need a "PAD PLAY" restore button** if users get stuck. Currently STEP toggle covers the common case.
+- **Marek's audio test plan** (9 scenarios):
+  1. PERFORMANCE→FX button: label = "FX", opens screen formerly known as PERFORMANCE
+  2. WAIT FOR PAD: REC arms wait, first pad hit records at 001.01.000 + starts playback + WAIT auto-off
+  3. WAIT FOR PAD cancel: STOP during standby clears waitPadEnabled
+  4. STEP INPUT basic: toggle on, pad hit adds event at NOW, NOW unchanged, multiple pads stack
+  5. STEP INPUT AUTO ADVANCE: each hit advances 1 step, respects bar boundaries (mixed-TS aware from Session 13)
+  6. STEP INPUT during playback: clicks ignored (no event added)
+  7. PAD PLAY→SONG: label = "SONG", opens SONG screen
+  8. Active/idle visuals on all 4 buttons match state
+  9. STEP padMode toggle: click → STEP_INPUT, click again → PAD_PLAY
+
+### Files modified
+
+- `src/layout/layout.json`:
+  - `mode-performance` label `"PERFORMANCE"` → `"FX"`
+  - `padmode-play` type `"padMode"` → `"mode"`, label `"PLAY"` → `"SONG"`
+- `src/components/layout/LayoutElements.tsx`:
+  - Mode-type click handler: special-case `FX` → `setActiveScreen("PERFORMANCE")`
+  - Mode-type active check: special-case `FX` label → `activeScreen === "PERFORMANCE"`
+  - STEP padMode now toggles between STEP_INPUT and PAD_PLAY
+- `src/store/useAppStore.ts`:
+  - New state: `stepInputAutoAdvance: boolean` (default `false`)
+  - New action: `toggleStepInputAutoAdvance()`
+  - `stopPlayback` clears `waitPadEnabled`
+  - `triggerPad` WAIT_PAD branch: skip count-in, record event at 001.01.000 for REC, auto-clear waitPadEnabled
+  - `triggerPad` new STEP_INPUT branch: create event at currentStepIndex with optional auto-advance
+- `src/screens/StepScreen.tsx`:
+  - AUTO ADVANCE toggle button in right panel (visible only in STEP_INPUT mode)
+
+---
+
+## Session 16 — 2026-05-20 — BAR EDITOR Copy Bars action (Phase 1 extension)
+
+### What was attempted
+
+Add the 5th action to BAR EDITOR per MPC2000XL/3000/5000 SEQ EDIT canonical: COPY BARS. Six fields: FROM SEQ, FIRST BAR, LAST BAR, TO SEQ, BEFORE BAR, COPIES. Same-sequence and cross-sequence both supported.
+
+### What worked
+
+**Store action `copyBars({ fromSeqId, firstBarIndex, lastBarIndex, toSeqId, beforeBarIndex, copies })`:**
+
+1. **Snapshot source events FIRST** (before any mutation). Critical for same-sequence with BEFORE BAR inside source range — without snapshot we'd be copying events that don't exist yet.
+2. **Snapshot source TS-per-bar**: walks the source range and resolves each bar's TS via `getTimeSignatureAtBar`. Captures the actual TS pattern, including changes mid-range.
+3. **Resolve dest "interrupted TS"**: what's at `beforeBarIndex` in dest now. After insertion, the original "after-block" needs a restore entry to preserve its TS.
+4. **Shift existing dest events** with `bar >= beforeBarIndex + 1` by `+totalInserted`. 1-indexed bar in step strings.
+5. **Shift existing dest TS entries** with `fromBar >= beforeBarIndex` by `+totalInserted`.
+6. **Build inserted events** for each copy iteration × each source event. Each gets `nextEventId()` for unique ID. Step string `bar` re-mapped to dest position.
+7. **Build inserted TS entries** — one per inserted bar at the dest position. Will dedupe later.
+8. **Restore entry**: insert `{ fromBar: safeBefore + totalInserted, num/den: interruptedTs }` if there were bars after the insertion point (preserves their original TS).
+9. **Dedupe + collapse TS changes**: build `Map<fromBar, entry>` for unique-by-bar, then collapse consecutive entries with identical (num, den). Net result: minimal TS array.
+10. **Sort + merge** events. Update `sequence.lengthBars += totalInserted`. Top-level `stepEvents` + `sequenceLengthBars` mirror only if dest is current sequence.
+11. **Cross-sequence preservation**: when source ≠ dest, source sequence untouched.
+12. `recordUndo("COPY BARS", ...)`.
+
+**Bar Editor UI:**
+- Added `COPY` to `BarEditorAction` union + cycle.
+- 6 ArrowRow fields when COPY is active: FROM SEQ (cycle sequences), FIRST BAR (0..lengthBars-1 of source), LAST BAR (firstBar..lengthBars-1), TO SEQ, BEFORE BAR (0..lengthBars of dest), COPIES (1..99).
+- Defaults on entering COPY mode: FROM/TO = current sequence, FIRST/LAST = selected bar, BEFORE = current bar count (= "append at end"), COPIES = 1.
+- Preview line: `N bar(s) × M = +(N×M) bars`.
+- F5 DO IT validates range, calls `copyBars`.
+- F1 ACTION cycle now: VIEW → EDIT TS → INSERT → DELETE → COPY → VIEW.
+
+**Cross-sequence**: tested logic in code review — when `fromSeqId !== toSeqId`:
+- Source sequence's `events`, `timeSignatureChanges`, `lengthBars` untouched.
+- Dest sequence gets snap+inserted events + new TS entries + bumped lengthBars.
+- Top-level `stepEvents` only updated if `currentSequence === toSeqId`.
+
+**Same-sequence with target in source range** (REPRO 5 in spec):
+- `sourceEventsSnap` is taken from `fromSeq.events` BEFORE any mutation.
+- The new inserted events come from this snapshot, so they reflect the ORIGINAL pre-insert state.
+- `shiftedDestEvents` shifts existing dest events (including those in source range) for the insertion gap.
+- No infinite recursion: only ONE snapshot is used per copy iteration, regardless of overlap.
+
+**New event IDs**: every inserted event gets `nextEventId()`. No duplicate IDs.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No live audio test** by me — Marek to verify all 10 test scenarios from spec.
+- **TS collapse step is conservative**: dedupes by `fromBar` (Map keeps last entry) then collapses consecutive identical entries. Could still produce sub-optimal TS arrays in some edge cases (e.g., copy bars with same TS as surrounding context creates redundant entries that the collapse step then removes — but if collapse misses any, only cosmetic effect — resolution logic still correct).
+- **Cross-sequence dest is current sequence**: handled via the `isDestCurrent` flag to mirror `stepEvents` + `sequenceLengthBars`. If user is in source sequence (not dest), top-level state shows source unchanged — they'd need to switch sequence to see the new dest. OK.
+- **No keyboard shortcuts** for cycling FROM/TO sequence — must click ArrowRow buttons. Functional but slow for many sequences.
+- **Window.alert for validation errors** — same simple fallback as elsewhere.
+- **Marek's Phase 1 commit status note** — Marek said "Phase 1 jest committed w main" but git status shows StepScreen + UtilityScreens + index + navigation still modified. Treating as if not yet committed (this commit will include them). Will flag in wrap.
+
+### Decisions made
+
+- **One snapshot per session, used across all copy iterations.** Even if user requests 99 copies, we don't re-snapshot — original state already captured.
+- **TS entry per inserted bar, then dedupe.** Simpler than computing the minimal entry set upfront. The dedupe pass collapses runs of identical TS.
+- **Restore entry added at `safeBefore + totalInserted`** unconditionally when there are bars after the insertion point. Without this, an existing TS-change at `fromBar = X (X > beforeBar)` would shift to `X + totalInserted` and apply correctly, BUT the bars in `[beforeBar + totalInserted, X + totalInserted)` would still resolve to the LAST inserted TS rather than the original "interrupted" TS. The restore entry corrects this.
+- **Same-sequence + same-bar (firstBar = lastBar = beforeBar) is allowed.** Defensible — user gets two copies of one bar at the same position. Confirms-in-place duplicates.
+- **Reject `lastBar < firstBar`** with alert. No silent normalization (could surprise user).
+- **`copies` clamped 1..99** in store action. UI also clamps via min/max in arrow buttons.
+
+### Open issues / followups
+
+- **Loop point update** — Marek's spec mentioned "If the sequence is set to loop... the bar number specified in the Loop field will automatically be increased to compensate". LoopThief doesn't have explicit Loop field per sequence currently; loop is implicit (sequence loops at lengthBars). No-op for now.
+- **Phase 2 Bar Editor features** still future: SHIFT timing within bars, COPY EVENTS between sequences (different from COPY BARS — would copy by track without bar count change), CHNG TRACK ORDER.
+- **TS dedupe could be more aggressive** — could remove redundant entries where the previous-resolved TS equals the new entry's TS. The current collapse handles the most common case (consecutive identical). Edge cases not exhaustively tested.
+- **Performance for very long sequences** (e.g., copy 50 bars × 99 copies = 4950 bars inserted) — would create thousands of events + entries. Snapshot + insert is O(n + n*copies). Acceptable for typical use; could chunk if needed.
+- **Audio test plan from Marek's spec (10 scenarios)** — Marek to verify same-seq simple, multi-copy, cross-seq, mixed-TS source, source-overlap target, edge ranges, save/load, undo.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `copyBars` action signature
+  - ~125 LOC implementation: snapshot source, shift dest events + TS, build inserted events with new IDs + TS entries, dedupe/collapse, merge, lengthBars bump, undo record, cross-seq isolation
+- `src/screens/UtilityScreens.tsx`:
+  - `BarEditorAction` union extended with `"COPY"`
+  - `BAR_EDITOR_ACTIONS` + `ACTION_LABELS` updated
+  - 6 new useState slots for COPY fields
+  - `cycleSeqId` + `seqBarCount` helpers
+  - COPY action rendering: 6 ArrowRow fields + preview line
+  - `doIt` for COPY validates range + calls `copyBars`
+  - `cycleAction` defaults for COPY mode entry
+
+---
+
+## Session 15 — 2026-05-20 — BAR EDITOR Phase 1: screen + insert/delete bars + STEP entry points
+
+### What was attempted
+
+Build a dedicated BAR EDITOR utility screen with four actions per MPC2000XL SEQ EDIT semantics: VIEW (browse bars + TS), EDIT TS (change selected bar's TS), INSERT BARS (N blank bars with specified TS before selected bar), DELETE BARS (range firstBar..lastBar). Plus add BAR + TS buttons to STEP screen for entry points. Reuse existing TIME_SIG_WINDOW popup for TS edit shortcut from STEP.
+
+### What worked
+
+**Store actions** (`useAppStore.ts`):
+- `openBarEditor` / `closeBarEditor` — navigate to/from BAR_EDITOR screen, preserve `utilityReturnScreen` for back-nav.
+- `insertBlankBars(beforeBarIndex, count, num, den)`:
+  - Shifts event step strings: events with `bar >= beforeBarIndex + 1` get `bar + count` in their step notation.
+  - Shifts `timeSignatureChanges` entries with `fromBar >= beforeBarIndex` by `+count`.
+  - Inserts new entry `{ fromBar: beforeBarIndex, num, den }` at the insertion point.
+  - `sequence.lengthBars += count` and top-level `sequenceLengthBars` mirror.
+  - `recordUndo("INSERT BARS", ...)`.
+- `deleteBars(firstBar, lastBar)` (0-indexed inclusive):
+  - Removes events in `[firstBar+1 .. lastBar+1]` bars.
+  - Shifts events in bars `> lastBar+1` back by `removedBarCount` (decrement bar in step string).
+  - Removes `timeSignatureChanges` entries with `fromBar` in deleted range; shifts later entries back.
+  - Ensures `fromBar=0` entry survives (synthesizes from fallback if deleted range included it).
+  - Hard guard: cannot delete all bars (returns no-op with `lastAudioMessage`).
+  - Clamps `currentBar` to new bar count.
+  - `recordUndo("DELETE BARS", ...)`.
+
+**`BarEditorScreen` component** (`UtilityScreens.tsx` ~150 LOC):
+- Three-panel layout per spec:
+  - Panel 1 — BARS LIST with selection arrow `>`, TS displayed inline (`BAR 003   3/4`). Window-scrolls when > 12 bars (shows current 12 around selection).
+  - Panel 2 — SELECTED BAR DETAILS: bar number, TS, step count (1/16), event count, tempo. Plus `<` `>` arrow nav between bars.
+  - Panel 3 — ACTION SETTINGS: F1 ACTION cycle through VIEW / EDIT TS / INSERT / DELETE. Action-specific fields render (NUM/DEN cycle for EDIT TS; COUNT/NUM/DEN for INSERT; FIRST/LAST bar arrows for DELETE).
+- Softkeys: F1 ACTION (cycle), F5 DO IT (greyed/no-op for VIEW), F6 EXIT (back).
+- Confirm dialogs:
+  - EDIT TS truncate: `window.confirm("Bar N truncated. X events removed. Proceed?")` — same logic as TIME_SIG_WINDOW popup.
+  - DELETE BARS: `window.confirm("Delete bars X–Y. Z events will be removed. Proceed?")` — always confirm (even if no events).
+  - INSERT: no confirm (non-destructive).
+- All four actions go through their respective store action which records undo.
+
+**STEP screen entry points** (`StepScreen.tsx`):
+- BAR button → `openBarEditor()` — opens bar editor screen.
+- TS button → `openTimeSigWindow()` — opens TIME_SIG_WINDOW popup for current bar. Single source of truth (same component used by MAIN F6 WINDOW).
+
+**Navigation wiring** (`types/navigation.ts`, `screens/index.ts`):
+- `BAR_EDITOR` added to screens union.
+- `BarEditorScreen` registered in `screensById`.
+- `isUtilityScreen` updated to include `BAR_EDITOR` so back-nav preserves return screen.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** — could not verify MPC3000 Ch.4 page 77-80 against canonical wording. Followed Marek's spec which paraphrases the canonical behavior (truncate on shorter TS, blank space on longer TS).
+- **Confirm dialogs use native `window.confirm`/`window.alert`** — same fallback as TIME_SIG_WINDOW. In-app modal would be nicer but out of scope.
+- **`insertBlankBars` does NOT explicitly restore the "interrupted" TS after the new bars.** Reasoning: existing `timeSignatureChanges` entries shifted by `+count` cover what the previous bars' TS were. If the inserted bars have the SAME TS as the previous, no extra entry needed. If different, the inserted entry handles it. The next existing entry (originally at fromBar >= beforeBarIndex) shifted up covers the "back to old TS" case. Spec correct for MPC pattern.
+- **`deleteBars` `fromBar=0` recovery**: when a delete range starts at 0 and removes the original anchor entry, code synthesizes a replacement entry using the fallback from before-the-range. Edge: if all entries were inside the deleted range AND firstBar=0, default to 4/4 (last-resort). Should rarely hit since fromBar=0 anchor is mandatory in well-formed sequences.
+- **`PerformanceTrack` parallel state from Session 14 fix not extended** — INSERT/DELETE bars only mutate the sequence; performanceTracks is untouched (tracks are not added/removed by bar operations). Should be fine — bar operations don't change track count.
+- **Cache invalidation for bar boundaries** — Session 13 noted `findBarAtGlobalStep` walks the bars on each call. INSERT/DELETE changes `lengthBars` + `timeSignatureChanges`, so walking on next call automatically picks up the new state. No explicit cache to invalidate. OK.
+- **Live audio test pending** — Marek to verify INSERT mid-playback, DELETE mid-playback, mixed-TS INSERT into 4/4/3/4/6/8/5/4 sequence per spec.
+- **F2–F4 softkeys reserved/blank.** Future: COPY BARS, SHIFT, etc.
+
+### Decisions made
+
+- **F1 ACTION cycle (one button, 4 modes)** rather than 4 separate F-keys. Closer to MPC2000XL SEQ EDIT menu layout where one mode-select control drives the screen.
+- **Action-specific fields render inline in Panel 3** instead of popping new screen. Fewer hops.
+- **Bar list scrolls (window of 12)** when sequence has > 12 bars. Shows position counter `(X–Y of N)`. Avoids 999-bar rendering.
+- **`<` `>` arrows in Panel 2** for navigating selection without leaving the screen. Same convention as other utility screens.
+- **VIEW action's F5 DO IT button is no-op** (passing `undefined` as onClick disables it). Visually present but inert. Matches "browse" intent.
+- **TS button on STEP opens TIME_SIG_WINDOW** (the popup component from Session 12), NOT BAR_EDITOR. Quick-edit shortcut; full editor reachable via BAR button.
+- **Insert/Delete use 0-indexed `barIndex` in store actions, 1-indexed display everywhere in UI** — matches existing convention (`barIndex + 1` everywhere for display).
+- **No keyboard shortcuts wired** — F-keys are softkey clicks only. Marek can add Ctrl+I / Ctrl+D in a future polish session if wanted.
+- **No copy/shift/reorder operations this session.** Phase 1 = MPC2000XL canonical 4-action core. Phase 2 future.
+
+### Open issues / followups
+
+- **Phase 2 future actions** per Marek's spec:
+  - COPY BARS (copy range X-Y, paste at Z)
+  - SHIFT timing within bars
+  - COPY EVENTS between sequences
+  - CHNG TRACK ORDER (separate concern)
+  - CONVERT SONG TO SEQUENCE (already exists, possibly integrate UI)
+- **Audio test plan from Marek's spec:**
+  1. Open BAR EDITOR from STEP (BAR button)
+  2. Lista shows all bars with TS
+  3. Navigate selection (UP/DOWN arrows or `<` `>` in Panel 2)
+  4. EDIT TS: 4/4 → 3/4 with events → confirm dialog → events deleted in last 1/4 region; undo restores
+  5. INSERT BARS: insert 2 bars 4/4 before bar 2 → barCount +2, original bars 2+ shift to 4+; undo
+  6. DELETE BARS: delete bars 2-3 with events → confirm → events removed, bars 4+ shift to 2+; undo
+  7. Mixed-TS insert (4/4 → 3/4 → 6/8 → 5/4 sequence + insert 2 bars 7/8 before bar 2 → 4/4,7/8,7/8,3/4,6/8,5/4); playback smooth
+  8. TS button on STEP opens TIME_SIG_WINDOW (same as MAIN F6)
+  9. Save/load after bar editor ops → state identical
+- **In-app confirm modal** would be nicer than `window.confirm`. Filed for later UI polish.
+- **`PerformanceTrack` Option A refactor** still open from Session 14.
+- **Sort callers of legacy `eventStepIndex`** still using legacy semantics (6 sites). Cosmetic.
+- **Cache `findBarAtGlobalStep`** for performance with mixed-TS 64-bar sequences.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - 4 new action signatures: `openBarEditor`, `closeBarEditor`, `insertBlankBars`, `deleteBars`
+  - Implementations of those 4 actions
+  - `isUtilityScreen` includes `BAR_EDITOR`
+- `src/types/navigation.ts` — `"BAR_EDITOR"` added to screens union.
+- `src/screens/UtilityScreens.tsx` — `BarEditorScreen` component (~150 LOC) + `BarEditorAction` type + `BAR_EDITOR_ACTIONS` + `ACTION_LABELS`.
+- `src/screens/index.ts` — `BarEditorScreen` imported and registered as `BAR_EDITOR`.
+- `src/screens/StepScreen.tsx` — BAR + TS buttons added to right panel; `openBarEditor` + `openTimeSigWindow` wired.
+
+---
+
 ## Session 14 — 2026-05-20 — Parallel state hydration fix: performanceTracks re-derived on load
 
 ### What was attempted

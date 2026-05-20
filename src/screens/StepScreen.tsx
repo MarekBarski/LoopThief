@@ -44,6 +44,11 @@ export function StepScreen() {
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const sequences = useAppStore((state) => state.sequences);
   const currentSequence = useAppStore((state) => state.currentSequence);
+  const openTimeSigWindow = useAppStore((state) => state.openTimeSigWindow);
+  const openBarEditor = useAppStore((state) => state.openBarEditor);
+  const stepInputAutoAdvance = useAppStore((state) => state.stepInputAutoAdvance);
+  const toggleStepInputAutoAdvance = useAppStore((state) => state.toggleStepInputAutoAdvance);
+  const currentPadMode = useAppStore((state) => state.currentPadMode);
 
   const currentSequenceObj = sequences.find((s) => s.id === currentSequence);
   const currentBarTs = (() => {
@@ -217,6 +222,35 @@ export function StepScreen() {
             <Info label="SEQ" value={`${sequence} ${sequenceName}`} />
             <Info label="TYPE" value={selectedEvent ? (selectedEvent.noteRepeatGenerated ? "NOTE REPEAT" : selectedEvent.appliedParameter ? "16 LEVELS" : selectedEvent.type) : "---"} />
             <Info label="PAD STATUS" value={selectedEvent && isPadAssigned({ padAssignments, padBank: selectedEvent.padBank ?? "A" }, formatEventPad(selectedEvent)) ? "ASSIGNED" : "UNASSIGNED PAD"} />
+            <div className="mt-[6%] grid grid-cols-2 gap-[6px]">
+              <button
+                type="button"
+                onClick={openBarEditor}
+                className="border border-[#46533b] bg-black/30 px-[4%] py-[6%] text-center text-[clamp(9px,0.74vw,11px)] tracking-[0.12em] text-[#d8e3b7] hover:border-amber-300"
+              >
+                BAR
+              </button>
+              <button
+                type="button"
+                onClick={openTimeSigWindow}
+                className="border border-[#46533b] bg-black/30 px-[4%] py-[6%] text-center text-[clamp(9px,0.74vw,11px)] tracking-[0.12em] text-[#d8e3b7] hover:border-amber-300"
+              >
+                TS
+              </button>
+            </div>
+            {currentPadMode === "STEP_INPUT" && (
+              <button
+                type="button"
+                onClick={toggleStepInputAutoAdvance}
+                className={`mt-[3%] border px-[4%] py-[6%] text-center text-[clamp(9px,0.74vw,11px)] tracking-[0.12em] ${
+                  stepInputAutoAdvance
+                    ? "border-amber-300 bg-amber-200/15 text-amber-100"
+                    : "border-[#46533b] bg-black/30 text-[#d8e3b7] hover:border-amber-300"
+                }`}
+              >
+                AUTO ADVANCE {stepInputAutoAdvance ? "ON" : "OFF"}
+              </button>
+            )}
           </section>
         </div>
 

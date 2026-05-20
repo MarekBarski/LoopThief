@@ -170,7 +170,9 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
 
   const active =
     element.type === "mode"
-      ? element.label === activeScreen
+      ? (element.label === "FX"
+          ? activeScreen === "PERFORMANCE"
+          : element.label === activeScreen)
       : element.type === "padMode"
         ? (element.label === "PLAY" && currentPadMode === "PAD_PLAY") ||
           (element.label === "STEP" && currentPadMode === "STEP_INPUT") ||
@@ -221,14 +223,17 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
       }}
       onClick={() => {
         if (element.type === "mode" && element.label) {
-          setActiveScreen(
-            element.label as Parameters<typeof setActiveScreen>[0],
-          );
+          // "FX" label is a display alias for PERFORMANCE screen (label rename without screen-id refactor).
+          const target = element.label === "FX" ? "PERFORMANCE" : element.label;
+          setActiveScreen(target as Parameters<typeof setActiveScreen>[0]);
         }
 
         if (element.type === "padMode" && element.label) {
           if (element.label === "PLAY") setPadMode("PAD_PLAY");
-          if (element.label === "STEP") setPadMode("STEP_INPUT");
+          if (element.label === "STEP") {
+            // Toggle STEP_INPUT ↔ PAD_PLAY so user can exit STEP_INPUT without a dedicated PAD PLAY button.
+            setPadMode(currentPadMode === "STEP_INPUT" ? "PAD_PLAY" : "STEP_INPUT");
+          }
           if (element.label === "FULL LEVEL") toggleFullLevel();
           if (element.label === "WAIT PAD") toggleWaitPad();
           if (element.label === "COUNT IN") openCountInUtility();

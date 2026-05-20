@@ -22,6 +22,7 @@ export const screens = [
   "SONG",
   "TIMING_CORRECT",
   "TIME_SIG_WINDOW",
+  "BAR_EDITOR",
 ] as const;
 
 export type ScreenId = (typeof screens)[number];

@@ -147,6 +147,7 @@ type AppState = {
   sixteenLevelsFilterType: "OFF" | "LOWPASS" | "HIGHPASS" | "BANDPASS" | null;
   sixteenLevelsSourceArmed: boolean;
   addEventArmed: boolean;
+  stepInputAutoAdvance: boolean;
   lastSixteenLevelsValue: number;
   overdubEnabled: boolean;
   isPlaying: boolean;
@@ -290,6 +291,18 @@ type AppState = {
   openTimeSigWindow: () => void;
   closeTimeSigWindow: () => void;
   changeBarTimeSignature: (barIndex: number, num: number, den: TimeSignatureDenominator) => void;
+  openBarEditor: () => void;
+  closeBarEditor: () => void;
+  insertBlankBars: (beforeBarIndex: number, count: number, num: number, den: TimeSignatureDenominator) => void;
+  deleteBars: (firstBar: number, lastBar: number) => void;
+  copyBars: (params: {
+    fromSeqId: string;
+    firstBarIndex: number;
+    lastBarIndex: number;
+    toSeqId: string;
+    beforeBarIndex: number;
+    copies: number;
+  }) => void;
   resetTimingCorrect: () => void;
   setNoteRepeatEnabled: (enabled: boolean) => void;
   cycleNoteRepeatRate: () => void;
@@ -375,6 +388,7 @@ type AppState = {
   addStepEventAtCurrentStep: () => void;
   armAddEvent: () => void;
   createStepEventForPad: (padIdentifier: string) => void;
+  toggleStepInputAutoAdvance: () => void;
   cycleSelectedEventAppliedParameter: (delta: number) => void;
   adjustSelectedEventAppliedValue: (delta: number) => void;
   stepBackward: () => void;
@@ -693,6 +707,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sixteenLevelsFilterType: null,
   sixteenLevelsSourceArmed: false,
   addEventArmed: false,
+  stepInputAutoAdvance: false,
   lastSixteenLevelsValue: 96,
   overdubEnabled: false,
   isPlaying: false,
@@ -811,6 +826,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       isPlaying: false,
       isSequenceRecording: false,
       overdubEnabled: false,
+      waitPadEnabled: false,
       chopCursor: 0,
       transportPhase: "IDLE",
       transportPendingAction: null,
@@ -1153,29 +1169,45 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (state.transportPhase === "WAIT_PAD" && state.transportPendingAction) {
         const pendingAction = state.transportPendingAction;
-        const countInBeats =
-          pendingAction === "REC" && state.metronomeEnabled
-            ? state.metronomeCountInBars * beatsPerBar(state)
-            : 0;
-        if (countInBeats > 0) {
-          playMetronomeClick(state, true);
+        // WAIT FOR PAD spec: skip count-in, start immediately, and (for REC) record the first
+        // pad hit at 001.01.000. waitPadEnabled auto-toggles off so user must re-arm explicitly.
+        if (pendingAction === "REC") {
+          const velocity = state.fullLevelEnabled ? 127 : 100;
+          const assignment = state.padAssignments[state.padBank].find((item) => item.pad === selectedPad);
+          const event = createStepEventAtPosition(0, 0, selectedPad, velocity, 100, {
+            sequence: getCurrentSequence(state),
+            trackId: state.currentTrackId,
+            trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
+            sourcePad: selectedPad,
+            sourceAssignment: assignment?.assignment === "---" ? undefined : assignment?.assignment,
+            padBank: state.padBank,
+            programId: state.currentProgramId,
+            variation: "REC",
+            duration: 0,
+            length: 0,
+          });
+          sequenceStepStartedAt = performance.now();
+          firstTickPending = true;
           return {
             selectedPad,
             lastTriggeredPad: selectedPad,
-            lastPadVelocity: 127,
-            transportPhase: "COUNT_IN",
-            transportPendingAction: pendingAction,
-            transportCountInBeatsRemaining: countInBeats,
-            transportCountInPulse: 0,
-            transportAnnouncement: "COUNT IN...",
+            lastPadVelocity: velocity,
+            waitPadEnabled: false,
             triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
+            ...computeRecordTransitionPatch(state, {
+              action: "REC",
+              additionalEvent: event,
+              initialStepIndex: 0,
+            }),
           };
         }
+        // PLAY pending: just start playback, no event recorded.
         startTransportAction(pendingAction, set, get);
         return {
           selectedPad,
           lastTriggeredPad: selectedPad,
           lastPadVelocity: 127,
+          waitPadEnabled: false,
           transportPhase: "IDLE",
           transportPendingAction: null,
           transportAnnouncement: "WAIT PAD RELEASED",
@@ -1191,6 +1223,48 @@ export const useAppStore = create<AppState>((set, get) => ({
           addEventArmed: false,
           triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
         };
+      }
+
+      // STEP INPUT mode: pad click adds event at current NOW position. Only when sequence is stopped.
+      if (state.currentPadMode === "STEP_INPUT" && !state.isPlaying) {
+        const sequence = getCurrentSequence(state);
+        const velocity = state.fullLevelEnabled ? 127 : 100;
+        const assignment = state.padAssignments[state.padBank].find((item) => item.pad === selectedPad);
+        const newEvent = createStepEventAtPosition(state.currentStepIndex, 0, selectedPad, velocity, 100, {
+          sequence,
+          trackId: state.currentTrackId,
+          trackName: getTrackName(sequence, state.currentTrackId),
+          sourcePad: selectedPad,
+          sourceAssignment: assignment?.assignment === "---" ? undefined : assignment?.assignment,
+          padBank: state.padBank,
+          programId: state.currentProgramId,
+          variation: "STEP",
+          duration: 0,
+          length: 0,
+        });
+        const stepEvents = [...state.stepEvents, newEvent].sort(
+          (a, b) => eventStepIndex(a.step) - eventStepIndex(b.step),
+        );
+        const basePatch: Partial<AppState> = {
+          selectedPad,
+          lastTriggeredPad: selectedPad,
+          lastPadVelocity: velocity,
+          stepEvents,
+          sequences: updateCurrentSequenceEvents(state, stepEvents),
+          lastAudioMessage: `STEP INPUT: ${newEvent.step}`,
+          triggeredPads: markPadTriggered(state.triggeredPads, state.padBank, selectedPad, true),
+          ...recordUndo(state, "STEP INPUT EVENT", `step-input:${state.currentStepIndex}:${Date.now()}`),
+        };
+        if (state.stepInputAutoAdvance) {
+          const totalSteps = getSequenceTotalSteps(sequence, 24);
+          const nextStepIndex = totalSteps > 0 ? (state.currentStepIndex + 1) % totalSteps : state.currentStepIndex;
+          const info = findBarAtGlobalStep(sequence, 24, nextStepIndex);
+          basePatch.currentStepIndex = nextStepIndex;
+          basePatch.currentBar = info.bar + 1;
+          basePatch.currentStep = info.stepInBar + 1;
+          basePatch.bar = formatBarPosition(info.bar + 1, info.stepInBar + 1, sequence);
+        }
+        return basePatch;
       }
 
       if (state.transportPhase === "COUNT_IN" && state.transportPendingAction === "REC") {
@@ -1766,6 +1840,255 @@ export const useAppStore = create<AppState>((set, get) => ({
           : `TS BAR ${barString} → ${safeNum}/${safeDen}`,
         ...recordUndo(state, `TIME SIG BAR ${barString}`, `ts-bar-${barIndex}:${Date.now()}`),
       };
+    }),
+  openBarEditor: () =>
+    set((state) => ({
+      activeScreen: "BAR_EDITOR",
+      utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
+    })),
+  closeBarEditor: () =>
+    set((state) => ({
+      activeScreen: state.utilityReturnScreen,
+    })),
+  insertBlankBars: (beforeBarIndex, count, num, den) =>
+    set((state) => {
+      const sequence = getCurrentSequence(state);
+      const safeBefore = Math.max(0, Math.min(sequence.lengthBars, Math.floor(beforeBarIndex)));
+      const safeCount = Math.max(1, Math.min(99, Math.floor(count)));
+      const safeNum = Math.max(1, Math.min(31, Math.floor(num)));
+      const safeDen: TimeSignatureDenominator = den === 4 || den === 8 || den === 16 || den === 32 ? den : 4;
+      // Shift existing events: any event whose bar >= safeBefore + 1 (1-indexed in step strings) needs bar + safeCount.
+      const shiftedEvents = state.stepEvents.map((evt) => {
+        const [barStr, beatStr, tickStr] = evt.step.split(".");
+        const evBar = Number(barStr);
+        if (evBar >= safeBefore + 1) {
+          return {
+            ...evt,
+            step: `${String(evBar + safeCount).padStart(3, "0")}.${beatStr}.${tickStr}`,
+          };
+        }
+        return evt;
+      });
+      // Shift timeSignatureChanges entries with fromBar >= safeBefore; insert new entry at safeBefore.
+      const existing = getTimeSignatureChanges(sequence);
+      const adjusted = existing.map((c) =>
+        c.fromBar >= safeBefore ? { ...c, fromBar: c.fromBar + safeCount } : c,
+      );
+      const inserted: TimeSignatureChange = { fromBar: safeBefore, num: safeNum, den: safeDen };
+      // After inserted's run ends (safeBefore + safeCount), preserve what the bar at that position USED to be.
+      // If the bar that was at safeBefore had a specific TS resolved (from earlier changes), we don't need
+      // to add a restoration entry — adjusted already shifted those entries by safeCount, so they apply correctly.
+      const merged = [...adjusted.filter((c) => c.fromBar !== safeBefore), inserted].sort((a, b) => a.fromBar - b.fromBar);
+      const newLengthBars = sequence.lengthBars + safeCount;
+      const sequences = state.sequences.map((seq) =>
+        seq.id === sequence.id
+          ? { ...seq, timeSignatureChanges: merged, events: shiftedEvents, lengthBars: newLengthBars }
+          : seq,
+      );
+      return {
+        sequences,
+        stepEvents: shiftedEvents,
+        sequenceLengthBars: newLengthBars,
+        lastAudioMessage: `INSERTED ${safeCount} BAR${safeCount > 1 ? "S" : ""} (${safeNum}/${safeDen}) BEFORE BAR ${String(safeBefore + 1).padStart(3, "0")}`,
+        ...recordUndo(state, "INSERT BARS", `insert-bars:${Date.now()}`),
+      };
+    }),
+  deleteBars: (firstBar, lastBar) =>
+    set((state) => {
+      const sequence = getCurrentSequence(state);
+      const safeFirst = Math.max(0, Math.min(sequence.lengthBars - 1, Math.floor(firstBar)));
+      const safeLast = Math.max(safeFirst, Math.min(sequence.lengthBars - 1, Math.floor(lastBar)));
+      const removedBarCount = safeLast - safeFirst + 1;
+      if (removedBarCount >= sequence.lengthBars) {
+        return { lastAudioMessage: "CANNOT DELETE ALL BARS" };
+      }
+      // Remove events in [safeFirst+1 .. safeLast+1]; shift events in bars > safeLast+1 back by removedBarCount.
+      let removedEvents = 0;
+      const updatedEvents: StepEvent[] = [];
+      for (const evt of state.stepEvents) {
+        const evBar = Number(evt.step.split(".")[0]);
+        if (evBar >= safeFirst + 1 && evBar <= safeLast + 1) {
+          removedEvents += 1;
+          continue;
+        }
+        if (evBar > safeLast + 1) {
+          const [, beatStr, tickStr] = evt.step.split(".");
+          updatedEvents.push({
+            ...evt,
+            step: `${String(evBar - removedBarCount).padStart(3, "0")}.${beatStr}.${tickStr}`,
+          });
+        } else {
+          updatedEvents.push(evt);
+        }
+      }
+      // Update timeSignatureChanges: drop entries in deleted range, shift later entries.
+      const existing = getTimeSignatureChanges(sequence);
+      let adjustedChanges = existing
+        .filter((c) => c.fromBar < safeFirst || c.fromBar > safeLast)
+        .map((c) => (c.fromBar > safeLast ? { ...c, fromBar: c.fromBar - removedBarCount } : c));
+      // Ensure there's an entry at fromBar=0.
+      if (!adjustedChanges.some((c) => c.fromBar === 0)) {
+        // The bar that USED to be at firstBar carried some TS. Use the most recent earlier change (or default 4/4).
+        const fallback = existing.filter((c) => c.fromBar <= safeFirst).at(-1) ?? { fromBar: 0, num: 4, den: 4 as TimeSignatureDenominator };
+        adjustedChanges = [{ fromBar: 0, num: fallback.num, den: fallback.den }, ...adjustedChanges];
+      }
+      const merged = adjustedChanges.sort((a, b) => a.fromBar - b.fromBar);
+      const newLengthBars = sequence.lengthBars - removedBarCount;
+      const sequences = state.sequences.map((seq) =>
+        seq.id === sequence.id
+          ? { ...seq, timeSignatureChanges: merged, events: updatedEvents, lengthBars: newLengthBars }
+          : seq,
+      );
+      return {
+        sequences,
+        stepEvents: updatedEvents,
+        sequenceLengthBars: newLengthBars,
+        currentBar: Math.min(state.currentBar, newLengthBars),
+        lastAudioMessage: `DELETED BARS ${String(safeFirst + 1).padStart(3, "0")}-${String(safeLast + 1).padStart(3, "0")} (${removedEvents} events removed)`,
+        ...recordUndo(state, "DELETE BARS", `delete-bars:${Date.now()}`),
+      };
+    }),
+  copyBars: ({ fromSeqId, firstBarIndex, lastBarIndex, toSeqId, beforeBarIndex, copies }) =>
+    set((state) => {
+      const fromSeq = state.sequences.find((s) => s.id === fromSeqId);
+      const toSeq = state.sequences.find((s) => s.id === toSeqId);
+      if (!fromSeq || !toSeq) return { lastAudioMessage: "SEQ NOT FOUND" };
+      const safeFirst = Math.max(0, Math.min(fromSeq.lengthBars - 1, Math.floor(firstBarIndex)));
+      const safeLast = Math.max(safeFirst, Math.min(fromSeq.lengthBars - 1, Math.floor(lastBarIndex)));
+      const safeBefore = Math.max(0, Math.min(toSeq.lengthBars, Math.floor(beforeBarIndex)));
+      const safeCopies = Math.max(1, Math.min(99, Math.floor(copies)));
+      const rangeBarCount = safeLast - safeFirst + 1;
+      const totalInserted = rangeBarCount * safeCopies;
+
+      // 1. Snapshot source events in range (BEFORE any mutation).
+      const sourceEventsSnap = fromSeq.events
+        .filter((evt) => {
+          const evBar = Number(evt.step.split(".")[0]);
+          return evBar >= safeFirst + 1 && evBar <= safeLast + 1;
+        })
+        .map((evt) => ({ ...evt }));
+
+      // 2. Source TS per bar (one per source bar in range).
+      const sourceTsPerBar: Array<{ num: number; den: TimeSignatureDenominator }> = [];
+      for (let i = safeFirst; i <= safeLast; i += 1) {
+        sourceTsPerBar.push(getTimeSignatureAtBar(fromSeq, i));
+      }
+
+      // 3. Resolve dest "interrupted TS" — what's at beforeBarIndex now (for restore after inserted block).
+      const interruptedTs =
+        safeBefore < toSeq.lengthBars
+          ? getTimeSignatureAtBar(toSeq, safeBefore)
+          : null;
+
+      // 4. Shift existing dest events with bar >= safeBefore + 1 by +totalInserted (1-indexed in step).
+      const shiftedDestEvents = toSeq.events.map((evt) => {
+        const [barStr, beatStr, tickStr] = evt.step.split(".");
+        const evBar = Number(barStr);
+        if (evBar >= safeBefore + 1) {
+          return { ...evt, step: `${String(evBar + totalInserted).padStart(3, "0")}.${beatStr}.${tickStr}` };
+        }
+        return evt;
+      });
+
+      // 5. Shift existing dest TS entries with fromBar >= safeBefore.
+      const existingDestChanges = getTimeSignatureChanges(toSeq);
+      const shiftedTsChanges = existingDestChanges.map((c) =>
+        c.fromBar >= safeBefore ? { ...c, fromBar: c.fromBar + totalInserted } : c,
+      );
+
+      // 6. Build inserted events with new IDs and shifted bar numbers.
+      const insertedEvents: StepEvent[] = [];
+      for (let copyIter = 0; copyIter < safeCopies; copyIter += 1) {
+        for (const srcEvent of sourceEventsSnap) {
+          const [barStr, beatStr, tickStr] = srcEvent.step.split(".");
+          const srcBar = Number(barStr) - 1; // 0-indexed
+          const destBar = safeBefore + copyIter * rangeBarCount + (srcBar - safeFirst);
+          insertedEvents.push({
+            ...srcEvent,
+            id: nextEventId(),
+            step: `${String(destBar + 1).padStart(3, "0")}.${beatStr}.${tickStr}`,
+          });
+        }
+      }
+
+      // 7. Build inserted TS entries — one per inserted bar.
+      const insertedTsChanges: TimeSignatureChange[] = [];
+      for (let copyIter = 0; copyIter < safeCopies; copyIter += 1) {
+        for (let offset = 0; offset < rangeBarCount; offset += 1) {
+          const destBar = safeBefore + copyIter * rangeBarCount + offset;
+          const ts = sourceTsPerBar[offset];
+          insertedTsChanges.push({ fromBar: destBar, num: ts.num, den: ts.den });
+        }
+      }
+
+      // 8. After inserted block, restore the interruptedTs (if any existing bars remain).
+      if (interruptedTs && safeBefore < toSeq.lengthBars) {
+        insertedTsChanges.push({
+          fromBar: safeBefore + totalInserted,
+          num: interruptedTs.num,
+          den: interruptedTs.den,
+        });
+      }
+
+      // 9. Merge + sort + collapse consecutive identical entries.
+      const merged = [...shiftedTsChanges, ...insertedTsChanges].sort((a, b) => {
+        if (a.fromBar !== b.fromBar) return a.fromBar - b.fromBar;
+        return 0;
+      });
+      // For duplicates at same fromBar, keep the last (later entries override earlier in source order).
+      const dedupedByBar = new Map<number, TimeSignatureChange>();
+      for (const c of merged) dedupedByBar.set(c.fromBar, c);
+      let collapsed: TimeSignatureChange[] = Array.from(dedupedByBar.values()).sort((a, b) => a.fromBar - b.fromBar);
+      // Collapse consecutive entries with identical TS.
+      const final: TimeSignatureChange[] = [];
+      for (const c of collapsed) {
+        const prev = final.at(-1);
+        if (prev && prev.num === c.num && prev.den === c.den) continue;
+        final.push(c);
+      }
+      if (final.length === 0 || final[0].fromBar !== 0) {
+        // Ensure fromBar=0 anchor exists.
+        const fallback = final[0] ?? { num: 4, den: 4 as TimeSignatureDenominator };
+        final.unshift({ fromBar: 0, num: fallback.num, den: fallback.den });
+      }
+
+      // 10. Combine dest events + insertedEvents (sorted by step for consistency).
+      const newDestEvents = [...shiftedDestEvents, ...insertedEvents].sort(
+        (a, b) => eventStepIndex(a.step) - eventStepIndex(b.step),
+      );
+
+      const newLengthBars = toSeq.lengthBars + totalInserted;
+      const isSameSeq = fromSeqId === toSeqId;
+
+      const sequences = state.sequences.map((seq) => {
+        if (seq.id === toSeqId) {
+          return {
+            ...seq,
+            events: newDestEvents,
+            timeSignatureChanges: final,
+            lengthBars: newLengthBars,
+          };
+        }
+        return seq;
+      });
+
+      // Top-level stepEvents mirrors current sequence if dest is current.
+      const isDestCurrent = state.currentSequence === toSeqId;
+      const isFromCurrent = state.currentSequence === fromSeqId;
+      const patch: Partial<AppState> = {
+        sequences,
+        lastAudioMessage: `COPY ${rangeBarCount}×${safeCopies} BARS ${
+          isSameSeq ? "WITHIN" : `${fromSeqId}→${toSeqId}`
+        } AT ${String(safeBefore + 1).padStart(3, "0")}`,
+        ...recordUndo(state, "COPY BARS", `copy-bars:${Date.now()}`),
+      };
+      if (isDestCurrent) {
+        patch.stepEvents = newDestEvents;
+        patch.sequenceLengthBars = newLengthBars;
+      } else if (isFromCurrent) {
+        // No-op for source (untouched) when current sequence is the source.
+      }
+      return patch;
     }),
   resetTimingCorrect: () =>
     set(() => ({
@@ -2564,6 +2887,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...createStepEventForPadImpl(state, padIdentifier),
       addEventArmed: false,
     })),
+  toggleStepInputAutoAdvance: () =>
+    set((state) => ({ stepInputAutoAdvance: !state.stepInputAutoAdvance })),
   stepBackward: () => {
     set((state) => {
       const sequence = getCurrentSequence(state);
@@ -5511,7 +5836,7 @@ function createDiskItem(
 }
 
 function isUtilityScreen(screen: ScreenId) {
-  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW";
+  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW" || screen === "BAR_EDITOR";
 }
 
 function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {

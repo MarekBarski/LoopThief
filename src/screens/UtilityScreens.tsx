@@ -724,6 +724,328 @@ function Softkeys({ labels, onExit }: { labels: Softkey[]; onExit?: () => void }
 
 const DEN_CYCLE: Array<4 | 8 | 16 | 32> = [4, 8, 16, 32];
 
+type BarEditorAction = "VIEW" | "EDIT_TS" | "INSERT" | "DELETE" | "COPY";
+const BAR_EDITOR_ACTIONS: BarEditorAction[] = ["VIEW", "EDIT_TS", "INSERT", "DELETE", "COPY"];
+const ACTION_LABELS: Record<BarEditorAction, string> = {
+  VIEW: "VIEW",
+  EDIT_TS: "EDIT TS",
+  INSERT: "INSERT BARS",
+  DELETE: "DELETE BARS",
+  COPY: "COPY BARS",
+};
+
+export function BarEditorScreen() {
+  const sequences = useAppStore((s) => s.sequences);
+  const currentSequence = useAppStore((s) => s.currentSequence);
+  const stepEvents = useAppStore((s) => s.stepEvents);
+  const bpm = useAppStore((s) => s.bpm);
+  const changeBarTimeSignature = useAppStore((s) => s.changeBarTimeSignature);
+  const insertBlankBars = useAppStore((s) => s.insertBlankBars);
+  const deleteBars = useAppStore((s) => s.deleteBars);
+  const copyBars = useAppStore((s) => s.copyBars);
+  const closeBarEditor = useAppStore((s) => s.closeBarEditor);
+
+  const sequence = sequences.find((s) => s.id === currentSequence);
+  const barCount = sequence?.lengthBars ?? 1;
+
+  const [selectedBar, setSelectedBar] = useState(0); // 0-indexed
+  const [action, setAction] = useState<BarEditorAction>("VIEW");
+  const [editNum, setEditNum] = useState(4);
+  const [editDen, setEditDen] = useState<4 | 8 | 16 | 32>(4);
+  const [insertCount, setInsertCount] = useState(1);
+  const [deleteFirst, setDeleteFirst] = useState(0);
+  const [deleteLast, setDeleteLast] = useState(0);
+  const [copyFromSeqId, setCopyFromSeqId] = useState<string>("");
+  const [copyFirstBar, setCopyFirstBar] = useState(0);
+  const [copyLastBar, setCopyLastBar] = useState(0);
+  const [copyToSeqId, setCopyToSeqId] = useState<string>("");
+  const [copyBeforeBar, setCopyBeforeBar] = useState(0);
+  const [copyCount, setCopyCount] = useState(1);
+
+  const tsAtBar = (idx: number) => {
+    if (!sequence) return { num: 4, den: 4 as 4 | 8 | 16 | 32 };
+    const changes = sequence.timeSignatureChanges ?? [];
+    let resolved = changes[0] ?? { fromBar: 0, num: 4, den: 4 as 4 | 8 | 16 | 32 };
+    for (const c of changes) {
+      if (c.fromBar <= idx) resolved = c;
+      else break;
+    }
+    return { num: resolved.num, den: resolved.den };
+  };
+
+  const eventsInBar = (idx: number) =>
+    stepEvents.filter((e) => Number(e.step.split(".")[0]) === idx + 1).length;
+
+  const stepsInBar = (idx: number) => {
+    const ts = tsAtBar(idx);
+    return Math.max(1, Math.floor(((ts.num * 384) / ts.den) / 24));
+  };
+
+  const cycleAction = () => {
+    const i = BAR_EDITOR_ACTIONS.indexOf(action);
+    const next = BAR_EDITOR_ACTIONS[(i + 1) % BAR_EDITOR_ACTIONS.length];
+    setAction(next);
+    if (next === "EDIT_TS") {
+      const ts = tsAtBar(selectedBar);
+      setEditNum(ts.num);
+      setEditDen(ts.den);
+    }
+    if (next === "INSERT") {
+      const ts = tsAtBar(selectedBar);
+      setEditNum(ts.num);
+      setEditDen(ts.den);
+      setInsertCount(1);
+    }
+    if (next === "DELETE") {
+      setDeleteFirst(selectedBar);
+      setDeleteLast(selectedBar);
+    }
+    if (next === "COPY") {
+      setCopyFromSeqId(currentSequence);
+      setCopyToSeqId(currentSequence);
+      setCopyFirstBar(selectedBar);
+      setCopyLastBar(selectedBar);
+      setCopyBeforeBar(barCount);
+      setCopyCount(1);
+    }
+  };
+
+  const cycleSeqId = (current: string, delta: number): string => {
+    if (sequences.length === 0) return current;
+    const i = sequences.findIndex((s) => s.id === current);
+    const safeIdx = i === -1 ? 0 : i;
+    const next = (safeIdx + delta + sequences.length) % sequences.length;
+    return sequences[next].id;
+  };
+
+  const seqBarCount = (id: string): number => sequences.find((s) => s.id === id)?.lengthBars ?? 1;
+
+  const adjustNum = (delta: number) => setEditNum((p) => Math.max(1, Math.min(31, p + delta)));
+  const adjustDen = (delta: number) => setEditDen((p) => {
+    const i = DEN_CYCLE.indexOf(p);
+    return DEN_CYCLE[(i + delta + DEN_CYCLE.length) % DEN_CYCLE.length];
+  });
+
+  const doIt = () => {
+    if (!sequence) return;
+    if (action === "EDIT_TS") {
+      const oldTs = tsAtBar(selectedBar);
+      const newBarTicks = Math.round((editNum * 384) / editDen);
+      const oldBarTicks = Math.round((oldTs.num * 384) / oldTs.den);
+      if (newBarTicks < oldBarTicks) {
+        const removed = stepEvents.filter((evt) => {
+          const evBar = Number(evt.step.split(".")[0]);
+          if (evBar !== selectedBar + 1) return false;
+          const [, b, t] = evt.step.split(".");
+          return (Number(b) - 1) * 96 + Number(t) >= newBarTicks;
+        }).length;
+        if (removed > 0) {
+          const ok = window.confirm(`Bar ${selectedBar + 1} truncated. ${removed} events removed. Proceed?`);
+          if (!ok) return;
+        }
+      }
+      changeBarTimeSignature(selectedBar, editNum, editDen);
+      return;
+    }
+    if (action === "INSERT") {
+      if (barCount + insertCount > 999) {
+        window.alert("Max bar count is 999.");
+        return;
+      }
+      insertBlankBars(selectedBar, insertCount, editNum, editDen);
+      return;
+    }
+    if (action === "DELETE") {
+      if (deleteLast - deleteFirst + 1 >= barCount) {
+        window.alert("Cannot delete all bars in the sequence.");
+        return;
+      }
+      const removed = stepEvents.filter((evt) => {
+        const evBar = Number(evt.step.split(".")[0]);
+        return evBar >= deleteFirst + 1 && evBar <= deleteLast + 1;
+      }).length;
+      const range = deleteFirst === deleteLast ? `bar ${deleteFirst + 1}` : `bars ${deleteFirst + 1}–${deleteLast + 1}`;
+      const ok = window.confirm(`Delete ${range}. ${removed} events will be removed. Proceed?`);
+      if (!ok) return;
+      deleteBars(deleteFirst, deleteLast);
+      // Clamp selection.
+      setSelectedBar(Math.min(selectedBar, Math.max(0, barCount - (deleteLast - deleteFirst + 1) - 1)));
+      return;
+    }
+    if (action === "COPY") {
+      if (copyLastBar < copyFirstBar) {
+        window.alert("Invalid range: LAST BAR must be ≥ FIRST BAR.");
+        return;
+      }
+      if (copyCount < 1) {
+        window.alert("COPIES must be ≥ 1.");
+        return;
+      }
+      const fromSeq = sequences.find((s) => s.id === copyFromSeqId);
+      if (!fromSeq) {
+        window.alert("Source sequence not found.");
+        return;
+      }
+      copyBars({
+        fromSeqId: copyFromSeqId,
+        firstBarIndex: copyFirstBar,
+        lastBarIndex: copyLastBar,
+        toSeqId: copyToSeqId,
+        beforeBarIndex: copyBeforeBar,
+        copies: copyCount,
+      });
+      return;
+    }
+  };
+
+  const selectedTs = tsAtBar(selectedBar);
+  const selectedSteps = stepsInBar(selectedBar);
+  const selectedEvents = eventsInBar(selectedBar);
+
+  // Scroll-safe bar list: only render up to 12 around selection.
+  const window_start = Math.max(0, Math.min(selectedBar - 5, Math.max(0, barCount - 12)));
+  const window_end = Math.min(barCount, window_start + 12);
+  const visibleBars = Array.from({ length: window_end - window_start }, (_, i) => window_start + i);
+
+  return (
+    <ScreenFrame title="BAR EDITOR" subtitle={`SEQ ${currentSequence} · BARS ${barCount}`}>
+      {shell(
+        <div className="grid h-full grid-cols-[0.7fr_1fr_1fr] gap-[2.3%]">
+          {/* PANEL 1: BARS LIST */}
+          <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
+            <div className="border-b border-[#46533b] px-[6%] py-[3%] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em] text-[#91a477]">BARS</div>
+            <div className="grid content-start overflow-hidden">
+              {visibleBars.map((idx) => {
+                const ts = tsAtBar(idx);
+                const isSelected = idx === selectedBar;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setSelectedBar(idx)}
+                    className={`grid grid-cols-[28px_1fr_auto] gap-[8px] px-[6%] py-[3%] text-left text-[clamp(9px,0.72vw,11px)] tracking-[0.12em] ${
+                      isSelected ? "bg-amber-200/15 text-amber-100" : "text-[#d8e3b7]"
+                    }`}
+                  >
+                    <span>{isSelected ? ">" : " "}</span>
+                    <span>BAR {String(idx + 1).padStart(3, "0")}</span>
+                    <span className="text-[#91a477]">{ts.num}/{ts.den}</span>
+                  </button>
+                );
+              })}
+              {barCount > 12 && (
+                <div className="px-[6%] py-[3%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] text-[#46533b]">
+                  ({window_start + 1}–{window_end} of {barCount})
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* PANEL 2: SELECTED BAR DETAILS */}
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">SELECTED BAR</p>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">BAR</span><span className="text-[#eef6d8]">{String(selectedBar + 1).padStart(3, "0")}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">TIME SIG</span><span className="text-[#eef6d8]">{selectedTs.num}/{selectedTs.den}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">STEPS (1/16)</span><span className="text-[#eef6d8]">{selectedSteps}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">EVENTS</span><span className="text-[#eef6d8]">{selectedEvents}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">TEMPO</span><span className="text-[#eef6d8]">{bpm.toFixed(2)} BPM</span></div>
+            <div className="mt-[6%] grid grid-cols-[28px_28px] gap-[6px]">
+              <button type="button" onClick={() => setSelectedBar(Math.max(0, selectedBar - 1))} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">&lt;</button>
+              <button type="button" onClick={() => setSelectedBar(Math.min(barCount - 1, selectedBar + 1))} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">&gt;</button>
+            </div>
+          </section>
+
+          {/* PANEL 3: ACTION SETTINGS */}
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">ACTION</p>
+            <p className="text-amber-100 text-[clamp(13px,1vw,16px)]">{ACTION_LABELS[action]}</p>
+            {action === "EDIT_TS" && (
+              <>
+                <ArrowRow label="NUM" value={String(editNum)} onPrev={() => adjustNum(-1)} onNext={() => adjustNum(1)} />
+                <ArrowRow label="DEN" value={String(editDen)} onPrev={() => adjustDen(-1)} onNext={() => adjustDen(1)} />
+                <p className="text-[#91a477]">PREVIEW: {editNum}/{editDen}</p>
+              </>
+            )}
+            {action === "INSERT" && (
+              <>
+                <ArrowRow label="COUNT" value={String(insertCount)} onPrev={() => setInsertCount((p) => Math.max(1, p - 1))} onNext={() => setInsertCount((p) => Math.min(99, p + 1))} />
+                <ArrowRow label="NUM" value={String(editNum)} onPrev={() => adjustNum(-1)} onNext={() => adjustNum(1)} />
+                <ArrowRow label="DEN" value={String(editDen)} onPrev={() => adjustDen(-1)} onNext={() => adjustDen(1)} />
+                <p className="text-[#91a477]">INSERT BEFORE BAR {String(selectedBar + 1).padStart(3, "0")}</p>
+              </>
+            )}
+            {action === "DELETE" && (
+              <>
+                <ArrowRow label="FIRST BAR" value={String(deleteFirst + 1).padStart(3, "0")} onPrev={() => setDeleteFirst((p) => Math.max(0, p - 1))} onNext={() => setDeleteFirst((p) => Math.min(deleteLast, p + 1))} />
+                <ArrowRow label="LAST BAR" value={String(deleteLast + 1).padStart(3, "0")} onPrev={() => setDeleteLast((p) => Math.max(deleteFirst, p - 1))} onNext={() => setDeleteLast((p) => Math.min(barCount - 1, p + 1))} />
+                <p className="text-[#91a477]">EVENTS TO REMOVE: {stepEvents.filter((evt) => {
+                  const b = Number(evt.step.split(".")[0]);
+                  return b >= deleteFirst + 1 && b <= deleteLast + 1;
+                }).length}</p>
+              </>
+            )}
+            {action === "COPY" && (
+              <>
+                <ArrowRow
+                  label="FROM SEQ"
+                  value={copyFromSeqId || "—"}
+                  onPrev={() => setCopyFromSeqId((p) => cycleSeqId(p || currentSequence, -1))}
+                  onNext={() => setCopyFromSeqId((p) => cycleSeqId(p || currentSequence, 1))}
+                />
+                <ArrowRow
+                  label="FIRST BAR"
+                  value={String(copyFirstBar + 1).padStart(3, "0")}
+                  onPrev={() => setCopyFirstBar((p) => Math.max(0, p - 1))}
+                  onNext={() => setCopyFirstBar((p) => Math.min(copyLastBar, p + 1))}
+                />
+                <ArrowRow
+                  label="LAST BAR"
+                  value={String(copyLastBar + 1).padStart(3, "0")}
+                  onPrev={() => setCopyLastBar((p) => Math.max(copyFirstBar, p - 1))}
+                  onNext={() => setCopyLastBar((p) => Math.min(seqBarCount(copyFromSeqId) - 1, p + 1))}
+                />
+                <ArrowRow
+                  label="TO SEQ"
+                  value={copyToSeqId || "—"}
+                  onPrev={() => setCopyToSeqId((p) => cycleSeqId(p || currentSequence, -1))}
+                  onNext={() => setCopyToSeqId((p) => cycleSeqId(p || currentSequence, 1))}
+                />
+                <ArrowRow
+                  label="BEFORE BAR"
+                  value={String(copyBeforeBar + 1).padStart(3, "0")}
+                  onPrev={() => setCopyBeforeBar((p) => Math.max(0, p - 1))}
+                  onNext={() => setCopyBeforeBar((p) => Math.min(seqBarCount(copyToSeqId), p + 1))}
+                />
+                <ArrowRow
+                  label="COPIES"
+                  value={String(copyCount)}
+                  onPrev={() => setCopyCount((p) => Math.max(1, p - 1))}
+                  onNext={() => setCopyCount((p) => Math.min(99, p + 1))}
+                />
+                <p className="text-[#91a477] text-[clamp(9px,0.74vw,11px)]">
+                  {copyLastBar - copyFirstBar + 1} bar(s) × {copyCount} = +{(copyLastBar - copyFirstBar + 1) * copyCount} bars
+                </p>
+              </>
+            )}
+            {action === "VIEW" && (
+              <p className="text-[#46533b] text-[clamp(9px,0.74vw,11px)]">Browse bars with UP/DOWN. Press F1 ACTION to enable edits.</p>
+            )}
+          </section>
+        </div>,
+        [
+          { label: "F1 ACTION", onClick: cycleAction },
+          "F2 —",
+          "F3 —",
+          "F4 —",
+          { label: "F5 DO IT", onClick: action === "VIEW" ? undefined : doIt },
+          { label: "F6 EXIT", onClick: closeBarEditor },
+        ],
+        closeBarEditor,
+      )}
+    </ScreenFrame>
+  );
+}
+
 export function TimeSigWindowScreen() {
   const sequences = useAppStore((s) => s.sequences);
   const currentSequence = useAppStore((s) => s.currentSequence);

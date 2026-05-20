@@ -12,6 +12,7 @@ import { SongScreen } from "./SongScreen";
 import { StepScreen } from "./StepScreen";
 import { PadPlayScreen } from "./PadPlayScreen";
 import {
+  BarEditorScreen,
   CountInUtilityScreen,
   EraseUtilityScreen,
   GoToUtilityScreen,
@@ -50,4 +51,5 @@ export const screensById: Record<ScreenId, ComponentType> = {
   SEQUENCE_EDIT: SequenceEditUtilityScreen,
   TIMING_CORRECT: TimingCorrectUtilityScreen,
   TIME_SIG_WINDOW: TimeSigWindowScreen,
+  BAR_EDITOR: BarEditorScreen,
 };

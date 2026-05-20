@@ -72,7 +72,7 @@
     {
       "id": "mode-performance",
       "type": "mode",
-      "label": "PERFORMANCE",
+      "label": "FX",
       "x": 76,
       "y": 945,
       "w": 215,
@@ -107,8 +107,8 @@
     },
     {
       "id": "padmode-play",
-      "type": "padMode",
-      "label": "PLAY",
+      "type": "mode",
+      "label": "SONG",
       "x": 1552,
       "y": 280,
       "w": 108,
