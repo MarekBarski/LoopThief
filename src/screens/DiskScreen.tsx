@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -22,6 +22,14 @@ export function DiskScreen() {
   const importStatus = useAppStore((state) => state.importStatus);
   const importMessage = useAppStore((state) => state.importMessage);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectInputRef = useRef<HTMLInputElement>(null);
+  const saveProjectFile = useAppStore((state) => state.saveProjectFile);
+  const saveAllFile = useAppStore((state) => state.saveAllFile);
+  const saveSeqFile = useAppStore((state) => state.saveSeqFile);
+  const loadFile = useAppStore((state) => state.loadFile);
+  const newProject = useAppStore((state) => state.newProject);
+  const sequenceName = useAppStore((state) => state.sequenceName);
+  const [projectName, setProjectName] = useState("project");
 
   const memoryRows = recordedSamples.map((sample) => createMemoryRow(sample, padAssignments));
   const selectedMemoryRow = memoryRows[selectedDiskItemIndex] ?? memoryRows[0];
@@ -96,12 +104,62 @@ export function DiskScreen() {
             </div>
           </section>
 
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
-            <Info label="SELECTED" value={selectedMemoryRow?.name ?? "---"} />
-            <Info label="TYPE" value={selectedMemoryRow?.type ?? "---"} />
-            <Info label="LENGTH" value={selectedMemoryRow?.length ?? "--:--.---"} />
-            <Info label="SAMPLE RATE" value={selectedMemoryRow?.sampleRate ?? "---"} />
-            <Info label="ASSIGNED PAD" value={selectedMemoryRow?.assignedPad ?? "---"} />
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">PROJECT I/O</p>
+            <input
+              type="text"
+              value={projectName}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="filename"
+              className="border border-[#46533b] bg-black/40 px-[6%] py-[3%] text-[#eef6d8] outline-none focus:border-amber-300"
+            />
+            <button
+              type="button"
+              onClick={() => void saveProjectFile(projectName)}
+              className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
+            >
+              SAVE PROJECT (.lthief)
+            </button>
+            <button
+              type="button"
+              onClick={() => void saveAllFile(projectName)}
+              className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
+            >
+              SAVE ALL SEQS (.lthief-all)
+            </button>
+            <button
+              type="button"
+              onClick={() => void saveSeqFile(projectName || sequenceName)}
+              className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
+            >
+              SAVE CURRENT SEQ (.lthief-seq)
+            </button>
+            <button
+              type="button"
+              onClick={() => projectInputRef.current?.click()}
+              className="border border-amber-300 bg-amber-200/10 px-[4%] py-[4%] text-left text-amber-100 hover:bg-amber-200/20"
+            >
+              LOAD PROJECT FILE...
+            </button>
+            <button
+              type="button"
+              onClick={() => void newProject()}
+              className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
+            >
+              NEW PROJECT
+            </button>
+            <input
+              ref={projectInputRef}
+              type="file"
+              accept=".lthief,.lthief-all,.lthief-seq"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.currentTarget.value = "";
+                if (file) void loadFile(file);
+              }}
+            />
+            <Info label="SELECTED SAMPLE" value={selectedMemoryRow?.name ?? "---"} />
             <Info label="IMPORT" value={importStatus} />
             <Info label="STATUS" value={importMessage} />
           </section>

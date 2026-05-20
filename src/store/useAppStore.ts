@@ -2,8 +2,17 @@ import { create } from "zustand";
 import type { ScreenId } from "../types/navigation";
 import { startRecordingCapture, type ActiveRecordingCapture, type RecordingInputSource } from "../audio/recordingCapture";
 import { samplerEngine } from "../audio/samplerEngine";
-import { createSampleId, createWaveformCache, encodeWavRegion, getSampleAudioRef, registerSampleAudio } from "../audio/sampleLibrary";
+import { createSampleId, createWaveformCache, encodeWavRegion, getSampleAudioRef, getSampleBuffer, registerSampleAudio } from "../audio/sampleLibrary";
 import metronomeSampleUrl from "../../assets/Samples/Metronome.wav?url";
+import {
+  loadFromBlob,
+  saveBlobAs,
+  serializeAll,
+  serializeProject,
+  serializeSeq,
+  writeProjectZip,
+} from "../disk";
+import type { GlobalSettings, LoadedBundle, LoadedSample } from "../disk";
 
 export type PadBank = "A" | "B" | "C" | "D";
 type TimeSignature = "2/4" | "3/4" | "4/4" | "5/4" | "6/4" | "6/8" | "7/8" | "9/8" | "12/8";
@@ -127,6 +136,8 @@ type AppState = {
   undoHistory: UndoEntry[];
   redoHistory: UndoEntry[];
   pendingRecTake: UndoEntry | null;
+  projectVersion: number;
+  lastSavedProjectVersion: number;
   lastAction: string;
   sixteenLevelsSourcePad: string;
   sixteenLevelsParameter: "VELOCITY" | "TUNE" | "DECAY" | "FILTER" | "ATTACK";
@@ -401,6 +412,11 @@ type AppState = {
   adjustSelectedSetting: (delta: number) => void;
   toggleSelectedSetting: () => void;
   createProjectSnapshot: () => ProjectSnapshot;
+  saveProjectFile: (name: string) => Promise<void>;
+  saveAllFile: (name: string) => Promise<void>;
+  saveSeqFile: (name: string, sequenceId?: string) => Promise<void>;
+  loadFile: (file: Blob, options?: { targetSequenceId?: string }) => Promise<{ type: "project" | "all" | "seq"; name: string }>;
+  newProject: () => Promise<void>;
   preloadAudioBuffers: () => void;
 };
 
@@ -654,6 +670,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   undoHistory: [],
   redoHistory: [],
   pendingRecTake: null,
+  projectVersion: 0,
+  lastSavedProjectVersion: 0,
   lastAction: "",
   sixteenLevelsSourcePad: "A01",
   sixteenLevelsParameter: "VELOCITY",
@@ -812,6 +830,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           transportCountInPulse: 0,
           transportAnnouncement: "COUNT IN...",
           overdubEnabled: false,
+          // Snapshot here at user-click time, NOT at count-in end (audio path).
+          ...beginRecTakeSnapshot(state),
         });
         playMetronomeClick(state, true);
         return;
@@ -825,6 +845,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       return;
     }
+    // Snapshot now at user-click time — requestTransportStartImpl may invoke count-in or wait-pad
+    // which are audio scheduling paths.
+    set(beginRecTakeSnapshot(state));
     requestTransportStartImpl("REC", set, get);
   },
   toggleOverdub: () =>
@@ -2449,16 +2472,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
   addStepEventAtCurrentStep: () =>
+    // DIAGNOSTIC (Session 8.1): recordUndo temporarily disabled while
+    // investigating STEP ADD EVENT regression. Re-enable once root cause confirmed.
     set((state) => ({
       ...createStepEventForPadImpl(state, state.selectedPad),
-      ...recordUndo(state, "ADD EVENT", `add-event:${Date.now()}`),
     })),
   armAddEvent: () => set((state) => ({ addEventArmed: !state.addEventArmed })),
   createStepEventForPad: (padIdentifier) =>
+    // DIAGNOSTIC (Session 8.1): recordUndo temporarily disabled. See above.
     set((state) => ({
       ...createStepEventForPadImpl(state, padIdentifier),
       addEventArmed: false,
-      ...recordUndo(state, "ADD EVENT", `add-event:${Date.now()}`),
     })),
   stepBackward: () => {
     set((state) => {
@@ -2986,12 +3010,273 @@ export const useAppStore = create<AppState>((set, get) => ({
       })),
     };
   },
+  saveProjectFile: async (name: string) => {
+    const state = get();
+    const programs = syncCurrentProgram(state);
+    const sanitized = sanitizeProjectName(name);
+    const { manifest, sampleEntries } = serializeProject({
+      name: sanitized,
+      appVersion: APP_VERSION,
+      samples: state.recordedSamples.map((sample) => ({
+        id: sample.id,
+        name: sample.name,
+        audioBufferId: sample.audioBufferId,
+        durationMs: sample.durationMs,
+        duration: sample.duration,
+        sampleRate: sample.sampleRate,
+        channelCount: sample.channelCount,
+        waveform: sample.waveform,
+        keptSlices: sample.keptSlices,
+        editState: sample.editState,
+      })),
+      programs,
+      sequences: state.sequences,
+      songs: state.songSteps,
+      globalSettings: collectGlobalSettings(state),
+      resolveAudioBuffer: (id) => getSampleBuffer(id),
+    });
+    const blob = await writeProjectZip(manifest, sampleEntries);
+    saveBlobAs(blob, `${sanitized}.lthief`);
+    set((current) => ({
+      lastAudioMessage: `SAVED: ${sanitized}.lthief`,
+      lastSavedProjectVersion: current.projectVersion,
+    }));
+    void (await import("../disk")).clearAutosave();
+  },
+  saveAllFile: async (name: string) => {
+    const state = get();
+    const sanitized = sanitizeProjectName(name);
+    const manifest = serializeAll({
+      name: sanitized,
+      appVersion: APP_VERSION,
+      sequences: state.sequences,
+      songs: state.songSteps,
+      globalSettings: collectGlobalSettings(state),
+    });
+    const blob = await writeProjectZip(manifest, []);
+    saveBlobAs(blob, `${sanitized}.lthief-all`);
+    set((current) => ({
+      lastAudioMessage: `SAVED: ${sanitized}.lthief-all`,
+      lastSavedProjectVersion: current.projectVersion,
+    }));
+  },
+  saveSeqFile: async (name: string, sequenceId?: string) => {
+    const state = get();
+    const targetId = sequenceId ?? state.currentSequence;
+    const sequence = state.sequences.find((seq) => seq.id === targetId);
+    if (!sequence) {
+      set({ lastAudioMessage: "SEQ NOT FOUND" });
+      return;
+    }
+    const sanitized = sanitizeProjectName(name);
+    const manifest = serializeSeq({
+      name: sanitized,
+      appVersion: APP_VERSION,
+      sequence,
+    });
+    const blob = await writeProjectZip(manifest, []);
+    saveBlobAs(blob, `${sanitized}.lthief-seq`);
+    set((current) => ({
+      lastAudioMessage: `SAVED: ${sanitized}.lthief-seq`,
+      lastSavedProjectVersion: current.projectVersion,
+    }));
+  },
+  newProject: async () => {
+    const current = get();
+    const isDirty = current.projectVersion > current.lastSavedProjectVersion;
+    if (isDirty) {
+      const decision = window.confirm(
+        "Unsaved changes will be lost.\n\nOK = discard and start blank\nCancel = keep current project",
+      );
+      if (!decision) return;
+    }
+    const blank = createBlankProjectState();
+    set(blank);
+    const { clearAutosave } = await import("../disk");
+    await clearAutosave().catch(() => {});
+  },
+  loadFile: async (file: Blob, options) => {
+    const targetSequenceId = options?.targetSequenceId;
+    const bundle = await loadFromBlob(file, {
+      decodeAudio: (bytes) => samplerEngine.decodeAudioData(bytes),
+      onProgress: (progress) => {
+        set({ lastAudioMessage: progress.message });
+      },
+    });
+    if (bundle.type === "project") {
+      hydrateProjectBundle(bundle, set);
+      return { type: "project", name: bundle.manifest.name };
+    }
+    if (bundle.type === "all") {
+      hydrateAllBundle(bundle, set);
+      return { type: "all", name: bundle.manifest.name };
+    }
+    hydrateSeqBundle(bundle, set, get, targetSequenceId);
+    return { type: "seq", name: bundle.manifest.name };
+  },
   preloadAudioBuffers: () => {
     // Fire-and-forget. Metronome buffer fetch + decode happens before first user gesture
     // so that count-in clicks aren't racing AudioContext.resume() on cold start.
     void loadMetronomeBuffer();
   },
 }));
+
+const APP_VERSION = "0.1.0";
+
+function sanitizeProjectName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "untitled";
+  return trimmed.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
+}
+
+function createBlankProjectState(): Partial<AppState> {
+  return {
+    sequences: [],
+    currentSequence: "",
+    stepEvents: [],
+    sequenceName: "",
+    programs: [],
+    currentProgramId: "",
+    activeProgram: "",
+    padAssignments: createPadAssignments(),
+    padMixer: createPadMixer(),
+    recordedSamples: [],
+    songSteps: [],
+    currentSongStepIndex: 0,
+    selectedSongStepIndex: 0,
+    undoHistory: [],
+    redoHistory: [],
+    pendingRecTake: null,
+    projectVersion: 0,
+    lastSavedProjectVersion: 0,
+    lastAction: "NEW PROJECT",
+    lastAudioMessage: "NEW PROJECT",
+  };
+}
+
+function collectGlobalSettings(state: AppState): GlobalSettings {
+  return {
+    bpm: state.bpm,
+    swing: state.swing,
+    timingCorrect: state.timingCorrect,
+    tripletMode: state.tripletMode,
+    timeSignature: state.timeSignature,
+    sequenceLengthBars: state.sequenceLengthBars,
+    metronomeEnabled: state.metronomeEnabled,
+    metronomeDuringRecord: state.metronomeDuringRecord,
+    metronomeCountInBars: state.metronomeCountInBars,
+    metronomeVolume: state.metronomeVolume,
+  };
+}
+
+function applyGlobalSettings(settings: GlobalSettings): Partial<AppState> {
+  return {
+    bpm: settings.bpm,
+    swing: settings.swing,
+    timingCorrect: settings.timingCorrect as AppState["timingCorrect"],
+    tripletMode: settings.tripletMode,
+    timeSignature: settings.timeSignature as TimeSignature,
+    sequenceLengthBars: settings.sequenceLengthBars,
+    metronomeEnabled: settings.metronomeEnabled,
+    metronomeDuringRecord: settings.metronomeDuringRecord,
+    metronomeCountInBars: settings.metronomeCountInBars,
+    metronomeVolume: settings.metronomeVolume,
+  };
+}
+
+function hydrateSamples(loaded: LoadedSample[]): RecordedSample[] {
+  return loaded.map((entry) => {
+    const audioBufferId = entry.metadata.id;
+    registerSampleAudio(audioBufferId, entry.buffer);
+    const waveform =
+      entry.metadata.waveform && entry.metadata.waveform.length > 0
+        ? entry.metadata.waveform
+        : createWaveformCache(entry.buffer);
+    return {
+      id: entry.metadata.id,
+      name: entry.metadata.name,
+      audioBufferId,
+      durationMs: entry.metadata.durationMs,
+      duration: entry.metadata.duration,
+      sampleRate: entry.metadata.sampleRate,
+      channelCount: entry.metadata.channelCount,
+      waveform,
+      keptSlices: entry.metadata.keptSlices,
+      editState: entry.metadata.editState,
+    } satisfies RecordedSample;
+  });
+}
+
+function hydrateProjectBundle(
+  bundle: Extract<LoadedBundle, { type: "project" }>,
+  set: (partial: Partial<AppState>) => void,
+) {
+  const samples = hydrateSamples(bundle.samples);
+  const programs = bundle.manifest.programs as Program[];
+  const sequences = bundle.manifest.sequences as Sequence[];
+  const songSteps = bundle.manifest.songs as SongStep[];
+  const firstProgram = programs[0];
+  const firstSequence = sequences[0];
+  set({
+    recordedSamples: samples,
+    programs,
+    currentProgramId: firstProgram?.id ?? "",
+    padAssignments: firstProgram?.padAssignments ?? createPadAssignments(),
+    padMixer: firstProgram?.padMixer ?? createPadMixer(),
+    activeProgram: firstProgram?.name ?? "",
+    sequences,
+    currentSequence: firstSequence?.id ?? "",
+    stepEvents: firstSequence?.events ?? [],
+    sequenceName: firstSequence?.name ?? "",
+    songSteps,
+    currentSongStepIndex: 0,
+    selectedSongStepIndex: 0,
+    ...applyGlobalSettings(bundle.manifest.globalSettings),
+    lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief`,
+  });
+}
+
+function hydrateAllBundle(
+  bundle: Extract<LoadedBundle, { type: "all" }>,
+  set: (partial: Partial<AppState>) => void,
+) {
+  const sequences = bundle.manifest.sequences as Sequence[];
+  const songSteps = bundle.manifest.songs as SongStep[];
+  const firstSequence = sequences[0];
+  set({
+    sequences,
+    currentSequence: firstSequence?.id ?? "",
+    stepEvents: firstSequence?.events ?? [],
+    sequenceName: firstSequence?.name ?? "",
+    songSteps,
+    currentSongStepIndex: 0,
+    selectedSongStepIndex: 0,
+    ...applyGlobalSettings(bundle.manifest.globalSettings),
+    lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief-all`,
+  });
+}
+
+function hydrateSeqBundle(
+  bundle: Extract<LoadedBundle, { type: "seq" }>,
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+  targetSequenceId?: string,
+) {
+  const state = get();
+  const incoming = bundle.manifest.sequence as Sequence;
+  const targetId: string = targetSequenceId ?? state.currentSequence;
+  const replaced: Sequence = { ...incoming, id: targetId };
+  const sequences = state.sequences.some((seq) => seq.id === targetId)
+    ? state.sequences.map((seq) => (seq.id === targetId ? replaced : seq))
+    : [...state.sequences, replaced];
+  set({
+    sequences,
+    currentSequence: targetId,
+    stepEvents: replaced.events,
+    sequenceName: replaced.name,
+    lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief-seq`,
+  });
+}
 
 samplerEngine.onStatusChange((audioStatus) => {
   useAppStore.setState({ audioStatus });
@@ -3060,6 +3345,7 @@ function endRecTakeSnapshot(state: AppState): Partial<AppState> {
     redoHistory: [],
     pendingRecTake: null,
     lastAction: state.pendingRecTake.label,
+    projectVersion: state.projectVersion + 1,
   };
 }
 
@@ -3081,7 +3367,11 @@ function computeRecordTransitionPatch(
 ): Partial<AppState> {
   const isRec = options.action === "REC";
   const sessionPatch = isRec ? startRecordingSession(state) : {};
-  const takeSnapshotPatch = isRec ? beginRecTakeSnapshot(state) : {};
+  // REC TAKE snapshot is captured at user-click paths (toggleSequenceRecording,
+  // requestTransportStartImpl, triggerPad anticipation) — never here, because
+  // this function is also called from tickTransport count-in end (audio scheduling path).
+  // beginRecTakeSnapshot is idempotent so the existing pendingRecTake (set at click time)
+  // carries through to recording start without re-cloning state.
   const basePatch: Partial<AppState> = {
     transportPhase: "IDLE",
     transportPendingAction: null,
@@ -3092,7 +3382,6 @@ function computeRecordTransitionPatch(
     overdubEnabled: isRec ? false : state.overdubEnabled,
     transportAnnouncement: isRec ? "RECORDING..." : "",
     ...sessionPatch,
-    ...takeSnapshotPatch,
   };
   if (options.additionalEvent) {
     const events = [...state.stepEvents, options.additionalEvent].sort(
@@ -3172,18 +3461,20 @@ function restoreSnapshot(snapshot: UndoSnapshot): Partial<AppState> {
   };
 }
 
-function recordUndo(state: AppState, label: string, bucket: string): Pick<AppState, "undoHistory" | "redoHistory" | "lastAction"> {
+function recordUndo(state: AppState, label: string, bucket: string): Pick<AppState, "undoHistory" | "redoHistory" | "lastAction" | "projectVersion"> {
   const now = performance.now();
+  const nextVersion = state.projectVersion + 1;
   const last = state.undoHistory.at(-1);
   if (last && last.bucket === bucket && now - last.timestamp < UNDO_ACCUMULATE_MS) {
     const updated = state.undoHistory.slice(0, -1).concat({ ...last, label, timestamp: now });
-    return { undoHistory: updated, redoHistory: [], lastAction: label };
+    return { undoHistory: updated, redoHistory: [], lastAction: label, projectVersion: nextVersion };
   }
   const entry: UndoEntry = { label, snapshot: captureSnapshot(state), timestamp: now, bucket };
   return {
     undoHistory: [...state.undoHistory, entry].slice(-UNDO_DEPTH),
     redoHistory: [],
     lastAction: label,
+    projectVersion: nextVersion,
   };
 }
 
@@ -5016,7 +5307,9 @@ function startTransportAction(
   if (action === "PLAY") {
     setState({ ...patch, isPlaying: true, bar: "001.01.00", currentBar: 1, currentStep: 1, currentStepIndex: -1 });
   } else {
-    const sessionPatch = startRecordingSession(getState());
+    const takeStateBefore = getState();
+    const sessionPatch = startRecordingSession(takeStateBefore);
+    const takeSnapshotPatch = beginRecTakeSnapshot(takeStateBefore);
     setState({
       ...patch,
       isPlaying: true,
@@ -5027,6 +5320,7 @@ function startTransportAction(
       currentStep: 1,
       currentStepIndex: -1,
       ...sessionPatch,
+      ...takeSnapshotPatch,
     });
   }
   // Fire first step immediately so sequence beat 1 aligns with downbeat instead of arriving

@@ -99,6 +99,168 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 9 — 2026-05-20 — DISK save/load (Phase 1–6) + Session 8.1 hotfix confirmed working
+
+### What was attempted
+
+Two streams of work in one session:
+
+**Stream A — Stage 9 DISK save/load**, full spec from Marek (~150-line message). Decisions pre-locked:
+- ZIP container (JSZip), `.lthief` / `.lthief-all` / `.lthief-seq` extensions.
+- Samples EMBED as WAV 16-bit PCM inside ZIP under `samples/`.
+- Schema versioning from day 1 with migrations framework.
+- Autosave to IndexedDB, debounce 10s, `requestIdleCallback`, never on hot path.
+- 6 phases: schema/serialization core → save formats → load formats + migrations → autosave → DISK screen UI rewire → NEW PROJECT + dirty guard.
+
+**Stream B — Session 8.1 hotfix verification**. Marek tested the architectural fix (move REC TAKE snapshot OFF `tickTransport` audio path INTO user-click paths) + diagnostic disabling of `recordUndo` in `addStepEventAtCurrentStep` / `createStepEventForPad`. Confirmed working: REC nagrywanie OK, STEP ADD EVENT OK, save+load OK.
+
+### What worked
+
+**DISK Phase 1 — schema + serialization core** (`src/disk/`):
+- `types.ts` — `ProjectManifest`, `AllManifest`, `SeqManifest`, `SerializedSample`, `GlobalSettings`, `BaseManifest` union types. `CURRENT_SCHEMA_VERSION = 1`.
+- `wavCodec.ts` — `encodeAudioBufferToWav(buffer): ArrayBuffer` (16-bit PCM, full buffer) + `decodeWavToAudioBuffer(bytes, ctx)` (Web Audio decode).
+- `zipContainer.ts` — `writeProjectZip(manifest, samples): Promise<Blob>` (DEFLATE level 6) + `readProjectZip(blob)` extracting manifest + sample ArrayBuffers.
+- `migrations/index.ts` — `applyMigrations(manifest)` chain. Walks `vN -> v(N+1)` until reaching current. Throws fast on missing migration or version mismatch. `MIGRATIONS: Migration[]` array empty for v1; structured so future migrations register here.
+- `index.ts` re-exports.
+
+**DISK Phase 2 — three save formats**:
+- `serializers/project.ts` (`serializeProject({ samples, programs, sequences, songs, globalSettings, resolveAudioBuffer })` → `{ manifest, sampleEntries }`). Iterates samples, calls `encodeAudioBufferToWav`, writes filenames `${NNN}_${sanitized_name}.wav`.
+- `serializers/all.ts` (`serializeAll(...)` → `AllManifest`). No samples.
+- `serializers/seq.ts` (`serializeSeq(...)` → `SeqManifest`). Single sequence.
+- `saveAs.ts` — `saveBlobAs(blob, filename)` via `<a download>` + `URL.createObjectURL`.
+- Store actions: `saveProjectFile(name)`, `saveAllFile(name)`, `saveSeqFile(name, sequenceId?)`. All three sanitize filename, write blob, set `lastAudioMessage` + `lastSavedProjectVersion` (sets dirty=false post-save).
+
+**DISK Phase 3 — three load formats + migration framework**:
+- `loader.ts` — `loadFromBlob(blob, { decodeAudio, onProgress })` returns discriminated union `LoadedBundle`. Sequential sample decode with progress callbacks (`READ` / `MIGRATE` / `DECODE` / `DONE`).
+- Store action `loadFile(file: Blob, options?)` accepts Blob (File extends Blob) so autosave-restore can pass the IDB blob directly.
+- Hydrate helpers `hydrateProjectBundle` / `hydrateAllBundle` / `hydrateSeqBundle`. Register samples via `registerSampleAudio` → AudioBuffer goes into `sampleLibrary`. State patch replaces programs/sequences/songs/settings as appropriate per type.
+
+**DISK Phase 4 — autosave (IndexedDB + ric + resume prompt)**:
+- `autosaveDb.ts` — IDB wrapper. DB `loopthief`, store `autosave`, key `current`. `writeAutosave(blob)`, `readAutosave()`, `clearAutosave()`.
+- `autosaveScheduler.ts` — `scheduleAutosave(produceBlob)` with 10s debounce + `requestIdleCallback` (fallback `setTimeout(50)` if browser lacks ric). Reset on each call. `inflight` guard prevents overlapping saves.
+- New state field `projectVersion: number`. Bumped in `recordUndo` and `endRecTakeSnapshot`. Subscribers can detect project changes without inspecting deep slices.
+- App.tsx subscribes to `useAppStore.subscribe` and on `projectVersion` change calls `scheduleAutosave(...)` with a closure over `serializeProject` + `writeProjectZip`. Never on hot path (debounce + ric defer to idle).
+- Boot resume prompt via `window.confirm` (placeholder until in-app modal). OK = `loadFile(blob)`. Cancel = `clearAutosave()`. Uses `promptedResumeRef` to fire only once.
+
+**DISK Phase 5 — DISK screen UI extension**:
+- Extended existing `DiskScreen.tsx` rather than rewriting (sacred-zone rule). Added a "PROJECT I/O" section in the right column with: filename input, three SAVE buttons (PROJECT/ALL/SEQ), LOAD button (hidden file picker triggers via ref), NEW PROJECT button. Sample-memory utilities preserved.
+- Did NOT implement the full mode-cycle UI (LOAD/SAVE/NEW tab cycle via F1) from Marek's spec. Less risky to extend in place. Full mode-cycle rewrite available as a follow-up task if Marek wants it.
+
+**DISK Phase 6 — NEW PROJECT + dirty guard**:
+- New state field `lastSavedProjectVersion: number`. Dirty when `projectVersion > lastSavedProjectVersion`. Each successful save sets `lastSavedProjectVersion = projectVersion`. PROJECT save also `clearAutosave()` after success.
+- New action `newProject()`. If dirty, `window.confirm` blocks (placeholder for 3-way modal). On confirm: `createBlankProjectState()` patch resets to empty project. Clears autosave.
+- Wired NEW PROJECT button in DISK screen.
+
+**Hotfix confirmation**:
+- REC nagrywanie + step ADD + save + load all confirmed working by Marek. Architectural fix (move snapshot off `tickTransport` path) was sufficient.
+- `recordUndo` remains disabled in `addStepEventAtCurrentStep` + `createStepEventForPad` (the DIAGNOSTIC comments). Marek didn't ask to re-enable. Open issue logged below.
+
+Build clean (`tsc + vite build`) after every phase. JSZip added ~100 kB to main chunk; chunk-size warning issued but acceptable.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading blocked** in this environment (`pdftoppm not found`). Could not consult AKAI manuals (MPC2000XL Ch.10, MPC3000 Ch.9, MPC5000 DISK mode, MPC Sample Project section). Implementation followed Marek's detailed spec; no independent cross-check.
+- **TypeScript `never` narrowing** caught in `updateSelectedPadParam` label dispatch (Session 8 work). Cast workaround: `(field as string).toUpperCase()` in the catch-all branch. Same pattern hit in `zipContainer.ts` for manifest type validation — fixed via `(manifest as { type?: unknown }).type` narrowing.
+- **Zustand 5 `subscribeWithSelector` middleware attempt** caused TypeScript errors in `useAppStore` due to the generic `StateCreator` requirements not matching the inline `(set, get) => ({...})` callback. Reverted to plain `create<AppState>(...)` and used manual `lastVersion` comparison inside the listener. Simpler, fewer moving parts.
+- **`requestIdleCallback` lib type collision**. Tried to `declare global { interface Window { requestIdleCallback?: ... } }` in `autosaveScheduler.ts`, but lib.dom.d.ts already defines it. Replaced with inline `(window as unknown as { requestIdleCallback?: ... })` cast. Less elegant; works.
+- **Hotfix root cause was NOT JSZip / autosave**. Initially considered whether the autosave subscribe could be triggering during count-in. Confirmed it wasn't — `projectVersion` doesn't bump at REC start, so subscribe early-returns. The actual culprit was `captureSnapshot` inside `computeRecordTransitionPatch` being called from `tickTransport` (audio scheduling 40 Hz callback). Architectural fix moved it to user-click paths. Marek tested → confirmed.
+- **`recordUndo` for STEP ADD EVENT remains disabled**. The diagnostic worked (no crash now), but this means ADD EVENT actions are NOT under undo until re-enabled. Re-enabling will likely require the cheaper-capture fix (Option A: reference copy instead of structuredClone) so the click handler stays responsive.
+- **NEW PROJECT 3-way confirm not implemented** — used 2-way `window.confirm` (OK/Cancel). Marek's spec said YES/NO/CANCEL. Browser native confirm is 2-way. Full in-app modal deferred.
+- **DISK screen full mode-cycle UI not implemented** — extended existing screen with PROJECT I/O panel instead of rewriting the MPC-style LOAD/SAVE/NEW tabs + file type filter. Functionally complete (save + load + new project all reachable) but cosmetically not the full MPC look Marek's spec described.
+
+### Decisions made
+
+- **JSZip is the chosen ZIP library**. Confirmed pre-implementation via Marek's spec.
+- **WAV 16-bit PCM is the embed format** (confirmed via AskUserQuestion: "WAV 16-bit PCM Recommended").
+- **`requestIdleCallback` is the autosave scheduling mechanism** (confirmed via AskUserQuestion).
+- **Native `<a download>` is the save trigger** (confirmed via AskUserQuestion). Zero deps beyond JSZip.
+- **`schemaVersion: 1` from day 1**. Migrations chain framework empty but functional. Future migrations registered in `MIGRATIONS` array in order.
+- **Samples saved as `${NNN}_${sanitized}.wav`** to avoid filename collisions. `NNN` is zero-padded index in sample list.
+- **`pendingRecTake` lives in store state** (NOT closure or module-level). Survives across `set` calls cleanly. Inspectable. Discarded on `stopPlayback` / disarm.
+- **REC TAKE snapshot at user-click path only**. Architectural rule codified in comment inside `computeRecordTransitionPatch`. `beginRecTakeSnapshot` is idempotent so multiple call paths converge safely.
+- **`lastSavedProjectVersion` tracks dirty state** (`projectVersion > lastSavedProjectVersion` = dirty). Cleared on successful save.
+- **CHOP slice editing intentionally NOT under undo** per AKAI MPC Sample manual — confirmed in Session 8.
+
+### Open issues / followups
+
+- **Re-enable `recordUndo` in STEP ADD EVENT actions** (`addStepEventAtCurrentStep`, `createStepEventForPad` in `useAppStore.ts:2470-2480`). Marked DIAGNOSTIC TODO. Re-enabling will likely need cheaper `captureSnapshot` — recommend Option A: replace `structuredClone(...)` with reference-copy. The store discipline is immutable (all mutations produce new arrays/objects), so reference-copy is safe and reduces snapshot time from O(state size) to O(1).
+- **`captureSnapshot` size measurement** — Marek's spec suggested `performance.now()` brackets around the clone, error if >5ms. Worth adding a dev-only perf log.
+- **Full MPC-style DISK screen** (LOAD/SAVE/NEW mode cycle + PROJECT/ALL/SEQ/SAMPLE filter tabs) — not implemented; extended existing screen instead. Open task if Marek wants the full look.
+- **NEW PROJECT 3-way confirm modal** — current uses 2-way `window.confirm`. Full in-app modal with YES/NO/CANCEL deferred.
+- **REC TAKE label uses START seq/track** — Session 8 decision. If user track-switches mid-recording, label reflects original track, not latest. Worth confirming during Marek's normal workflow.
+- **Schema migration test** — framework exists but no dummy v2 migration to sanity-check the chain. Add when first real migration is needed.
+- **JSZip bundle ~100 kB to main chunk** — chunk-size warning issued. Could lazy-import to defer until first save/load action. Low priority.
+- **PDF manual reading still blocked** in this environment. Future cross-checks against AKAI manuals would need a different reader or extracted text.
+
+### Files modified
+
+- `src/disk/` — new module (8 files): `types.ts`, `wavCodec.ts`, `zipContainer.ts`, `saveAs.ts`, `loader.ts`, `autosaveDb.ts`, `autosaveScheduler.ts`, `migrations/index.ts`, `serializers/{project,all,seq}.ts`, `index.ts`.
+- `src/store/useAppStore.ts` — disk module imports, `projectVersion` + `lastSavedProjectVersion` + `pendingRecTake` state fields, `saveProjectFile`/`saveAllFile`/`saveSeqFile`/`loadFile`/`newProject` actions, hydrate helpers, `beginRecTakeSnapshot` wired to user-click paths (toggleSequenceRecording count-in + non-playing + startTransportAction REC) and removed from `computeRecordTransitionPatch`, `recordUndo` disabled in two STEP ADD actions (DIAGNOSTIC TODO).
+- `src/App.tsx` — autosave subscribe + boot resume prompt.
+- `src/screens/DiskScreen.tsx` — PROJECT I/O panel (filename input + SAVE PROJECT/ALL/SEQ buttons + LOAD file picker + NEW PROJECT button). Existing sample memory utilities preserved.
+- `docs/04_disk/MANIFEST_SCHEMA_V1.md` — new schema reference doc (manifest fields per type, ZIP layout, loader pipeline, autosave behavior, sanitization rules, what's NOT in schema, reserved for future versions).
+- `package.json` / `package-lock.json` — JSZip dependency added.
+
+---
+
+## Session 8.1 HOTFIX — 2026-05-20 — REC freeze + STEP ADD EVENT regression diagnosis
+
+### What was attempted
+
+Marek reported critical regression post-Session 8 commit:
+1. **REC freeze**: count-in counts to 4, then app freezes + audio stuck in loop ("TRRRRRR").
+2. **STEP ADD EVENT no-op or crash**.
+
+Marek's hypothesis: Session 8's `recordUndo()` / `captureSnapshot()` wiring put heavy synchronous structuredClone on audio scheduling hot path. Specifically `beginRecTakeSnapshot` was called from `computeRecordTransitionPatch`, which is invoked from `tickTransport` at count-in end — the audio scheduling code.
+
+Two-pronged response:
+- **Architectural fix for REC**: move snapshot OUT of `computeRecordTransitionPatch` (audio path), INTO user-click paths (toggleSequenceRecording, startTransportAction).
+- **Diagnostic for STEP**: temporarily disable `recordUndo` in `addStepEventAtCurrentStep` + `createStepEventForPad` so Marek can confirm whether undo wiring is the cause.
+
+### What worked
+
+- **Removed `beginRecTakeSnapshot` call from `computeRecordTransitionPatch`** (`useAppStore.ts:3364-ish`). Replaced with a comment explaining why: this function is reachable from `tickTransport` count-in end (audio scheduling), and `captureSnapshot` is a structuredClone of the entire project state — too heavy to run synchronously there. `beginRecTakeSnapshot` is idempotent (early-returns when `pendingRecTake` is already set), so call sites that pre-snapshot at user-click time pass through cleanly.
+- **Added `beginRecTakeSnapshot` to `toggleSequenceRecording` count-in setup branch** (`useAppStore.ts:825-836`). When user clicks REC while playing with count-in enabled, snapshot happens NOW (sync work on click handler) rather than at count-in end. By the time `tickTransport` count-in completes, `pendingRecTake` is already populated and the audio path doesn't allocate.
+- **Added `beginRecTakeSnapshot` to `toggleSequenceRecording` not-playing branch** before `requestTransportStartImpl("REC", ...)` call. Covers the case where REC is pressed when stopped — snapshot at click, then transport starts (which may go through WAIT_PAD or COUNT_IN setup).
+- **Added `beginRecTakeSnapshot` to `startTransportAction` REC branch** (`useAppStore.ts:5310-5325`). Covers the WAIT_PAD → pad-click → REC path (pad click is user-initiated, so sync snapshot is fine).
+- **Disabled `recordUndo` in `addStepEventAtCurrentStep` + `createStepEventForPad`** as diagnostic (`useAppStore.ts:2470-2480`). TODO comment added: "Re-enable once root cause confirmed". This lets Marek isolate whether STEP ADD EVENT crash is caused by `captureSnapshot` itself or by something else in the spread/wiring.
+- Build clean (`tsc + vite build`) — TypeScript pass + Vite bundle.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** in environment — could not consult AKAI manuals to cross-check MPC2000XL "UNDO SEQ" semantics for REC TAKE.
+- **Could not test in browser** — Marek needs to verify the fix actually unfreezes REC. The architectural fix is theoretically correct (move heavy work off audio path), but if `captureSnapshot` is ALSO heavy on click path (e.g., state is genuinely 5+ MB), the freeze would just move from "during count-in" to "during REC button click". In that case, deeper fix needed: defer snapshot via `queueMicrotask`, or replace `structuredClone` with reference-copy (state is immutable in this codebase so references stay stable).
+- **Did NOT speed up captureSnapshot** per Marek's explicit "NIE FIXUJ przez przyspieszanie captureSnapshot". Took the architectural route only.
+- **Did NOT touch the autosave subscribe in App.tsx**. It listens to every `setState` and early-returns when `projectVersion` is unchanged — should be cheap. If it turns out to be a factor (high-frequency triggering during tickStepPlayback), revisit. Marek's diagnostic plan didn't flag this so leaving alone.
+
+### Decisions made
+
+- **REC TAKE snapshot MUST live on user-click code path**, never on audio scheduling (tickTransport, tickStepPlayback, etc.). Codified in comment inside `computeRecordTransitionPatch`.
+- **`beginRecTakeSnapshot` remains idempotent** (early-return when `pendingRecTake` is set). This means multiple call paths converge safely — explicit defensive design.
+- **Diagnostic disabling of `recordUndo` in STEP ADD EVENT actions is temporary**. Re-enable in next session ONCE Marek confirms whether STEP ADD EVENT works without it. If it works → `recordUndo`/`captureSnapshot` was indeed the cause; need deeper fix (async snapshot, or reference-only snapshot). If it still doesn't work → look elsewhere (UI wiring, race condition, etc.).
+- **STOP/cancel during count-in** still pushes empty REC TAKE entry to undoHistory via `endRecTakeSnapshot`. Acceptable: undo'ing an empty take is a no-op for the user, no harm done.
+
+### Open issues / followups
+
+- **Verify in browser**: REC + count-in completes without freeze, audio plays without TRRRRRR glitch. STEP ADD EVENT creates event successfully. If both work, hypothesis confirmed.
+- **Re-enable `recordUndo` in STEP ADD EVENT** after diagnosis, once architectural fix is in place:
+  - Option A: keep using `recordUndo` but with cheaper snapshot — replace `structuredClone(...)` with reference-copy in `captureSnapshot`. Safe given the codebase's immutable update discipline. Single-line change.
+  - Option B: defer `captureSnapshot` via `queueMicrotask` inside `recordUndo`. More complex; the snapshot becomes async-filled inside the UndoEntry. Affects undo timing semantics.
+  - Recommend Option A — simplest, fastest, no semantic change.
+- **`captureSnapshot` size audit** — measure actual state size with `performance.now()` brackets around `structuredClone`. Marek's spec mentions "performance.measure() — jeśli >5ms na main threadzie to BŁĄD, defer". Worth adding a dev-only performance log.
+- **Autosave subscribe overhead** — `useAppStore.subscribe` fires on every `setState`. The listener does `if (projectVersion === lastVersion) return`. This is cheap but still a function call per setState. During recording (40 Hz tickTransport + 6 Hz tickStepPlayback at 90 BPM), this is ~50 listener calls/sec. Negligible but worth knowing.
+- **The autosave produceBlob callback is heavy** — it calls `encodeAudioBufferToWav` for every sample synchronously. For 10 × 2s samples (~880 KB each), that's ~10 MB of WAV encoding + JSZip DEFLATE compression. Should be fine inside `requestIdleCallback` but if user has many large samples and `requestIdleCallback` fires at an inopportune moment, could cause a stutter. Investigate if Marek reports autosave-related glitches.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `toggleSequenceRecording` — added `beginRecTakeSnapshot` to count-in setup + before `requestTransportStartImpl`
+  - `computeRecordTransitionPatch` — removed `beginRecTakeSnapshot` call + added explanatory comment
+  - `startTransportAction` REC branch — added `beginRecTakeSnapshot`
+  - `addStepEventAtCurrentStep` + `createStepEventForPad` — `recordUndo` calls commented out with DIAGNOSTIC TODO
+
+---
+
 ## Session 8 — 2026-05-20 — Undo Phase 2–5 complete: STEP/PROGRAM/MIX/SEQ/SONG actions, REC take undo, Ctrl+Z/Y shortcuts
 
 ### What was attempted
