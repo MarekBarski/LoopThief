@@ -39,6 +39,7 @@ export function MainScreen() {
   const setCurrentTrackName = useAppStore((state) => state.setCurrentTrackName);
   const setCurrentProgramName = useAppStore((state) => state.setCurrentProgramName);
   const openUtilityWorkflow = useAppStore((state) => state.openUtilityWorkflow);
+  const openTimeSigWindow = useAppStore((state) => state.openTimeSigWindow);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
 
   const status =
@@ -111,6 +112,7 @@ export function MainScreen() {
                 if (button === "F3 TRACK") openUtilityWorkflow("UTILITY_TRACK_MUTE");
                 if (button === "F4 PROGRAM") setActiveScreen("PROGRAM");
                 if (button === "F5 SONG") openUtilityWorkflow("SONG");
+                if (button === "F6 WINDOW") openTimeSigWindow();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >

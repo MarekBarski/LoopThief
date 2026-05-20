@@ -42,6 +42,24 @@ export function StepScreen() {
   const cycleSelectedEventAppliedParameter = useAppStore((state) => state.cycleSelectedEventAppliedParameter);
   const adjustSelectedEventAppliedValue = useAppStore((state) => state.adjustSelectedEventAppliedValue);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
+  const sequences = useAppStore((state) => state.sequences);
+  const currentSequence = useAppStore((state) => state.currentSequence);
+
+  const currentSequenceObj = sequences.find((s) => s.id === currentSequence);
+  const currentBarTs = (() => {
+    if (!currentSequenceObj) return null;
+    const changes = currentSequenceObj.timeSignatureChanges ?? [];
+    let resolved = changes[0];
+    const idx = Math.max(0, currentBar - 1);
+    for (const c of changes) {
+      if (c && c.fromBar <= idx) resolved = c;
+      else break;
+    }
+    return resolved ? `${resolved.num}/${resolved.den}` : null;
+  })();
+  const barLabel = currentBarTs
+    ? `${bar}   ${currentBarTs}`
+    : bar;
 
   const trackEvents = useMemo(
     () => stepEvents.filter((event) => event.trackId === currentTrackId),
@@ -192,7 +210,7 @@ export function StepScreen() {
           </section>
 
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
-            <Info label="BAR" value={bar} />
+            <Info label="BAR" value={barLabel} />
             <Info label="TC" value={timingCorrect} />
             <Info label="SWING" value={`${swing}%`} />
             <Info label="TRACK" value={activeTrack} />

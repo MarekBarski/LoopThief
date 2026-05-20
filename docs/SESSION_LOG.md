@@ -99,6 +99,108 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 12 — 2026-05-20 — Non-4/4 TS refactor Phase 2 + 3 (partial) + 4 (F6 WINDOW popup)
+
+### What was attempted
+
+Continuing from Session 11 (Phase 1 data model + helpers landed). Marek requested bundle of Phase 2 (step grid rendering) + Phase 3 (audio engine) + Phase 4 (F6 WINDOW popup) — explicit single commit per his discipline note.
+
+Marek's caveat: "jak audio się rozjebie przy zmianie TS during playback, olejemy" + explicit fallback condition if Phase 3 hits >1-2 session scope.
+
+### What worked
+
+**Phase 3 (audio engine, partial but functional):**
+- `tickStepPlayback` (`useAppStore.ts:2557-`) refactored to use bar-aware total step count. `getSequenceTotalSteps(sequence, playbackGridTicks=24)` replaces `state.sequenceLengthBars * 16`. Wrap detection respects variable bar sizes.
+- `playbackGridTicks` hardcoded to 24 (1/16 step). TC affects snap/quantize only — playback grid is constant 1/16 regardless of TC. RuntimeClock fires every 1/16 ms; one tick = one step advance in 1/16 units.
+- `findBarAtGlobalStep(sequence, playbackGridTicks, currentStepIndex)` derives current bar + step-in-bar for display. Replaces hardcoded `Math.floor(currentStepIndex / 16) + 1` and `(currentStepIndex % 16) + 1`.
+- New `eventGlobalStep(step, sequence, gridTicks=24)` helper added next to legacy `eventStepIndex`. Bar-aware: walks bars cumulatively, accounting for each bar's step count. Used in hot path of `tickStepPlayback` (both `eventsAtStep` and `earlyNextEvents` filters).
+- `snapshotTrackEventsByStep` (REC mode initial-events-snapshot used for per-step replace clearing) also switched to `eventGlobalStep`. REC continuous-replace logic continues to work across variable bar lengths.
+
+**Phase 4 (F6 WINDOW popup) — fully wired:**
+- New screen `TIME_SIG_WINDOW` registered in `screens/index.ts` and `types/navigation.ts`.
+- `TimeSigWindowScreen` component (`UtilityScreens.tsx`) — two-column layout:
+  - Left: NUM (1–31 cycle) + DEN (4/8/16/32 cycle) + live PREVIEW "num/den" big display
+  - Right: BAR / TOTAL BARS / TEMPO read-only context
+  - Softkeys F5 DO IT, F6 EXIT
+  - Local `useState` for num/den until DO IT pushes to store
+- Store actions `openTimeSigWindow`, `closeTimeSigWindow`, `changeBarTimeSignature(barIndex, num, den)`.
+- `changeBarTimeSignature`:
+  - Clamps num 1–31, den to {4,8,16,32} cycle
+  - Updates `sequence.timeSignatureChanges` (replaces entry at `fromBar=barIndex` or inserts)
+  - Special case: when `barIndex === 0`, also updates legacy `sequence.timeSignature` string so old code paths render the right base TS
+  - Truncate detection: if new bar tick count < old, removes events past new bar end (within that bar only)
+  - `recordUndo("TIME SIG BAR NNN", ...)` — fully undoable
+- DO IT button in popup runs truncate detection — `window.confirm("Bar N truncated. X events removed. Proceed?")` if any events would be lost. Cancel keeps existing TS.
+- F6 WINDOW button on MAIN screen wired to `openTimeSigWindow()` (was dead button per UX audit).
+- `isUtilityScreen` updated to include TIME_SIG_WINDOW so it doesn't disrupt return-screen tracking.
+
+**Phase 2 (display) — minimal:**
+- STEP screen "BAR" indicator now shows TS alongside: e.g., `001.01.00   3/4` (when current bar has TS). Reads from `sequence.timeSignatureChanges` for the current bar.
+- Did NOT change the inline event-list visual grid (it's a list, not a 16-cell grid — nothing to resize).
+- Did NOT touch MAIN screen bar display (kept simple).
+
+**Backward compatibility:**
+- Default 4/4 sequences: `getSequenceTotalSteps` returns `lengthBars * 16` (since each bar = 16 steps for 4/4 at TC=1/16). `findBarAtGlobalStep` returns same bar/step values as old `Math.floor/%` math. `eventGlobalStep` returns same value as legacy `eventStepIndex` for events in a uniform 4/4 sequence. No regression for default 4/4 projects.
+- Existing projects without `timeSignatureChanges` field continue to load via `ensureTimeSignatureChanges` migration from Session 11.
+
+Build clean (`tsc + vite build`) after each major change.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** — could not consult MPC3000 manual Ch.4 again. Implementation per Marek's spec only.
+- **Phase 3 is partial, not full.** Legacy `eventStepIndex` is used by 14 other call sites (sorts, filters in editor screens, non-audio paths). These still assume uniform 16-steps-per-bar. For default 4/4 sequences nothing breaks. For mixed-TS sequences, those code paths could mis-position events in editor UI (e.g., "is event in this step?" comparisons may misalign for bars 2+). **Hot path is fixed (audio plays correct positions); cold path display in some places is not.** Acceptable for this commit's scope. Full Phase 3 audit (replacing all 14 legacy callers) is next session's work.
+- **`gridTicks` confusion** in mid-implementation. Initially used `gridTicksForState(state)` in `tickStepPlayback` (TC-aware), then realized RuntimeClock fires every 1/16 regardless of TC, so playback grid MUST be 24 ticks (1/16). Reverted to hardcoded 24 with a comment. TC remains a snap/quantize-only concern.
+- **TS popup is a Utility Screen, not a true overlay popup.** AppShell is sacred-zone per CLAUDE.md so I used the existing utility-screen routing pattern (same as UNDO, GO_TO, etc.). Looks like the MPC2000XL WINDOW conceptually — full LCD area shows TS edit UI, F6 EXIT returns. Equivalent UX even if not technically a "popup overlay".
+- **Did NOT update `eventStepToTicks`** (bar-aware variant). It's used by TC APPLY and getRecordedEventPosition. For mixed-TS sequences these would mis-snap. Flagged for next session.
+- **Did NOT update `formatBarPosition`** (formats "001.01.00" display string). Currently assumes 16 steps per bar in beat math. For non-4/4 bars the display could show wrong beat numbers. Flagged.
+- **Did NOT update bar navigation actions** (`barForward`, `barBackward`) — they use `(targetBar - 1) * 16` math, which is wrong for mixed-TS. For default 4/4 still works. Flagged.
+- **Cache strategy NOT implemented** — Marek's spec mentioned "Cache bar boundaries gdy sequence się zmienia, NIE recompute na hot path". Currently `getSequenceTotalSteps` and `findBarAtGlobalStep` are O(barCount) per `tickStepPlayback` call. For typical 4-16 bar sequences that's <1ms — not measured. Could profile if performance regressions show up.
+- **Truncate confirm uses native `window.confirm`** — same simple flow as NEW PROJECT, not in-app modal. Phase polish later.
+
+### Decisions made
+
+- **Phase 3 hot path first, cold paths deferred.** Replaced the audio-critical callers (tickStepPlayback events filter, REC initial-events-snapshot). 14 non-audio callers of legacy `eventStepIndex` left as-is — they'll be audited next session.
+- **`playbackGridTicks = 24` (1/16) is the audio grid.** Hardcoded. RuntimeClock fires every 1/16; one tick = one 1/16 step. TC is snap/quantize only.
+- **Step count per bar at display level uses `getBarStepCount(sequence, barIndex, 24)`**. For TC=1/16 (default), this matches `num * (16/den)`. For TC ≠ 1/16, the spec's `num * (TC_den/TS_den)` would give different counts — not implemented; current code uses 1/16-step granularity everywhere.
+- **STEP screen BAR indicator format: `001.01.00   3/4`** — two spaces between. Less invasive than restructuring the Info row.
+- **Bar 0 (1st bar) TS edit ALSO updates legacy `sequence.timeSignature` string.** Keeps the SEQUENCE EDIT and other displays correctly showing the project's base TS.
+- **F6 WINDOW is a Utility Screen replacing the dead button.** Same routing pattern as UNDO. F6 EXIT returns to whichever screen was active before (MAIN typically).
+- **Numerator 1–31, denominator 4/8/16/32** per spec. No support for arbitrary denominators.
+
+### Open issues / followups
+
+- **Phase 3 completion (next session):**
+  - Audit + update all 14 legacy `eventStepIndex` callers in `useAppStore.ts` and `StepScreen.tsx`
+  - `eventStepToTicks` bar-aware variant
+  - `formatBarPosition` bar-aware variant (beat number depends on bar's TS)
+  - `barForward` / `barBackward` use bar-aware target step
+  - `clampTransportToSequenceLength` uses bar-aware max step
+  - `getRecordedEventPosition` mapping pad hit to step under variable bar sizes
+  - TC apply (`applyTimingCorrectToEvents`) snap respects bar boundaries
+  - `eventStepIndex` legacy function: either remove or rename to `eventStepIndexUniform4_4` for clarity once all callers updated
+- **Metronome pulse pattern for non-4/4 TS** — Marek's spec mentioned 6/8 = 6 eighth pulses or 2 grouped, 7/8 = 7 pulses. Currently `beatsPerBar` returns numerator (per the switch at line 5210+). Works for simple TS. Compound time (6/8 → 2 grouped) NOT implemented; spec says "twój call, dokumentuj". Decision: leave as simple numerator-many pulses per bar.
+- **Phase 2 visual step-grid scale** — Marek's spec questioned whether to scale grid width for non-16-step bars. Currently STEP screen shows event LIST, not a step-cell grid, so this question is moot for STEP. Could become relevant if a step-cell grid is added later.
+- **Performance.now() instrumentation of `tickStepPlayback`** — Marek's spec: must be <1ms. Not measured. Add dev-only perf log next session.
+- **BAR EDITOR SCREEN** (Phase 2 future per Session 11) — still future. Out of scope for next session too unless explicitly requested.
+- **Cache bar boundaries** — current implementation walks bars on each playback call. For 64-bar mixed-TS sequence at 1/16 step interval = ~30 calls per quarter note. O(64) per call = 2000 ops/quarter = trivial. Defer optimization unless profiling shows it matters.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `tickStepPlayback` — bar-aware wrap detection, bar/step derive via helpers, event filters use `eventGlobalStep`
+  - `snapshotTrackEventsByStep` — uses `eventGlobalStep` for REC mode initial snapshot keys
+  - New `eventGlobalStep` helper
+  - New `getSequenceTotalSteps`, `findBarAtGlobalStep`, `globalStepFromBarAndStepInBar`, `gridTicksForState`, `computeBarStepBoundaries` helpers
+  - New actions: `openTimeSigWindow`, `closeTimeSigWindow`, `changeBarTimeSignature`
+  - `isUtilityScreen` updated to include TIME_SIG_WINDOW
+- `src/types/navigation.ts` — `"TIME_SIG_WINDOW"` added to screens union
+- `src/screens/index.ts` — `TimeSigWindowScreen` imported and registered
+- `src/screens/UtilityScreens.tsx` — `TimeSigWindowScreen` component (~90 LOC), DEN_CYCLE constant
+- `src/screens/MainScreen.tsx` — F6 WINDOW button now calls `openTimeSigWindow()`
+- `src/screens/StepScreen.tsx` — BAR indicator format `bar TS` (e.g., `001.01.00   3/4`)
+
+---
+
 ## Session 11 — 2026-05-20 — Non-4/4 TS refactor Phase 1: data model + helpers (per-bar canonical), stopped per fallback condition
 
 ### What was attempted

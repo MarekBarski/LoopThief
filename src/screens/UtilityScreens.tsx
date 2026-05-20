@@ -721,3 +721,105 @@ function Softkeys({ labels, onExit }: { labels: Softkey[]; onExit?: () => void }
     </div>
   );
 }
+
+const DEN_CYCLE: Array<4 | 8 | 16 | 32> = [4, 8, 16, 32];
+
+export function TimeSigWindowScreen() {
+  const sequences = useAppStore((s) => s.sequences);
+  const currentSequence = useAppStore((s) => s.currentSequence);
+  const currentBar = useAppStore((s) => s.currentBar);
+  const bpm = useAppStore((s) => s.bpm);
+  const changeBarTimeSignature = useAppStore((s) => s.changeBarTimeSignature);
+  const closeTimeSigWindow = useAppStore((s) => s.closeTimeSigWindow);
+
+  const sequence = sequences.find((s) => s.id === currentSequence);
+  const barIndex = Math.max(0, currentBar - 1);
+
+  const initial = (() => {
+    if (!sequence) return { num: 4, den: 4 as 4 | 8 | 16 | 32 };
+    const changes = sequence.timeSignatureChanges ?? [];
+    let resolved = changes[0] ?? { fromBar: 0, num: 4, den: 4 as 4 | 8 | 16 | 32 };
+    for (const change of changes) {
+      if (change.fromBar <= barIndex) resolved = change;
+      else break;
+    }
+    return { num: resolved.num, den: resolved.den };
+  })();
+
+  const [num, setNum] = useState(initial.num);
+  const [den, setDen] = useState<4 | 8 | 16 | 32>(initial.den);
+
+  const cycleNum = (delta: number) => setNum((prev) => {
+    const next = prev + delta;
+    if (next < 1) return 1;
+    if (next > 31) return 31;
+    return next;
+  });
+  const cycleDen = (delta: number) => setDen((prev) => {
+    const i = DEN_CYCLE.indexOf(prev);
+    const next = (i + delta + DEN_CYCLE.length) % DEN_CYCLE.length;
+    return DEN_CYCLE[next];
+  });
+
+  const doIt = () => {
+    // Truncate confirm if shorter than current.
+    if (sequence) {
+      const oldChanges = sequence.timeSignatureChanges ?? [];
+      let oldResolved = oldChanges[0];
+      for (const c of oldChanges) {
+        if (c && c.fromBar <= barIndex) oldResolved = c;
+        else break;
+      }
+      const oldBarTicks = oldResolved ? Math.round((oldResolved.num * 384) / oldResolved.den) : 384;
+      const newBarTicks = Math.round((num * 384) / den);
+      if (newBarTicks < oldBarTicks) {
+        const removed = sequence.events.filter((evt) => {
+          const evBar = Number(evt.step.split(".")[0]);
+          if (evBar !== barIndex + 1) return false;
+          const [, beatStr, tickStr] = evt.step.split(".");
+          return (Number(beatStr) - 1) * 96 + Number(tickStr) >= newBarTicks;
+        }).length;
+        if (removed > 0) {
+          const ok = window.confirm(`Bar ${barIndex + 1} will be truncated. ${removed} events removed. Proceed?`);
+          if (!ok) return;
+        }
+      }
+    }
+    changeBarTimeSignature(barIndex, num, den);
+    closeTimeSigWindow();
+  };
+
+  const barLabel = String(barIndex + 1).padStart(3, "0");
+  const totalBars = sequence?.lengthBars ?? 0;
+
+  return (
+    <ScreenFrame title="TIME SIGNATURE" subtitle={`Bar ${barLabel}`}>
+      {shell(
+        <div className="grid h-full grid-cols-[1fr_1fr] gap-[2.3%]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(11px,0.9vw,14px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">TIME SIG</p>
+            <ArrowRow label="NUM" value={String(num)} onPrev={() => cycleNum(-1)} onNext={() => cycleNum(1)} />
+            <ArrowRow label="DEN" value={String(den)} onPrev={() => cycleDen(-1)} onNext={() => cycleDen(1)} />
+            <p className="mt-[8%] text-[#91a477]">PREVIEW</p>
+            <p className="text-[#eef6d8] text-[clamp(20px,1.6vw,28px)]">{num} / {den}</p>
+          </section>
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">CONTEXT</p>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">BAR</span><span className="text-[#eef6d8]">{barLabel}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">TOTAL BARS</span><span className="text-[#eef6d8]">{totalBars}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">TEMPO</span><span className="text-[#eef6d8]">{bpm.toFixed(2)} BPM</span></div>
+          </section>
+        </div>,
+        [
+          "F1 —",
+          "F2 —",
+          "F3 —",
+          "F4 —",
+          { label: "F5 DO IT", onClick: doIt },
+          { label: "F6 EXIT", onClick: closeTimeSigWindow },
+        ],
+        closeTimeSigWindow,
+      )}
+    </ScreenFrame>
+  );
+}

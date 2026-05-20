@@ -287,6 +287,9 @@ type AppState = {
   adjustQuantizeStrength: (delta: number) => void;
   cycleTimingApplyTo: () => void;
   applyTimingCorrectToEvents: () => void;
+  openTimeSigWindow: () => void;
+  closeTimeSigWindow: () => void;
+  changeBarTimeSignature: (barIndex: number, num: number, den: TimeSignatureDenominator) => void;
   resetTimingCorrect: () => void;
   setNoteRepeatEnabled: (enabled: boolean) => void;
   cycleNoteRepeatRate: () => void;
@@ -1694,6 +1697,69 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, action, `tc-apply:${state.timingApplyTo}`),
       };
     }),
+  openTimeSigWindow: () =>
+    set((state) => ({
+      activeScreen: "TIME_SIG_WINDOW",
+      utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
+    })),
+  closeTimeSigWindow: () =>
+    set((state) => ({
+      activeScreen: state.utilityReturnScreen,
+    })),
+  changeBarTimeSignature: (barIndex, num, den) =>
+    set((state) => {
+      const sequence = getCurrentSequence(state);
+      const safeNum = Math.max(1, Math.min(31, Math.floor(num)));
+      const safeDen: TimeSignatureDenominator = den === 4 || den === 8 || den === 16 || den === 32 ? den : 4;
+      const existing = getTimeSignatureChanges(sequence);
+      // Compute previous TS at barIndex for truncate detection.
+      const oldTs = getTimeSignatureAtBar(sequence, barIndex);
+      const newBarTicks = Math.round((safeNum * 384) / safeDen);
+      const oldBarTicks = Math.round((oldTs.num * 384) / oldTs.den);
+      const isTruncate = newBarTicks < oldBarTicks;
+      // Build replacement changes array: drop any existing entry at this fromBar, insert new.
+      const filtered = existing.filter((c) => c.fromBar !== barIndex);
+      const merged = [...filtered, { fromBar: barIndex, num: safeNum, den: safeDen }].sort(
+        (a, b) => a.fromBar - b.fromBar,
+      );
+      // Truncate: drop events in this bar past the new bar's end tick.
+      const barString = String(barIndex + 1).padStart(3, "0");
+      let stepEvents = state.stepEvents;
+      let removedCount = 0;
+      if (isTruncate) {
+        stepEvents = state.stepEvents.filter((evt) => {
+          const evBar = Number(evt.step.split(".")[0]);
+          if (evBar !== barIndex + 1) return true;
+          const [, beatStr, tickStr] = evt.step.split(".");
+          const tickInBar = (Number(beatStr) - 1) * 96 + Number(tickStr);
+          if (tickInBar >= newBarTicks) {
+            removedCount += 1;
+            return false;
+          }
+          return true;
+        });
+      }
+      const sequences = state.sequences.map((seq) =>
+        seq.id === sequence.id
+          ? { ...seq, timeSignatureChanges: merged, events: stepEvents }
+          : seq,
+      );
+      // If this is bar 0, also update the legacy single-TS field on the sequence so older code paths render correctly.
+      if (barIndex === 0) {
+        sequences[sequences.findIndex((s) => s.id === sequence.id)] = {
+          ...sequences[sequences.findIndex((s) => s.id === sequence.id)],
+          timeSignature: `${safeNum}/${safeDen}` as TimeSignature,
+        };
+      }
+      return {
+        sequences,
+        stepEvents,
+        lastAudioMessage: isTruncate
+          ? `TS BAR ${barString} → ${safeNum}/${safeDen} (truncated, ${removedCount} events removed)`
+          : `TS BAR ${barString} → ${safeNum}/${safeDen}`,
+        ...recordUndo(state, `TIME SIG BAR ${barString}`, `ts-bar-${barIndex}:${Date.now()}`),
+      };
+    }),
   resetTimingCorrect: () =>
     set(() => ({
       timingCorrect: "1/16",
@@ -2557,14 +2623,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   tickStepPlayback: () => {
     const state = get();
     if (!state.isPlaying) return;
-    const sequenceLengthSteps = state.sequenceLengthBars * 16;
+    const sequence = getCurrentSequence(state);
+    // Playback always advances in 1/16 steps (RuntimeClock fires every 1/16 ms).
+    // TC affects snap/quantize, not the playback grid.
+    const playbackGridTicks = 24;
+    const sequenceLengthSteps = getSequenceTotalSteps(sequence, playbackGridTicks);
     const previousStepIndex = state.currentStepIndex;
     const currentStepIndex = (previousStepIndex + 1) % sequenceLengthSteps;
     const wrappedThisTick = currentStepIndex === 0 && previousStepIndex >= sequenceLengthSteps - 1;
     sequenceStepStartedAt = performance.now();
     const nextStepIndex = (currentStepIndex + 1) % sequenceLengthSteps;
     const ppqMs = 60_000 / state.bpm / 96;
-    const stepMs = ppqMs * 24;
+    const stepMs = ppqMs * playbackGridTicks;
 
     // REC mode per-step clearing: remove initial-snapshot events for current step + current track.
     let workingStepEvents = state.stepEvents;
@@ -2585,12 +2655,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const eventsAtStep = workingStepEvents.filter((event) =>
-      eventStepIndex(event.step) === currentStepIndex &&
+      eventGlobalStep(event.step, sequence, playbackGridTicks) === currentStepIndex &&
       event.timingOffset >= 0 &&
       shouldPlayStepEvent(state, event)
     );
     const earlyNextEvents = workingStepEvents.filter((event) =>
-      eventStepIndex(event.step) === nextStepIndex &&
+      eventGlobalStep(event.step, sequence, playbackGridTicks) === nextStepIndex &&
       event.timingOffset < 0 &&
       shouldPlayStepEvent(state, event)
     );
@@ -2602,8 +2672,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     earlyNextEvents.forEach((event) =>
       playStepEventFromState(state, event, stepMs + (event.timingOffset + nextSwingTicks) * ppqMs),
     );
-    const currentBar = Math.floor(currentStepIndex / 16) + 1;
-    const currentStep = (currentStepIndex % 16) + 1;
+    const barInfo = findBarAtGlobalStep(sequence, playbackGridTicks, currentStepIndex);
+    const currentBar = barInfo.bar + 1;
+    const currentStep = barInfo.stepInBar + 1;
     const selectedStepEventIndex = nearestEventAtOrAfter(workingStepEvents, currentStepIndex);
 
     const autoSwitchPatch: Partial<AppState> =
@@ -3311,10 +3382,11 @@ const UNDO_DEPTH = 50;
 const UNDO_ACCUMULATE_MS = 500;
 
 function snapshotTrackEventsByStep(state: AppState, trackId: string): Record<number, string[]> {
+  const sequence = getCurrentSequence(state);
   const map: Record<number, string[]> = {};
   state.stepEvents.forEach((evt) => {
     if (evt.trackId !== trackId) return;
-    const idx = eventStepIndex(evt.step);
+    const idx = eventGlobalStep(evt.step, sequence, 24);
     if (!map[idx]) map[idx] = [];
     map[idx].push(evt.id);
   });
@@ -3536,6 +3608,20 @@ function updateCurrentSequenceEvents(state: Pick<AppState, "sequences" | "curren
 function eventStepIndex(step: string) {
   const [bar, beat, tick] = step.split(".").map(Number);
   return (bar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24);
+}
+
+// Bar-aware global step index. Walks bars to account for variable per-bar TS step counts.
+// Use this when the sequence may have mixed time signatures. For default 4/4 sequences,
+// returns the same value as eventStepIndex.
+function eventGlobalStep(step: string, sequence: Sequence, gridTicks: number = 24): number {
+  const [bar, beat, tick] = step.split(".").map(Number);
+  const barIndex = (bar ?? 1) - 1;
+  let cumulative = 0;
+  for (let i = 0; i < barIndex && i < sequence.lengthBars; i += 1) {
+    cumulative += getBarStepCount(sequence, i, gridTicks);
+  }
+  const ticksInBar = ((beat ?? 1) - 1) * 96 + (tick ?? 0);
+  return cumulative + Math.floor(ticksInBar / gridTicks);
 }
 
 function eventStepToTicks(step: string) {
@@ -4938,6 +5024,54 @@ function ensureTimeSignatureChanges(sequence: Sequence): Sequence {
   };
 }
 
+// Cumulative step boundaries: result[i] = total steps from start of sequence through end of bar i.
+function computeBarStepBoundaries(sequence: Sequence, gridTicks: number): number[] {
+  const boundaries: number[] = [];
+  let cumulative = 0;
+  for (let i = 0; i < sequence.lengthBars; i += 1) {
+    cumulative += getBarStepCount(sequence, i, gridTicks);
+    boundaries.push(cumulative);
+  }
+  return boundaries;
+}
+
+function getSequenceTotalSteps(sequence: Sequence, gridTicks: number): number {
+  let total = 0;
+  for (let i = 0; i < sequence.lengthBars; i += 1) total += getBarStepCount(sequence, i, gridTicks);
+  return total;
+}
+
+// Given a global step counter (0-indexed, where each step = one grid unit), returns which bar
+// it lands in and the step offset within that bar.
+function findBarAtGlobalStep(sequence: Sequence, gridTicks: number, globalStep: number): { bar: number; stepInBar: number; barStartStep: number } {
+  if (globalStep < 0) return { bar: 0, stepInBar: 0, barStartStep: 0 };
+  let cumulative = 0;
+  for (let i = 0; i < sequence.lengthBars; i += 1) {
+    const barSteps = getBarStepCount(sequence, i, gridTicks);
+    if (globalStep < cumulative + barSteps) {
+      return { bar: i, stepInBar: globalStep - cumulative, barStartStep: cumulative };
+    }
+    cumulative += barSteps;
+  }
+  const lastBar = Math.max(0, sequence.lengthBars - 1);
+  const lastBarStart = cumulative - getBarStepCount(sequence, lastBar, gridTicks);
+  return { bar: lastBar, stepInBar: getBarStepCount(sequence, lastBar, gridTicks) - 1, barStartStep: lastBarStart };
+}
+
+function globalStepFromBarAndStepInBar(sequence: Sequence, gridTicks: number, barIndex: number, stepInBar: number): number {
+  let cumulative = 0;
+  const safeBar = Math.min(Math.max(0, Math.floor(barIndex)), sequence.lengthBars - 1);
+  for (let i = 0; i < safeBar; i += 1) cumulative += getBarStepCount(sequence, i, gridTicks);
+  const barSteps = getBarStepCount(sequence, safeBar, gridTicks);
+  const safeStep = Math.min(Math.max(0, Math.floor(stepInBar)), Math.max(0, barSteps - 1));
+  return cumulative + safeStep;
+}
+
+// Helper: figure out current TC grid (in ticks) from state.
+function gridTicksForState(state: Pick<AppState, "timingCorrect">): number {
+  return state.timingCorrect === "OFF" ? 24 : timingCorrectGridTicks(state.timingCorrect);
+}
+
 function getTrackName(sequence: Sequence, trackId: string) {
   return sequence.tracks.find((track) => track.id === trackId)?.name ?? trackId;
 }
@@ -5272,7 +5406,7 @@ function createDiskItem(
 }
 
 function isUtilityScreen(screen: ScreenId) {
-  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT";
+  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW";
 }
 
 function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {
