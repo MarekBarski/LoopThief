@@ -99,6 +99,89 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 11 — 2026-05-20 — Non-4/4 TS refactor Phase 1: data model + helpers (per-bar canonical), stopped per fallback condition
+
+### What was attempted
+
+Marek specified non-4/4 step grid refactor + F6 WINDOW TS editor — full per-bar time signature support, MPC2000XL canonical. Five phases planned:
+1. Data model migration (compact representation: `timeSignatureChanges: [{ fromBar, num, den }, ...]`)
+2. Step grid rendering (dynamic step count per bar's TS)
+3. Audio engine (tickStepPlayback bar-aware)
+4. F6 WINDOW popup (replace dead button)
+5. Save/load integration
+
+Spec included an explicit fallback condition: "JEŚLI Phase 1-3 grubsze niż 1-2 sesje, ZATRZYMAJ SIĘ, raport, Marek decyduje" + propose per-sequence fallback.
+
+Pre-implementation scope assessment surfaced to Marek: 27+ hardcoded `* 16` / `% 16` touch points in `useAppStore.ts` + 32 timeSignature references across 6 files. Estimated 13–17h (3–5 sessions) for full per-bar. Per-sequence fallback would be ~4–6h (1 session).
+
+Marek chose per-bar full despite the warning. Started Phase 1.
+
+### What worked
+
+**Phase 1 — data model + helpers (additive, no behavior change):**
+
+- Added `TimeSignatureDenominator = 4 | 8 | 16 | 32` and `TimeSignatureChange = { fromBar: number; num: number; den: TimeSignatureDenominator }` types (`useAppStore.ts:485-493`).
+- Added optional `timeSignatureChanges?: TimeSignatureChange[]` field to `Sequence`. Optional for backward compatibility; helpers default to deriving from legacy `timeSignature` string when missing.
+- 9 helper functions wired (~80 lines near `getCurrentSequence`):
+  - `parseTimeSignature(ts: TimeSignature)` — string `"3/4"` → `{ num, den }`
+  - `getTimeSignatureChanges(sequence)` — returns full changes array, synthesizes one from legacy `timeSignature` if absent
+  - `getTimeSignatureAtBar(sequence, barIndex)` — resolves which TS applies at a given bar
+  - `getBarTickCount(sequence, barIndex)` — ticks per bar (PPQ=96, formula `num * 384 / den`)
+  - `getBarStepCount(sequence, barIndex, gridTicks)` — step count per bar at given TC grid
+  - `getBarStartTick(sequence, barIndex)` — cumulative tick offset
+  - `getSequenceTotalTicks(sequence)` — total ticks across all bars
+  - `getBarAtTick(sequence, tick)` — inverse lookup: `tick` → `{ barIndex, tickWithinBar }`
+  - `ensureTimeSignatureChanges(sequence)` — migration helper, ensures the field is populated
+- `createSequence` factory now populates `timeSignatureChanges: [{ fromBar: 0, num: 4, den: 4 }]` for new sequences.
+- All three load paths (`hydrateProjectBundle`, `hydrateAllBundle`, `hydrateSeqBundle`) call `ensureTimeSignatureChanges` on incoming sequences. Old projects (no field present) auto-upgrade silently on load — no schema version bump needed.
+- Build clean (`tsc + vite build`) — additive only, no consumers yet.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** in this environment (`pdftoppm not found`). Could not consult MPC3000 manual Ch.4 (Time Signature + Insert Blank Bars sections) for canonical verification. Proceeded per Marek's detailed spec.
+- **Mid-phase scope realization:** after Phase 1 was done, fresh review of Phases 2-5 surfaced an architectural coupling that wasn't fully clear upfront — Phase 2 (display) and Phase 3 (audio engine) MUST ship together. Phase 2 alone creates visual/audio divergence (display says 12 steps for 3/4 bar but audio still loops 16-step). And Phase 4 (F6 popup) is shippable as UI shell but useless without 2+3. Decision: stop after Phase 1 and report rather than half-implement.
+- **Did NOT touch any existing code paths.** Phase 1 is pure additive — old `sequence.timeSignature` string and `sequenceLengthBars` integer are still used by all the hardcoded math. New helpers are dormant until consumers migrate.
+- **Audio engine refactor (Phase 3) is genuinely high risk** — same code area where Session 8.1's REC freeze regression lived. Need to allocate time for careful instrumentation + audio test loops, not rush through.
+
+### Decisions made
+
+- **Per-bar canonical chosen over per-sequence fallback.** Marek confirmed via question. Acknowledged 3-5 sessions estimated.
+- **Backward-compatible data model.** Old sequences without `timeSignatureChanges` field continue to work. Migration is lazy via `ensureTimeSignatureChanges` (synthesizes from `timeSignature` when needed).
+- **No schema version bump.** Migration is silent on load. Old `.lthief` files will load and behave identically until consumer code starts using `timeSignatureChanges`. Save side could write the new field in future phase without bumping schema (TS string still serialized as fallback).
+- **TPQ stays at 96.** Helper `getBarTickCount` uses `num * 384 / den` (= num * 96 quarter-notes / den * (den/4)). Works for all even denominators in `{4, 8, 16, 32}`.
+- **Stopped after Phase 1** per fallback condition. Marek to decide whether next session bundles Phases 2+3 (the coupled critical pair) or splits differently.
+
+### Open issues / followups
+
+- **Phase 2 + Phase 3 bundling**: these must ship together. Estimated 6-8h in one focused session. Touch points:
+  - `useAppStore.ts:1396` `clamp(state.currentBar + delta, 1, state.sequenceLengthBars)` — bar nav, OK as-is
+  - `useAppStore.ts:1410` `((state.currentBar - 1) * 16 + (state.currentStep - 1)) % (state.sequenceLengthBars * 16)` — GO TO bar/step
+  - `useAppStore.ts:2502` `Math.min(state.currentStepIndex + 1, state.sequenceLengthBars * 16 - 1)` — stepForward
+  - `useAppStore.ts:2519` `(targetBar - 1) * 16` — barBackward/barForward target step
+  - `useAppStore.ts:2551` `state.sequenceLengthBars * 16` — sequenceLengthSteps for wrap detection in tickStepPlayback
+  - `useAppStore.ts:2492,2495,2597` `currentStepIndex % 16` — display step derive
+  - `useAppStore.ts:3395` `(stepIndex % 16) + 1` — visualStep derive
+  - `useAppStore.ts:3505` `sequenceLengthBars * 16 - 1` — maxStepIndex
+  - `useAppStore.ts:3509` `currentStepIndex % 16` — currentStep derive
+  - `useAppStore.ts:3529` `(bar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24)` — eventStepToTicks (TS-aware needed)
+  - `useAppStore.ts:3586` `state.sequenceLengthBars * 16 * 24` — sequenceTicks for record bound
+  - `useAppStore.ts:3676,3707` `stepIndex % 16` — local step in bar
+  - `useAppStore.ts:4204` `state.sequenceLengthBars * 16 * 24` — sequenceTicks for chop record bound
+  - `useAppStore.ts:4263` `(state.currentBar - 1) * 16` — barStart for event filter
+  - `StepScreen.tsx:303` `(eventBar - 1) * 16` — same pattern in UI
+  - All these need bar-aware replacements via the new helpers.
+- **Phase 3 sub-step plan needed**: refactor `eventStepToTicks` / `ticksToStep` first (foundation), then `tickStepPlayback` wrap detection, then `getRecordedEventPosition`, then `formatBarPosition`. Audio test after each sub-step.
+- **Phase 4 (F6 WINDOW popup)**: ~2h, self-contained. Components: TS popup, num cycle (1-31), den cycle (4/8/16/32), DO IT with truncate confirm dialog, recordUndo wiring. Replaces dead F6 WINDOW button on MAIN screen.
+- **Phase 5 (save/load)**: ~1h. Already half-done — hydrate paths apply `ensureTimeSignatureChanges`. Need: serialize `timeSignatureChanges` array in manifests (currently passes through as part of opaque `sequences` field — likely already works, verify).
+- **BAR EDITOR SCREEN** (Phase 2 future per Marek's spec): full-sequence view of all bars + TS, insert/delete/reorder, MPC2000XL SEQ EDIT menu equivalent. NOT this session. NOT next session. Logged as future task.
+- **Cache bar boundaries** when sequence changes — Marek's spec emphasizes "NIE recompute na hot path". Currently `getBarStartTick` and `getSequenceTotalTicks` are O(barCount) per call. For 64-bar sequences with TS changes, that's fine at human-interaction speeds but could be too slow inside `tickStepPlayback` if called per tick. Phase 3 should add a memoization layer (or precompute on sequence mutation and store as derived state).
+
+### Files modified
+
+- `src/store/useAppStore.ts` — type additions (`TimeSignatureDenominator`, `TimeSignatureChange`), `Sequence.timeSignatureChanges?` field, 9 helper functions, `createSequence` populates new field, three hydrate paths call `ensureTimeSignatureChanges`.
+
+---
+
 ## Session 10 — 2026-05-20 — Swing inverted mapping fix (TC APPLY no longer bakes swing)
 
 ### What was attempted

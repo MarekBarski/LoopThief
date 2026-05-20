@@ -468,11 +468,20 @@ type StepEvent = {
   muted: boolean;
 };
 
+type TimeSignatureDenominator = 4 | 8 | 16 | 32;
+
+type TimeSignatureChange = {
+  fromBar: number; // 0-indexed bar from which this TS applies
+  num: number;     // 1–31
+  den: TimeSignatureDenominator;
+};
+
 type Sequence = {
   id: string;
   name: string;
   lengthBars: number;
   timeSignature: TimeSignature;
+  timeSignatureChanges?: TimeSignatureChange[]; // Per-bar TS. Always contains entry { fromBar: 0, ... } after migration.
   bpm: number;
   tracks: Track[];
   events: StepEvent[];
@@ -3211,7 +3220,7 @@ function hydrateProjectBundle(
 ) {
   const samples = hydrateSamples(bundle.samples);
   const programs = bundle.manifest.programs as Program[];
-  const sequences = bundle.manifest.sequences as Sequence[];
+  const sequences = (bundle.manifest.sequences as Sequence[]).map(ensureTimeSignatureChanges);
   const songSteps = bundle.manifest.songs as SongStep[];
   const firstProgram = programs[0];
   const firstSequence = sequences[0];
@@ -3238,7 +3247,7 @@ function hydrateAllBundle(
   bundle: Extract<LoadedBundle, { type: "all" }>,
   set: (partial: Partial<AppState>) => void,
 ) {
-  const sequences = bundle.manifest.sequences as Sequence[];
+  const sequences = (bundle.manifest.sequences as Sequence[]).map(ensureTimeSignatureChanges);
   const songSteps = bundle.manifest.songs as SongStep[];
   const firstSequence = sequences[0];
   set({
@@ -3261,7 +3270,7 @@ function hydrateSeqBundle(
   targetSequenceId?: string,
 ) {
   const state = get();
-  const incoming = bundle.manifest.sequence as Sequence;
+  const incoming = ensureTimeSignatureChanges(bundle.manifest.sequence as Sequence);
   const targetId: string = targetSequenceId ?? state.currentSequence;
   const replaced: Sequence = { ...incoming, id: targetId };
   const sequences = state.sequences.some((seq) => seq.id === targetId)
@@ -4810,7 +4819,16 @@ function createSequences(firstSequenceEvents = createStepEvents()): Sequence[] {
 }
 
 function createSequence(id: string, name: string, bpm: number, events: StepEvent[]): Sequence {
-  return { id, name, lengthBars: 4, timeSignature: "4/4", bpm, tracks: createDefaultSequenceTracks(), events };
+  return {
+    id,
+    name,
+    lengthBars: 4,
+    timeSignature: "4/4",
+    timeSignatureChanges: [{ fromBar: 0, num: 4, den: 4 }],
+    bpm,
+    tracks: createDefaultSequenceTracks(),
+    events,
+  };
 }
 
 function createDefaultSequenceTracks() {
@@ -4838,6 +4856,86 @@ function createTrack(id: string, name: string, programId: string): Track {
 
 function getCurrentSequence(state: Pick<AppState, "sequences" | "currentSequence">) {
   return state.sequences.find((sequence) => sequence.id === state.currentSequence) ?? state.sequences[0];
+}
+
+// Parses "n/d" string time signatures into numeric pieces. Falls back to 4/4.
+function parseTimeSignature(ts: TimeSignature): { num: number; den: TimeSignatureDenominator } {
+  const [n, d] = ts.split("/").map(Number);
+  const num = Number.isFinite(n) && n >= 1 && n <= 31 ? n : 4;
+  const denCandidate = Number.isFinite(d) ? d : 4;
+  const den: TimeSignatureDenominator =
+    denCandidate === 4 || denCandidate === 8 || denCandidate === 16 || denCandidate === 32
+      ? denCandidate
+      : 4;
+  return { num, den };
+}
+
+function getTimeSignatureChanges(sequence: Sequence): TimeSignatureChange[] {
+  if (sequence.timeSignatureChanges && sequence.timeSignatureChanges.length > 0) {
+    return sequence.timeSignatureChanges;
+  }
+  const parsed = parseTimeSignature(sequence.timeSignature);
+  return [{ fromBar: 0, num: parsed.num, den: parsed.den }];
+}
+
+function getTimeSignatureAtBar(sequence: Sequence, barIndex: number): { num: number; den: TimeSignatureDenominator } {
+  const changes = getTimeSignatureChanges(sequence);
+  let resolved = changes[0];
+  for (const change of changes) {
+    if (change.fromBar <= barIndex) resolved = change;
+    else break;
+  }
+  return { num: resolved.num, den: resolved.den };
+}
+
+// Total ticks in a bar at PPQ=96. ticks_per_bar = num * (96 * 4 / den) = num * 384 / den.
+function getBarTickCount(sequence: Sequence, barIndex: number): number {
+  const ts = getTimeSignatureAtBar(sequence, barIndex);
+  return Math.round((ts.num * 384) / ts.den);
+}
+
+// Step count per bar at the current TC grid. Each 1/16 step = 24 ticks, 1/8 = 48 ticks, etc.
+function getBarStepCount(sequence: Sequence, barIndex: number, gridTicks: number): number {
+  if (gridTicks <= 0) return getBarTickCount(sequence, barIndex);
+  return Math.max(1, Math.floor(getBarTickCount(sequence, barIndex) / gridTicks));
+}
+
+function getBarStartTick(sequence: Sequence, barIndex: number): number {
+  let total = 0;
+  const safeBar = Math.min(Math.max(0, Math.floor(barIndex)), sequence.lengthBars);
+  for (let i = 0; i < safeBar; i += 1) total += getBarTickCount(sequence, i);
+  return total;
+}
+
+function getSequenceTotalTicks(sequence: Sequence): number {
+  let total = 0;
+  for (let i = 0; i < sequence.lengthBars; i += 1) total += getBarTickCount(sequence, i);
+  return total;
+}
+
+function getBarAtTick(sequence: Sequence, tick: number): { barIndex: number; tickWithinBar: number } {
+  let cumulative = 0;
+  for (let i = 0; i < sequence.lengthBars; i += 1) {
+    const barTicks = getBarTickCount(sequence, i);
+    if (tick < cumulative + barTicks) {
+      return { barIndex: i, tickWithinBar: tick - cumulative };
+    }
+    cumulative += barTicks;
+  }
+  const lastBarIndex = Math.max(0, sequence.lengthBars - 1);
+  return {
+    barIndex: lastBarIndex,
+    tickWithinBar: Math.max(0, getBarTickCount(sequence, lastBarIndex) - 1),
+  };
+}
+
+function ensureTimeSignatureChanges(sequence: Sequence): Sequence {
+  if (sequence.timeSignatureChanges && sequence.timeSignatureChanges.length > 0) return sequence;
+  const parsed = parseTimeSignature(sequence.timeSignature);
+  return {
+    ...sequence,
+    timeSignatureChanges: [{ fromBar: 0, num: parsed.num, den: parsed.den }],
+  };
 }
 
 function getTrackName(sequence: Sequence, trackId: string) {
