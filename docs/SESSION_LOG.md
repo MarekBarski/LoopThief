@@ -99,6 +99,53 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 10 — 2026-05-20 — Swing inverted mapping fix (TC APPLY no longer bakes swing)
+
+### What was attempted
+
+Marek reported swing perception inverted: 50% sounded like max swing, 75% sounded straight. Reference: MPC2000XL/3000/4000/5000 all use 50% = NO SWING baseline, 75% = MAX SWING.
+
+### What worked
+
+Root cause: `applyTimingCorrectToEvents` (TC APPLY F3 DO IT) was baking the current swing offset INTO `event.timingOffset`. Playback's `swingOffsetTicks(state, stepIndex)` then ALSO added the live swing offset — double-swing application.
+
+Concrete scenario:
+1. User runs TC APPLY while `state.swing=75` → off-beat events get `timingOffset: 12` baked (half-step offset).
+2. User changes to `swing=50` → live swing returns 0, but the baked +12 still delays off-beat → user PERCEIVES swung playback.
+3. User changes to `swing=75` → live swing adds another +12 to baked +12 → off-beat delayed by 24 ticks = full step → off-beat MERGES into next on-beat → user PERCEIVES "no swing" (off-beat audibly disappears into following downbeat).
+
+Fix: TC APPLY now sets `timingOffset: 0` instead of baking the swing offset. Swing remains a live playback transform applied at `tickStepPlayback` time via `swingOffsetTicks`. Matches MPC convention — swing is a real-time interpretation of grid events, never destructively committed.
+
+Line changed: `useAppStore.ts:1675` (was `timingOffset: swing`, now `timingOffset: 0`).
+
+Playback math at `swingOffsetTicks` (`useAppStore.ts:4246-4254`) is mathematically correct and untouched: `(state.swing - 50) / 50 * gridTicks`. At 50 returns 0, at 75 returns +12 ticks (half a 16th-step delay). Off-beat detection (`stepIndex % 2 === 1` for 1/16 swing, `stepIndex % 4 === 2` for 1/8 swing) also untouched and correct.
+
+Build clean.
+
+### What didn't work / pitfalls hit
+
+- Initially spent time hunting for an inverted formula in `swingOffsetTicks`. The formula is correct. Mistake was assuming the bug must be in the active playback code — actually it was in the destructive TC APPLY action that pre-bakes swing into stored events.
+- The Session 6 entry explicitly documented "TC apply re-quantize wipes existing timingOffset" + "event.timingOffset is set to the new swing offset (or 0 if not on swing step)" as intentional. That intent collided with live playback adding swing on top. Reverted that part of Session 6 logic.
+- Could not test in browser — Marek to verify.
+
+### Decisions made
+
+- **Swing is a live playback transform, never baked into events.** TC APPLY only snaps event positions to grid (`step` field updated, `timingOffset` set to 0). Live swing offset computed at each playback tick from current `state.swing`.
+- **Manual `timingOffset` edits still get wiped by TC APPLY**, same as before. TC APPLY remains a normalize/commit action for grid alignment. Users who want to preserve manual offsets shouldn't run TC APPLY.
+- **Legacy projects** with already-baked swing offsets (saved before this fix) will still play with double-swing until the user manually re-quantizes via TC APPLY (which now zeros offsets) or sets each event's offset to 0. No automated migration — flagged below.
+
+### Open issues / followups
+
+- **Legacy events with baked swing offsets** will still misbehave after load. Users can fix by running F3 DO IT once at any swing setting (now writes timingOffset=0). Could add a one-shot "RESET SWING BAKES" utility action if needed. Not implementing now — wait for Marek to confirm whether this is real-world hit.
+- **Marek's audio test plan** (from spec): 8 hats on 16th steps at BPM 90; verify 50% straight, 58% slight hip-hop swing, 75% heavy shuffle. Awaiting verdict.
+- **Note Repeat swing application** at `useAppStore.ts:4666-4669` uses `((live.swing - 50) / 50)` similarly. Looks mathematically correct (positive offset = delay). Not touched in this fix. If Marek reports NR swing also inverted/wrong, revisit.
+
+### Files modified
+
+- `src/store/useAppStore.ts:1675` — `timingOffset: 0` (was `timingOffset: swing`).
+
+---
+
 ## Session 9 — 2026-05-20 — DISK save/load (Phase 1–6) + Session 8.1 hotfix confirmed working
 
 ### What was attempted

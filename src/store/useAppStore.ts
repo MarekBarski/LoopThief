@@ -1670,12 +1670,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (targetTrackId && event.trackId !== targetTrackId) return event;
           const realTicks = eventStepToTicks(event.step) + event.timingOffset;
           const snappedTicks = Math.round(realTicks / gridTicks) * gridTicks;
-          const stepIdxAtSnap = Math.floor(snappedTicks / 24);
-          const swing = swingOffsetTicks(state, stepIdxAtSnap);
           return {
             ...event,
             step: ticksToStep(snappedTicks),
-            timingOffset: swing,
+            timingOffset: 0,
           };
         })
         .sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step));
