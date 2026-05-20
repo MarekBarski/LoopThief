@@ -230,6 +230,14 @@ Minor cosmetic suggestion (low priority):
 
 ---
 
+## TC screen — quantizeStrength removed from UI (was fake)
+
+`quantizeStrength` field (0–100) was edit-controllable from TC screen (STR +/- actions and F3 STRENGTH softkey) but never read in the snap math (`getRecordedEventPosition` uses hard `Math.round`-based 100% snap). Removed from UI in foundation session 2026-05-20. State field retained for future partial-strength snap (advanced MPC behavior).
+
+Future feature: partial-strength snap interpolates between raw position and quantized position by `quantizeStrength / 100`. Common in MPC4000/5000 for "human" feel. When implementing, restore UI controls and wire into `getRecordedEventPosition`.
+
+---
+
 ## STEP screen — editable appliedParameter / appliedValue (follow-up)
 
 After 16 LEVELS iter 2, recorded events carry `appliedParameter` (VELOCITY/TUNE/FILTER) and `appliedValue`. STEP screen now displays `PARAM TYPE` and `PARAM VALUE` rows (read-only, formatted), but they are not yet editable from STEP.

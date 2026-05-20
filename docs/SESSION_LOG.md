@@ -99,6 +99,238 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 7 — 2026-05-20 — 16 LEVELS audio fix, transport timing bugs, NR refactor, undo Phase 1 (PAD ERASE), REC mode real continuous replace, OVERDUB workflow fix
+
+### What was attempted
+
+Multi-context session (one extended Claude Code window across many topics). In rough order:
+
+- **16 LEVELS audio feedback bug** — flagship UX bug from Phase A1 of roadmap_v2.md.
+- **Transport timing bugs (2 related):** Bug 1 metronome desync on first-run, Bug 2 ERASE F5 EXECUTE appearing in UNDO history despite no-op.
+- **NR bugs cluster (1–3):** rate cycle proper + display fix, clickable arrows + remove SWING LINK row, continuous loop with auto-swing.
+- **Architectural refactor (Phase A/B/C):** unify duplicated state for swing/timingCorrect/tripletMode — global single source of truth across MAIN/TC/NR/PERFORMANCE screens.
+- **Undo Phase 1 — engine + PAD ERASE proof of concept.** Snapshot-based undo with 50-deep stack and 500ms accumulation window (structuredClone), wired to PAD ERASE as first real action under undo.
+- **REC mode inspection then real implementation.** Started as "inspection of OVERDUB button before any code" — surfaced 6 bugs. Marek chose Option B: per-loop continuous replace, MPC canonical. Implemented in 5 phases (A state+helpers, B tickStepPlayback rewrite with wrap detection + per-step clearing + auto-switch, C triggerPad lastAction label, D wire startRecordingSession into 3 entry paths, E refresh on track switch).
+- **OVERDUB workflow fix** — Marek caught after REC mode landed: OVERDUB button stayed active almost all the time, REC and OVERDUB semantics were mixed. Reworked: `overdubEnabled: false` default, mutual exclusion REC↔OVERDUB, toggleOverdub no longer auto-starts playback, triggerPad records when `isPlaying && (isSequenceRecording || overdubEnabled)`, AUTO OVERDUB after first loop flips `isSequenceRecording: false`, STOP resets both.
+- **Metronome gating fix** — Marek caught: metronome silent during OVERDUB. Extended `tickTransport` in-playback gate from `isSequenceRecording` to `isSequenceRecording || overdubEnabled`.
+
+### What worked
+
+- **16 LEVELS audio fix:** live preview without destructive APPLY semantics. Sandbox-only feedback per pad press during armed state (per Marek decision: no APPLY at all, only live preview).
+- **Snapshot-based undo engine:** `captureSnapshot(state): UndoSnapshot` clones every mutable state field via `structuredClone`. 50-deep stack, 500 ms accumulation window collapses rapid actions. `restoreSnapshot` intentionally does NOT restore `activeScreen` — undo/redo stay in current screen. PAD ERASE pushes snapshot before destructive op.
+- **Global state refactor:** removed `noteRepeatRate`, `noteRepeatLinkToTC`, `noteRepeatLinkedToTc`, nested `noteRepeat` object, `noteRepeatTriplet`. Now NR rate reads `state.timingCorrect`, triplet reads `state.tripletMode`, swing reads `state.swing`. UI in NR/TC/MAIN all wired to global. No drift, no duplicates.
+- **REC mode race-safe clearing via initial-events-snapshot pattern.** Three new fields: `sequenceLoopedSinceRecordStart: boolean`, `recordingSessionInitialEvents: Record<number, string[]>` (step → eventIds), `recordSessionClearedSteps: number[]`. `snapshotTrackEventsByStep(state, trackId)` taken at REC start. `tickStepPlayback` per-step clearing: filter only IDs from initial snapshot; fresh `nextEventId()` IDs survive filter so pad hits during step boundary never get accidentally cleared. `clearedStepsPatch` prevents double-clear on second loop wrap.
+- **REC auto-switch to OVERDUB.** `wrappedThisTick = currentStepIndex === 0 && previousStepIndex >= sequenceLengthSteps - 1`. After first wrap: `sequenceLoopedSinceRecordStart: true`, `isSequenceRecording: false`, `overdubEnabled: true`, `lastAudioMessage: "AUTO OVERDUB"`. Canonical MPC: REC = first-pass replace, then OVERDUB additive layering on subsequent loops.
+- **Track switch mid-recording (multitrack workflow):** `refreshRecordingSessionForTrack(state)` resnapshots initial events for the new track and clears `recordSessionClearedSteps`. Does NOT reset `sequenceLoopedSinceRecordStart` (session-wide flag). Centralized in `moveCurrentTrack(state, delta)` helper — covers `previousTrack`, `nextTrack`, `cycleStepTrack`, and `createNextTrack` paths. Skips refresh when track unchanged.
+- **OVERDUB mutual exclusion.** `toggleOverdub` when ON sets `isSequenceRecording: false` and `overdubEnabled: true`. `toggleSequenceRecording` arming branches and `computeRecordTransitionPatch` for REC action all set `overdubEnabled: false`. Result: only one mode armed at a time, UI buttons reflect true state.
+- **toggleOverdub does NOT auto-start playback.** Pure arm/disarm. PLAY remains separate user action. Matches canonical MPC behavior — "press OVERDUB, then PLAY" or "during PLAY, press OVERDUB to enable additive recording".
+- **Mid-play REC gap fix.** Pre-existing bug surfaced during OVERDUB inspection: `toggleSequenceRecording` mid-play branch did `set({ isSequenceRecording: true })` without calling `startRecordingSession`. Per-step clearing would then run with empty initial snapshot = no clearing. Now wired: mid-play arm + count-in arm both call `startRecordingSession(state)`.
+- **Metronome gating extended.** `tickTransport` L2632: `if (state.isPlaying && (state.isSequenceRecording || state.overdubEnabled) && shouldClickDuringRecord(state))`. REC and OVERDUB both audible. Plain PLAY silent. AUTO switch transition preserves click.
+- **Hold-repeat acceleration on arrows** carried over from session 6, still working.
+- Build clean (`tsc + vite build`) after every phase. No TypeScript errors at any handoff point.
+
+### What didn't work / pitfalls hit
+
+- **OVERDUB default `true` was historical, not intentional.** Found during inspection — Marek expected button to start OFF. Default became `false`. Anyone reading old `useAppStore.ts:665` (overdubEnabled: true) was looking at unintended state, not a deliberate design choice.
+- **Initial REC mode plan considered "Option A: clear all events at REC start".** Rejected by Marek in favor of Option B: per-loop continuous replace. Option A would feel destructive — user can't recover original events. Option B keeps original until the playhead overwrites step by step, which feels controllable + matches MPC2000XL behavior.
+- **First REC implementation defaulted to track switch deferred.** Marek pushed back citing MPC2000XL manual: "It is also possible to record a new track while playing previously recorded tracks." Track switch mid-record is STANDARD multitrack workflow, not edge case. Implemented `refreshRecordingSessionForTrack` to handle it.
+- **AUTO OVERDUB initial patch only set `overdubEnabled: true` without flipping `isSequenceRecording: false`.** Worked functionally (clearing condition `isSequenceRecording && !overdubEnabled` returned false either way) but REC button stayed lit even though mode had switched to additive. Fixed to flip both flags.
+- **Metronome silent during OVERDUB.** Pre-existing gate `if (state.isPlaying && state.isSequenceRecording && shouldClickDuringRecord(state))` was correct under old single-flag model but wrong under new REC/OVERDUB split. After AUTO switch, `isSequenceRecording` becomes false → click stops, even though recording continues via overdubEnabled. Extended condition to OR both.
+- **Reminder noise:** ~10+ task-tool reminders fired during inappropriate moments (inspection, single-line fixes). Ignored. Real task tracking via TaskCreate/TaskUpdate happened where useful — task #51–55 covered REC mode phases A–E.
+- **Bug 2 root cause in transport timing (ERASE in UNDO):** Marek caught that ERASE F5 EXECUTE was being pushed to UNDO history even when no events matched the erase scope. The "no-op shouldn't undo" rule was implicit, never coded.
+
+### Decisions made
+
+- **REC = first-pass per-loop continuous replace, then AUTO OVERDUB additive on subsequent loops.** MPC canonical. Per-loop replace means stale events on current track get wiped step by step as playhead advances, not all at once at REC start. Fresh pad hits survive (fresh event IDs).
+- **Race-safe REC clearing via initial-events-snapshot, not active-time-window.** Filter by event IDs captured at REC arm time. New events from triggerPad use fresh `nextEventId()` IDs, automatically survive filter regardless of click-vs-tick order.
+- **Track switch during recording: re-snapshot, not defer.** Per MPC2000XL manual quote. Session-wide `sequenceLoopedSinceRecordStart` preserved across track switches.
+- **`overdubEnabled: false` default.** OVERDUB button starts idle. Was `true` historically — unintended.
+- **REC ↔ OVERDUB mutually exclusive.** Pressing one disarms the other. Both can be off (= playback only).
+- **`toggleOverdub` does not auto-start playback.** Pure arm/disarm. Matches MPC.
+- **STOP resets both flags.** `isSequenceRecording: false`, `overdubEnabled: false`. Full transport reset.
+- **Metronome gating: `isSequenceRecording || overdubEnabled`.** Both recording modes audible. Plain PLAY silent.
+- **Undo Phase 1 scope:** engine + PAD ERASE only. Phases 2–5 deferred (STEP, PROGRAM, MIX/CHOP/sequence/song, keyboard shortcuts).
+- **Hold-repeat acceleration ships site-wide** (carried from session 6).
+
+### Open issues / followups
+
+**Undo work — multi-phase, mostly deferred:**
+- **Phase 2:** STEP screen actions to undo (event edits, ADD event, delete, move, mute toggle, PARAM TYPE/VALUE changes).
+- **Phase 3:** PROGRAM screen actions to undo (pad assignment changes, tune/filter param edits).
+- **Phase 4:** MIX, CHOP, sequence-level, song-level undo coverage.
+- **Phase 5:** Keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z) + UI polish.
+
+**REC mode test plan (8 scenarios) outstanding** — Marek to verify via audio:
+1. REC continuous replace, single track.
+2. Per-track scope (other tracks untouched).
+3. Track switch mid-recording (multitrack).
+4. OVERDUB additive regression check.
+5. AUTO switch after first loop.
+6. Manual OVERDUB override mid-recording.
+7. Multiple hits same step (all survive).
+8. Plain PLAY no recording (default behavior).
+
+**Default REC arming question** — current behavior: pressing REC button alone (not playing) calls `requestTransportStartImpl("REC")` → starts playback in REC mode. Pressing OVERDUB alone (not playing) just arms. Asymmetry preserved deliberately (REC behavior unchanged), but worth confirming with Marek if this matches expected UX.
+
+**Other deferred items from session 6 still open:**
+- Pre-roll window may need widening from 0.25 to 0.30/0.35.
+- TC apply wipes manual `timingOffset` — MPC-correct but worth surfacing.
+- Non-4/4 step grid refactor (touches ~15 functions) — banner in MAIN warns until then.
+- Inline pad picker grid layout uses implicit row growth — should refactor.
+- Note Repeat uses gate-derived duration vs REC/16 LEVELS duration=0.
+
+**Tauri integration** — still inactive, planned for Phase B (post-1.0). Web-first prototype trajectory holds.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — central hub for all changes (16 LEVELS, transport timing, NR refactor, undo engine, REC mode, OVERDUB workflow, metronome gating). ~1000-line net delta this session.
+- `src/screens/UtilityScreens.tsx` — TC/NR UI rewiring to global state, OVERDUB-related text fixes.
+- `src/screens/StepScreen.tsx` — undo wiring for PAD ERASE path.
+- `src/screens/MainScreen.tsx` — global state references.
+- `src/screens/ChopScreen.tsx`, `src/screens/ProgramScreen.tsx`, `src/screens/PerformanceScreen.tsx` — minor wiring.
+- `src/components/layout/TopBar.tsx` — NR rate display reads global.
+- `src/components/useHoldRepeat.ts` — new (session 6 carryover), tracked here.
+- `src/App.tsx` — App-level wiring.
+- `docs/03_ui/UX_AUDIT_FINDINGS.md` — findings update.
+
+## Session 6 — 2026-05-20 — STEP/sequencer foundation: audio feedback nav, event.muted UI, pre-roll, swing playback, add-events, beatsPerBar, +6 bug fixes from live test, +hold-repeat acceleration on all arrow buttons
+
+### What was attempted
+- STEP/sequencer foundation session covering 6 bundled tasks + a 7th added mid-session by Marek:
+  - **Z1** STEP screen audio feedback on bar/step navigation.
+  - **Z6** event.muted inline "M" toggle in STEP screen event list.
+  - **Z7** pre-roll anticipation window during count-in (last 0.15 → later 0.25 of beat → forward-snap to step 0).
+  - **Z4** swing applied to sequencer playback (TC ∈ {1/16, 1/8} only).
+  - **Z2** add events from STEP screen ("+ ADD" button with snap to TC grid).
+  - **Mini-Z3** `beatsPerBar` proper implementation per time signature, plus `isFirstBeatOfBar` using `beatsPerBar(state) * 4`. (Full non-4/4 step-grid refactor explicitly deferred.)
+  - **Z28** remove `quantizeStrength` fake UI from TC screen.
+- After Marek's live audio test of the foundation work, **six bug fixes** in priority order:
+  - **BUG 6** STEP screen all clickable: VEL/OFFSET/PROB/PARAM TYPE/PARAM VALUE all get `<` `>` arrows; PARAM TYPE cycles NONE/VELOCITY/TUNE/FILTER/ATTACK/DECAY; PARAM VALUE clamps by type.
+  - **BUG 1** ADD event pad workflow rework: button toggles armed state, inline 4×4 pad picker appears, click LCD or hardware pad while armed creates event with that pad (auto-disarm). Was wrongly using `state.selectedPad` defaults — corrected per MPC manual ("Press REC, hit a pad, event is recorded with that pad").
+  - **BUG 2** bar `<` / `>` jump-to-bar-boundary (MPC `<<` `>>` behavior): forward = next bar START, backward = current bar START (or previous bar START if already at start).
+  - **BUG 5** pre-roll window widened 0.15 → 0.25 of `beatMs`.
+  - **BUG 3** TC apply (DO IT) for existing events: re-snap to TC grid + apply current swing offset, respects APPLY TO scope (CURRENT TRACK / ALL TRACKS).
+  - **BUG 4** time signature partial-support banner in MAIN screen, shown when timeSignature ≠ "4/4".
+- Final polish: **press-and-hold acceleration on all `<` `>` arrow buttons across the app** (BPM, BARS, ROOT, CUTOFF, VEL, OFFSET, DUR, PROB, PARAM TYPE/VALUE, SWING, sample prev/next, FILTER cycle, every Param +/-). Reusable hook `useHoldRepeat(action)` with phased timing: 400 ms initial delay, 200 ms / 100 ms / 25 ms acceleration phases.
+
+### What worked
+- **Pre-existing `quantize-on-record` was already correct**, just unwired for swing — `getRecordedEventPosition` (`useAppStore.ts:2742`) already snaps to `timingCorrectGridTicks(state.timingCorrect)` with hard `Math.round` 100% snap. `OFF` returns gridTicks=1 (= no snap). Saved a full task — Z5 from earlier planning was a no-op aside from swing apply.
+- **swing playback wiring is tiny.** `swingOffsetTicks(state, stepIndex)` helper: returns `Math.round((swing - 50) / 50 * gridTicks)` for swing-eligible step indices (TC=1/16 → `stepIndex % 2 === 1`; TC=1/8 → `stepIndex % 4 === 2`). Plugged into `tickStepPlayback` two places — events at current step get `currentSwingTicks * ppqMs` added to delay, early-next events get `nextSwingTicks`. Range 50–75% swing, clamp at 50 means swing=50 returns 0 offset (no effect).
+- **TC apply for existing events.** `applyTimingCorrectToEvents` action computes `realTicks = eventStepToTicks(event.step) + event.timingOffset`, snaps to grid via `Math.round(realTicks / gridTicks) * gridTicks`, then writes new `event.step = ticksToStep(snapped)` and `event.timingOffset = swingOffsetTicks(...)`. Respects APPLY TO scope (filter by `event.trackId === state.currentTrackId` when CURRENT TRACK selected, all events when ALL TRACKS). Recorded as `TC APPLY {grid}` in `lastAction` + `undoHistory`. Wired to F3 DO IT softkey + UtilityAction button in TC screen. F4 became "F4 SCOPE" (was "F4 APPLY" cycling scope — semantics now clearer with DO IT separated).
+- **Pre-roll anticipation window pattern.** Block placed BEFORE the 16 LEVELS armed branch in `triggerPad`: `if (transportPhase === "COUNT_IN" && transportPendingAction === "REC")` → compute `remainingBeatMs = beatMs - state.transportCountInPulse`, only fires snap-to-step-0 path when `transportCountInBeatsRemaining <= 1 && remainingBeatMs <= windowMs`. Otherwise falls through to regular pad-trigger branch which doesn't create event because `isSequenceRecording === false` during count-in — so outside-window-during-count-in becomes "audition pad audio, no event creation" automatically. No additional code needed for the negative case.
+- **ADD event arm-and-click pattern.** Reused the 16 LEVELS source-arm playbook: state field `addEventArmed: boolean`, `armAddEvent` toggle action, `createStepEventForPad(padId)` direct creator, `createStepEventForPadImpl(state, padIdentifier)` shared internal helper extracted from the prior `addStepEventAtCurrentStep`. `triggerPad` gets one new branch at the top of its real logic (before COUNT_IN check): `if (state.addEventArmed) { ...create event for selectedPad, return with addEventArmed: false }`. Hardware shell click works automatically because hardware pad clicks already go through `triggerPad`. Inline 4×4 LCD picker is conditional render: `{addEventArmed && <div className="grid grid-cols-4">...</div>}`.
+- **BUG 6 PARAM TYPE/VALUE cycle is the most user-visible single feature.** `cycleSelectedEventAppliedParameter(delta)` cycles through `[undefined, "VELOCITY", "TUNE", "FILTER", "ATTACK", "DECAY"]` (6 values, NONE = `undefined`). Switching INTO a parameter type sets a sensible default value (TUNE=0, FILTER=50, VELOCITY=event.velocity, ATTACK/DECAY=0). Switching to NONE clears `appliedParameter`/`appliedValue`/`parameterValue`. `adjustSelectedEventAppliedValue(delta)` uses `appliedValueRange(parameter)` for type-specific clamping. This unblocks STEP-screen post-hoc Note Variation editing — user can now retroactively set TUNE +5 on any existing event without re-recording.
+- **`isFirstBeatOfBar` previous "typo" was actually a grep display artifact.** File content showed `"4/4"` correctly (foundation audit had reported `"4\4"` based on grep escape-sequence output). The real defect was that `beatsPerBar` returned `4` in both ternary branches — semantic stub, not a typo. Replaced with proper switch over all time signatures (2/4, 3/4, 4/4, 5/4, 6/4, 6/8, 7/8, 9/8, 12/8). `isFirstBeatOfBar` math `stepIndex % (beatsPerBar * 4) === 0` keeps the hardcoded 4-steps-per-beat assumption (1/16 grid) — that's the deferred part of mini-Z3.
+- **Two-GainNode pipeline from previous session held up.** No regression on choke groups, mono replace, mute targets, NOTE ON release. ADSR-introduced complexity didn't bleed into this session's changes.
+- Build clean (`tsc + vite build`) after every task and every bug fix. Total diff: `useAppStore.ts` +292/-XX, `StepScreen.tsx` +115/-XX, `UtilityScreens.tsx` +25/-X, `MainScreen.tsx` +5, `UX_AUDIT_FINDINGS.md` +8.
+
+### What didn't work / pitfalls hit
+- **First-round ADD event implementation was wrong.** I initially wired the `addStepEventAtCurrentStep` action to use `state.selectedPad` directly — felt like the obvious default since "selected pad" is conceptually the user's focus. Marek tested and immediately flagged it: MPC manual says "Press REC. Hit a pad. Event is recorded with that pad." User intent is "I want to add event for this pad I'm about to click", not "default to last-selected". Fix required arm-and-click rework. **Lesson: when a feature involves "where does this default come from", check the MPC manual citation Marek already gave — multiple times this session he'd quoted the manual and I'd implemented something slightly off because I didn't re-read his quote carefully.**
+- **Initial bar nav was wrong.** First implementation added 1 bar to currentStepIndex but kept the current step's position-within-bar, so jumping from 002.03.72 went to 003.03.72 (preserving step+tick offset). Marek's manual quote: MPC `<<` / `>>` jump to bar BOUNDARY (step 1, tick 0). Fixed: `barForward` always lands on step 1 tick 0 of next bar; `barBackward` lands on step 1 tick 0 of current bar (or previous bar if already at start). The "or previous bar if already at start" is the subtle bit — without it, `<` repeatedly at bar start would be a no-op.
+- **Pre-roll 0.15 window was too tight in real testing.** Math seemed reasonable on paper (75 ms @ 120 BPM is roughly mouse-click anticipation latency) but Marek confirmed during test that real anticipation extends further. Bumped to 0.25 (125 ms @ 120 BPM). May need further tuning to 0.3 or 0.35 if still feels too tight — flagged in plan, easy single-number adjustment.
+- **TC apply re-quantize wipes existing `timingOffset`.** This is the existing-events DO IT behavior: after re-snap, `event.timingOffset` is set to the new swing offset (or 0 if not on swing step). Any prior manual offsets (e.g., user pressing F2 OFFSET to nudge an event by ±3 ticks for groove feel) are LOST when DO IT runs. This is correct MPC behavior — TC apply intentionally normalizes — but worth flagging as it CAN feel destructive. Marek didn't push back on this when reviewing. Documented here for the next session.
+- **`session_log.md` from /wrap previously was never committed.** When I started this session, the working tree had `docs/SESSION_LOG.md` already modified with Session 5's entry from the prior `/wrap` (still uncommitted, awaiting Marek's commit decision). Throughout this session, I treated that as expected state. The pre-existing modification will need to be bundled into THIS session's commit if Marek confirms commit. **Surfaced explicitly so it doesn't look like leftover dirt.**
+- **Reminder noise continued.** ~8 reminders fired during this session at inappropriate moments (inspection, single-edit fix-ups, mid-flow). All ignored. Real task tracking via TaskCreate did happen (tasks #22 through #35, full lifecycle pending → completed). Worth noting that the cumulative task list across sessions now spans 35 tasks across 6 sessions; the reminder system seems unaware of the live status of those entries.
+- **Inline pad picker grid layout.** Section `grid-rows-[auto_auto_1fr]` (3 explicit rows) now has 4 children when picker is visible: ADD button, picker, column header, event list. CSS Grid auto-grows implicit rows so this rendered correctly in build, but it's fragile — if anyone bumps the row count again it'll silently snap children to wrong rows. Should be `grid-flow-row` with auto-sized rows. Flagged but not fixed this session.
+
+### Decisions made
+- **`beatsPerBar` proper switch implementation** for 2/4, 3/4, 4/4, 5/4, 6/4, 6/8, 7/8, 9/8, 12/8. `default: 4` fallback. `TimeSignature` type extended to include `6/4`, `9/8`, `12/8` (was missing).
+- **Full non-4/4 step-grid refactor explicitly deferred** to a dedicated future session. Mini-fix covers count-in and accent only. Banner added to MAIN screen for non-4/4 selections so user knows step grid is still 16-hardcoded.
+- **swing playback-only model**, not "embed at record time then double-apply at playback". Events store nominal positions; playback applies swing dynamically based on global swing setting. Recording snaps to nominal grid (without swing); playback adds swing for swing-eligible steps. This matches the simplest cohesive interpretation across the contradictory bits of Marek's spec.
+- **Swing range 50–75%** (MPC convention). Disabled in UI for TC ∉ {1/16, 1/8} via `swingApplicable(state.timingCorrect)` guard and visual greying of the SWING +/- UtilityActions.
+- **`quantizeStrength` removed from UI but kept in state.** Fake UI policy violation closed for now; partial-strength snap is a future MPC4000-style feature documented in UX_AUDIT. Field stays in state to avoid type-level churn when re-introduced.
+- **TC apply scope semantics:** CURRENT TRACK = filter by `event.trackId === state.currentTrackId`. ALL TRACKS = all events in current sequence. `cycleTimingApplyTo` cycles label only; `applyTimingCorrectToEvents` does the actual work. F3 = DO IT softkey + inline UtilityAction button (duplicate path for discoverability).
+- **`event.muted` inline "M" column** in event list, not a softkey (F1–F6 were full). Toggle via dedicated `toggleEventMuted(eventId)` action; selecting/clicking row's other columns calls `selectStepEvent`. Used `event.stopPropagation()` on the M button to prevent triggering selection.
+- **PARAM TYPE NONE entry in cycle.** When user cycles to NONE, `appliedParameter` and all related fields (`appliedValue`, `parameterValue`) are cleared. Cycling back into a type seeds the value with a sensible default. Avoids "ghost NV data" issue where event has appliedValue but appliedParameter is undefined.
+- **Pre-roll window: only the very last beat counts.** Cleaner than checking total elapsed count-in time. `transportCountInBeatsRemaining <= 1` gate prevents premature pre-roll on beat 2 or 3 of count-in.
+- **F4 in TC screen renamed APPLY → SCOPE** because real APPLY (DO IT) is now F3. Avoids label collision.
+
+### Open issues / followups
+- **Pre-roll window may need further widening** (0.25 → 0.3 or 0.35) after Marek's next test session. Single-line tune.
+- **TC apply wipes manual `timingOffset`** — MPC-correct but could surprise. Consider: surface a confirmation toast / undo affordance, or split into "snap to grid" and "apply swing" as two separate actions.
+- **Non-4/4 step grid refactor** is the next big sequencer foundation item. Touches ~15 functions (eventStepToTicks, ticksToStep, getRecordedEventPosition, tickStepPlayback loop math, barForward/Backward, stepForward/Backward, createStepEventAtPosition/FromIndex, formatBarPosition, etc.). Banner in MAIN warns users until that lands.
+- **Inline pad picker grid layout** uses implicit row growth — should refactor to `grid-flow-row` or explicit `grid-rows-[auto_auto_auto_1fr]` for clarity.
+- **Note Repeat path still uses gate-derived duration** while regular REC + 16 LEVELS recording use duration=0. NR bursts intentional but worth flagging — once duration=0 universally settles in user expectations, NR may want re-evaluation.
+- **`adjustSelectedEvent("duration", ...)` clamp lower bound is now 0** — F3 DUR softkey path can no longer go below 1 because `clamp(value + delta, 0, 96)`. STEP screen arrows path properly stops at 0 (FULL). Both paths consistent.
+- **Audio test verdict for this session's bug fixes pending Marek's listen.** Implementation + build clean across all 6 bugs; Marek hasn't yet confirmed the live audio behavior for the post-fix state.
+- **SESSION_LOG.md still carries Session 5 entry from prior /wrap** that was never committed — bundles into this commit unless Marek splits.
+
+### Files modified
+- `src/store/useAppStore.ts` (+292/-XX) — `swingOffsetTicks` + `swingApplicable` helpers; `playEventsAtCurrentStep` + `playFirstEventInCurrentBar` helpers; `stepBackward/Forward/barBackward/barForward` rewired to play audio after set (Z1); `barBackward/Forward` reimplemented to MPC `<<`/`>>` bar-boundary semantics (BUG 2); `toggleEventMuted(eventId)` action (Z6); pre-roll branch in `triggerPad` BEFORE 16 LEVELS armed branch (Z7 + BUG 5 0.25 window); `tickStepPlayback` applies swing delay to current and early-next events (Z4); `createStepEventForPadImpl` shared helper extracted (Z2 + BUG 1); `addEventArmed` state + `armAddEvent` + `createStepEventForPad` actions (BUG 1); `appliedValueRange` helper + `cycleSelectedEventAppliedParameter` + `adjustSelectedEventAppliedValue` actions (BUG 6); `applyTimingCorrectToEvents` action (BUG 3); `beatsPerBar` proper switch over all time sigs (mini-Z3); `TimeSignature` type extended with 6/4, 9/8, 12/8 (mini-Z3); `addEventArmed: false` default; pre-roll window `0.25 * beatMs` constant.
+- `src/screens/StepScreen.tsx` (+115/-XX) — BAR + STEP `StepNav` rows added in 2nd panel (Z1); event list reworked to 5-column with "M" toggle column + `<div>`-with-inner-`<button>` row pattern to allow event.muted click separate from event select (Z6); `+ ADD EVENT` button toggles armed state with conditional inline 4×4 pad picker (Z2 + BUG 1); VELOCITY/OFFSET/DURATION/PROBABILITY rows switched from `<Info>` to `<EditableValue>` with arrows (BUG 6); PARAM TYPE and PARAM VALUE rows now `<EditableValue>` wired to `cycleSelectedEventAppliedParameter` / `adjustSelectedEventAppliedValue` (BUG 6); softkeys F1–F5 unchanged as shortcut path.
+- `src/screens/UtilityScreens.tsx` (+25/-X) — TimingCorrectUtilityScreen STR controls (rows + UtilityActions + F3 STRENGTH softkey) removed (Z28); SWING controls disabled visually when `timingCorrect` not in {1/16, 1/8} via `swingApplicable` check (Z4); `UtilityAction` extended with `disabled?: boolean` prop; F3 = "F3 DO IT" wired to `applyTimingCorrectToEvents` + inline UtilityAction button "DO IT" (BUG 3); F4 = "F4 SCOPE" (was "F4 APPLY") wired to `cycleTimingApplyTo` (BUG 3 cleanup).
+- `src/screens/MainScreen.tsx` (+5) — partial-support banner conditional render under TIME SIG row when `timeSignature !== "4/4"` (BUG 4). Plus `StepButton` refactored to use `useHoldRepeat` (covers ValueRow arrows: BPM, BARS, TIME SIG, SWING, TC).
+- `src/components/useHoldRepeat.ts` (NEW) — reusable hook. Returns `{ onPointerDown, onPointerUp, onPointerLeave, onPointerCancel }` props. Single click fires action immediately; press-and-hold enters repeat after 400 ms with 200 ms → 100 ms → 25 ms phase acceleration. Cleanup via `useEffect` unmount and on every pointer up/leave/cancel.
+- `src/screens/ProgramScreen.tsx` — `Param` ± buttons and `BracketButton` refactored to use `useHoldRepeat` (covers TUNE, FINE, PAN, ATTACK, DECAY, CHOKE, FILTER < >).
+- `src/screens/ChopScreen.tsx` — inline sample prev/next buttons refactored to use `useHoldRepeat`.
+- `docs/03_ui/UX_AUDIT_FINDINGS.md` (+8) — quantizeStrength removed-from-UI entry with future-feature note (Z28).
+- `docs/SESSION_LOG.md` — Session 5 entry from prior /wrap still pending commit (carries forward); this Session 6 entry added at top.
+
+---
+
+## Session 5 — 2026-05-20 — Foundation audit + AD envelope engine + event.duration gate time + 16 LEVELS ATTACK/DECAY + STEP DUR arrows
+
+### What was attempted
+- Foundation-first audit (read-only) covering event state shape, PadAssignment / program state, samplerEngine.play() API surface, sequencer playback path end-to-end, and full fake-UI sweep. Produced ranked priority list (Gap #1 ADSR, #2 event.duration, #3 real undo, #4 padCurve, #5 event.muted UI, #6 FX engine, #7 time-signature flexibility, #8 settings fake fields cleanup).
+- Implementation pass for Gap #1 + #2 bundled per Marek's direction:
+  - AD envelope (Attack + Decay only; no Sustain Level / no separate Release field) wired into `samplerEngine.play()`.
+  - `event.duration` becomes real gate time. `0 = FULL` (no truncation, legacy behavior). `>0` schedules softStop with envelope release.
+  - 16 LEVELS PARAMETER cycle re-extended to 5 working values (VELOCITY / TUNE / FILTER / ATTACK / DECAY).
+  - STEP screen DURATION value gets clickable `<` `>` arrows beside it (alongside existing F3 DUR softkey), consistent with BPM / ROOT / other editable fields.
+- Audio-engine pipeline refactor: split single Voice GainNode into `envelopeGain` + `channelGain` to isolate ADSR automation from live MIX updates.
+
+### What worked
+- **Two-GainNode pipeline.** `source → (filter)? → envelopeGain → channelGain → pan → masterGain → destination`. `envelopeGain.gain` only touched by `applyEnvelope` and `softStopVoice` (cancelScheduledValues + setValueAtTime + linearRampToValueAtTime). `channelGain.gain` continues to be touched by `options.gain` at start + `updateChannelMix` from MIX screen. Both axes multiply independently. No interference.
+- **`applyEnvelope`** (samplerEngine internal): cancelScheduledValues at startTime, setValueAtTime(0, startTime), linearRampToValueAtTime(1, startTime + attackSec). For ONE SHOT with decayMs > 0: linearRampToValueAtTime(0, startTime + attackSec + decaySec). For NOTE ON: stays at 1 (sustain at peak) until softStop is called.
+- **softStop/hardStop split landed cleanly.** Public API: `stopVoiceGroup(voiceGroup, options?: { releaseMs? })`, `stopVoiceGroups(voiceGroups, options?)`, `stopAllVoices()` (panic-only, no soft option). Internal helpers `hardStopVoice(voice)` and `softStopVoice(voice, releaseMs)` route through a single `voices.delete` cleanup. Existing callers (mono replace in `playInternal`, choke groups in `playAssignedPadWithContext`, preview rotation, `stealOldestVoice`, double-STOP panic) all stay hardStop. Only `releasePad` NOTE ON path and the new `sustainMs` scheduled stop use softStop.
+- **`sustainMs` in PlayOptions.** When set, `playInternal` schedules a `window.setTimeout` that calls `softStopVoice(voice, releaseMs = envelopeDecayMs)`. Timer is stored on the Voice and cleared on `source.onended` (natural end) or `hardStopVoice` (early kill) to prevent leaks. Re-uses the envelope's decay time as the release ramp — fits AD-only model where DECAY field doubles as release.
+- **`programValueToMs` cubic curve `(v/100)^3 * 5000`.** Marek's chosen formula. v=0→0, v=50→625ms, v=100→5000ms. Snappy resolution in the low end where drum work lives. Minimum 1ms ramp (`MIN_RAMP_MS`) at v=0 guards against zero-crossing clicks while keeping perceptually instant.
+- **Zero-regression legacy bypass.** `playAssignedPadWithContext` computes `effectiveAttack` / `effectiveDecay`, then: if `effectiveAttack === 0 && effectiveDecay >= 100` → pass `envelope: undefined` to engine, which sets `envelopeGain.gain.value = 1` statically. Default PadAssignment is `attack: 0, decay: 100` so all pre-existing assignments behave exactly as before.
+- **event.duration migration was clean.** Three creation sites changed to write `duration: 0, length: 0`: `createRecordedPadEvent` (regular REC pad triggers), `triggerPad` UTILITY_16_LEVELS branch (16 LEVELS recording), `createStepEvent` (seed demo events that used to write 12 or 24). All three rely on the fact that `...extra` is spread last in `createStepEventFromIndex` and `createStepEventAtPosition`, so the override wins. Note Repeat path (`createRepeatedNoteEvents` → `createStepEventFromIndex` with gate-derived duration) was deliberately left untouched per Marek — NR bursts keep their short gate times.
+- **`adjustSelectedEvent` clamp 0–96** (was 1–96). One-character change, enables "FULL" as a valid value.
+- **STEP screen `EditableValue` component** added (label + `<` value `>` triple with disabled state when `selectedEvent` is null). DURATION row uses it; F3 DUR softkey kept as alternative. Click on `<` or `>` also flips `eventEditMode → "DURATION"` for the amber highlight, matching what F3 does. Disabled buttons use `opacity-40` for visual consistency with rest of the screen.
+- **16 LEVELS ATTACK / DECAY extension.** `cycleSixteenLevelsParameter` array grew from 3 to 5. `getSixteenLevelsValue` switch added `case "ATTACK"` and `case "DECAY"` returning `Math.round(((variationIndex - 1) / 15) * 100)` (0–100 program-scale spread). `playSixteenLevelsVariation` switch sets `attackOverride` / `decayOverride`. `playStepEventFromState` reads `event.appliedParameter === "ATTACK"` / `"DECAY"` for sequencer playback override.
+- Build clean (`tsc + vite build`) after every iteration. Total diff for the work: `samplerEngine.ts +147/-30`, `useAppStore.ts +59/-14`, `StepScreen.tsx +37/-1`, `UtilityScreens.tsx +3`. Final commit `e5ae0bd`.
+
+### What didn't work / pitfalls hit
+- **Initial fear: live MIX would clobber envelope automation.** First proposal was to do the entire ADSR on the existing single GainNode and use `cancelScheduledValues` defensively when MIX updates fire. Walked it back during the inspection — `updateChannelMix` is called every time the user moves a fader, so any in-flight envelope ramp would get nuked by a direct `gain.value = ...` write. Two-GainNode design was clearly cleaner. Cost is one extra audio node per voice. Negligible. Should have been the obvious first choice.
+- **`event.duration` regression risk was bigger than expected.** Three places had to be touched, not one. `createRecordedPadEvent` was obvious. `triggerPad` UTILITY_16_LEVELS branch I almost missed because the audit had treated it as "extra fields appended". The seed events in `createStepEvent` (kick/snare/hat demo pattern with `duration: 12` for P08 hat) only showed up when I grep'd for `duration:` literally — they would have produced very-short ghost hits on first load of the app. Lesson: when changing a recording default, audit ALL event creators, not just the recording one. Note Repeat path was the only intentional opt-out, and only because Marek explicitly said so.
+- **Marek's cubic formula `(v/100)^3 * 5000` gives v=50 = 625 ms, not 500 ms.** I proposed `(v/100)^log2(10)` which lands exactly on Marek's described anchor (v=50 → 500 ms). Marek picked the simpler `^3` form and accepted the slightly off anchor. Two takeaways: (1) don't oversolve when the user gives a "good enough" formula, (2) the actual curve shape is what matters perceptually, not the exact midpoint number.
+- **Marek's prior message got truncated mid-decision point 4.** I made the call to interpret the cut sentence ("Spójne z 'instant…") as "spójne z instant kill" and continue — explicitly flagged it. Marek didn't push back. Lesson: if a Marek decision message cuts off, complete the read literally and ask, don't silently guess past the cut. I did surface it but it could have gone wrong.
+- **`StepNav` already existed in StepScreen.tsx for EVENT / TRACK navigation.** I added a new `EditableValue` component instead of reusing `StepNav` because `StepNav` has cycle semantics (no edge clamp, both arrows can wrap) and the active-mode highlight semantics from `Info` (amber when `eventEditMode === ...`). The two patterns are similar enough to be confusing for whoever reads this later — three styles of "row with arrows" now exist in the codebase (`StepNav`, `EditableValue`, `ArrowRow` in UtilityScreens). Worth a future polish pass to unify. Logged below.
+- **F3 DUR softkey was already wired before this session.** The change was just adding the `<` `>` arrow affordance. Easy to write a too-big diff there — kept it to one new component plus replacing the `<Info>` call with `<EditableValue>`.
+- **No real audio test from me.** I have no ears. Implementation + build clean + matrix of expected behavior described, but the actual "ATTACK 50 → fade-in" / "DECAY 10 → tail" / "DUR 24 → gate to ~125ms @ 120 BPM" verification depends on Marek hitting pads and listening. Marek implicitly confirmed by saying "Reszta tests passed" before requesting the STEP DUR arrows polish — so the audio behavior was verified, just not by me directly. Logged here so future sessions remember the validation path.
+- **Reminder system noise.** The task-tools `<system-reminder>` fired ~6 times during this session in inappropriate phases (read-only inspection, single-edit follow-up, planning). I followed the "ignore if not applicable" exception but it remains genuinely intrusive. Did create real tasks #16-#21 to track the implementation arcs, which Marek explicitly asked for ("periodicznie update jak idziesz przez sekcje").
+
+### Decisions made
+- **AD envelope, not full ADSR.** No Sustain Level field, no separate Release field. Aligns with existing PROGRAM UI (only 2 sliders: ATTACK and DECAY). Future ADSR upgrade lives in a separate ticket if Marek ever wants it; design has a clear extension point (`Envelope.holdMode` could grow `sustainLevel?` and `releaseMs?`).
+- **`programValueToMs(v) = (v/100)^3 * 5000`.** Cubic, range 0–5000 ms. Marek's choice.
+- **hardStop / softStop split:** hardStop for choke, mono replace, panic, preview cancel, voice steal, double-STOP. softStop for NOTE ON releasePad and sequencer `event.duration` expire. Both Marek-confirmed.
+- **Decay >= 100 = "no envelope cap"** (sample plays to natural end). Combined with `attack === 0` → entire `envelope` arg is undefined. Migration safety net for default assignments.
+- **`event.duration = 0` means "FULL"**. No scheduled stop, voice plays naturally. Display label "FULL" in STEP screen. All new recordings default to 0. Seed demo events updated to 0. Note Repeat path keeps gate-derived duration (separate intent — those are short bursts).
+- **F3 DUR softkey kept** even after adding `<` `>` arrows. Two-way edit (cycle softkey + direct arrows) is consistent with how F1/F2/F4 work in STEP for VEL/OFFSET/PROB.
+- **Disabled state on EditableValue arrows** when no `selectedEvent` — opacity-40 visual, no click handler. Matches existing pattern of fields showing "---" when nothing is selected.
+- **Did NOT touch the foundation gaps #3 through #8.** Real undo/redo (#3) is the biggest pending foundation item but is a separate-session-class architectural change. Cleanup items (#4 padCurve, #5 event.muted UI, #7 timeSignature `"4\4"` typo, #8 fake settings) are queued for a polish pass. FX engine (#6) is Phase A3, not foundation.
+
+### Open issues / followups
+- **Three styles of "label + arrows + value" coexist.** `StepNav` (cycle, no clamp), `EditableValue` (clamped, with active highlight, disabled state), `ArrowRow` (UtilityScreens — clamped, with highlighted state). A future polish pass should unify into one shared component, ideally with prop flags for cycle-vs-clamp and active highlight. Out of scope for this session.
+- **Note Repeat events still bypass the `duration: 0` default.** `createRepeatedNoteEvents` continues to compute duration from `noteRepeatGate` (default 75 → ~94 ms gate @ 120 BPM). This was an intentional carve-out per Marek but means NR-generated events have measurably shorter audible playback than equivalent freshly-recorded pad hits at the same step. May be desired (NR is conceptually "burst pattern"), worth flagging if it ever feels wrong.
+- **`event.duration` max 96 = 1 quarter note.** No way to record gate longer than one beat. For sustained ambient / chord events the user would want half / whole notes (192 / 384). Latent limitation, not addressed.
+- **`beatsPerBar` typo `"4\4"`** (`useAppStore.ts:4127`) — backslash where it should be forward slash. Falls through to default `: 4`, harmless for 4/4 but means non-4/4 time signatures silently return 4. Logged in foundation audit, not fixed.
+- **ATTACK / DECAY in PROGRAM screen now real — UX_AUDIT_FINDINGS entry should be updated.** The "PROGRAM screen — ATTACK/DECAY are fake UI (CRITICAL)" entry from the previous session is now resolved by this work. The entry text should be amended (or the section closed with a "RESOLVED in Session 5" note) rather than deleted. Not done in this session — flagged.
+- **Marek confirmed audio passes for ATTACK / DECAY / event.duration via testing on his end.** The STEP DUR arrows polish was the only remaining UI gap before commit. Audio test verification trail lives in this log entry rather than in the codebase.
+- **Recording-time velocity / event.velocity-to-gain mapping was a Session 4 change.** Still always-on (any event with `velocity != null` gets `gainOverride = velocity/127`). Default velocity 127 keeps that as a no-op for unchanged events, but worth remembering the relationship if the velocity curve gets re-examined (foundation gap #4).
+
+### Files modified
+- `src/audio/samplerEngine.ts` (+147/-30) — full Voice / PlayOptions / pipeline refactor. New types: `Envelope`, `StopOptions`. New methods: `stopVoiceGroup` / `stopVoiceGroups` extended with `releaseMs`, `softStopVoice`, `softStopVoices`, `hardStopVoice`, `applyEnvelope`. New module constant `MIN_RAMP_MS = 1`. Pipeline rewired to `source → (filter)? → envelopeGain → channelGain → pan → masterGain`. `updateChannelMix` and `updateVoiceFilter` updated to reference `voice.channelGain` / `voice.envelopeGain` instead of the old single `voice.gain`. `sustainMs` schedules timer-based softStop and stores the timer on the voice for cleanup.
+- `src/store/useAppStore.ts` (+59/-14) — new helper `programValueToMs`. `playAssignedPadWithContext` context type extended with `attackOverride?` / `decayOverride?` / `sustainMs?`; computes `effectiveAttack` / `effectiveDecay`, builds `envelope` object or undefined, forwards `sustainMs` to engine. `playStepEventFromState` reads `appliedParameter` for ATTACK / DECAY, computes `sustainMs` from `event.duration`. `releasePad` NOTE ON uses softStop with assignment-derived `releaseMs`. `cycleSixteenLevelsParameter` array grew to 5 values. `getSixteenLevelsValue` switch handles ATTACK / DECAY. `playSixteenLevelsVariation` switch handles ATTACK / DECAY. `createRecordedPadEvent` and the 16 LEVELS recording branch and seed `createStepEvent` all write `duration: 0, length: 0`. `adjustSelectedEvent` clamp 0–96 (was 1–96).
+- `src/screens/StepScreen.tsx` (+37/-1) — `<EditableValue>` component added (label, value, optional onPrevious / onNext, optional active). DURATION row uses it. "FULL" string returned when `selectedEvent.duration === 0`.
+- `src/screens/UtilityScreens.tsx` (+3) — 16 LEVELS LCD grid `displayValue` switch handles ATTACK / DECAY (0–100 spread).
+
+All four files committed locally in a single commit `e5ae0bd`: `audio: AD envelope + event.duration gate time (foundation A8)`. Branch ahead of origin/main by 1 commit. Not pushed (Marek's decision).
+
+---
+
 ## Session 4 — 2026-05-20 — 16 LEVELS full feature (VELOCITY/TUNE/FILTER) + metronome accent + count-in downbeat + double STOP panic
 
 ### What was attempted
