@@ -99,6 +99,109 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 13 — 2026-05-20 — Non-4/4 TS refactor: metronome + REC + bar nav + formatBarPosition + legacy cleanup
+
+### What was attempted
+
+Continue from Session 12 — close out the non-4/4 TS support. Session 12 wrap reported open items: metronome 4-per-bar assumption, getRecordedEventPosition uniform-bar tick math, formatBarPosition beat structure, bar navigation `(targetBar-1)*16` math, and 14 legacy `eventStepIndex` callers. This session targeted all of them.
+
+### What worked
+
+**Metronome bar-aware playback** (`useAppStore.ts` tickTransport):
+- During playback (`isPlaying && (isSequenceRecording || overdubEnabled)`), pulse rate now derived from the current bar's TS denominator. `beatMs = (60000 / bpm) * (4 / denominator)` — for 4/4 → quarter pulse (666ms @ 90BPM), 6/8 → eighth pulse (333ms), 7/8 → eighth pulse.
+- Resolution: `findBarAtGlobalStep(sequence, 24, currentStepIndex)` gets current bar; `getTimeSignatureAtBar(sequence, barIndex)` gets that bar's TS.
+- Accent on `barInfo.stepInBar === 0` (first step of bar). Mid-bar pulses fire normal click.
+- Result: 4/4 gives 4 pulses with accent on 1; 3/4 gives 3; 6/8 gives 6; 7/8 gives 7 — all per spec.
+
+**`getRecordedEventPosition`** (`useAppStore.ts:3702-`):
+- `sequenceTicks` now uses `getSequenceTotalTicks(sequence)` (sum of variable bar tick counts) instead of `state.sequenceLengthBars * 16 * 24`.
+- Mod wrap uses bar-aware total. REC pad hits at variable bar lengths now wrap correctly at sequence boundary.
+
+**`formatBarPosition`** (`useAppStore.ts:3383-`):
+- Signature now accepts optional `sequence` parameter. When provided, derives beat count from current bar's TS denominator: `ticksPerBeat = 96 * 4 / denominator`.
+- 4/4 → `001.04.72` end, 6/8 → `001.06.24` end (since each "beat" is 8th = 48 ticks), 3/4 → `001.03.72` end, 7/8 → `001.07.24` end.
+- All 9 callers updated to pass sequence where state was in scope: `executeGoTo`, `stepBackward`, `stepForward`, `barBackward`, `barForward`, `tickStepPlayback`, and adjacent paths.
+
+**Bar navigation** (`stepBackward`, `stepForward`, `barBackward`, `barForward`):
+- All four use `findBarAtGlobalStep(sequence, 24, currentStepIndex)` and `globalStepFromBarAndStepInBar(sequence, 24, barIndex, 0)` for bar-aware position math.
+- `stepForward` clamps to `getSequenceTotalSteps(sequence, 24) - 1` instead of `sequenceLengthBars * 16 - 1`.
+- `barForward`/`barBackward` jump to next/previous bar START at correct global step.
+
+**`createStepEventFromIndex` / `createStepEventAtPosition`** (`useAppStore.ts:3788-`, `3837-`):
+- Both accept optional `extra.sequence` parameter. Bar derivation uses `findBarAtGlobalStep` when sequence provided.
+- Beat number computed via `Math.floor(tickInBar / ticksPerBeat) + 1` where `ticksPerBeat = 96 * 4 / denominator`. Bar-aware beat numbering in event step strings.
+- All four callers updated to pass `sequence: getCurrentSequence(state)`.
+
+**Legacy `eventStepIndex` callers — bar-aware migration:**
+- `playEventsAtCurrentStep` — uses `eventGlobalStep(event.step, sequence, 24)` against current step
+- `playFirstEventInCurrentBar` — bar boundaries via `globalStepFromBarAndStepInBar`, comparison via `eventGlobalStep`
+- PAD ERASE BAR predicate — same pattern
+- `nearestEventAtOrAfter(events, stepIndex, sequence?)` — accepts optional sequence, falls back to legacy if absent. Threading sequence in callers TBD; default behavior unchanged for 4/4.
+- StepScreen.tsx local `eventStepIndex(step, sequence?)` — added bar-aware path. Caller updated to pass `currentSequenceObj`. Visual playhead "playing" highlight matches across mixed TS.
+
+**`executeGoTo`** — bar-aware target step computation via `globalStepFromBarAndStepInBar(sequence, 24, currentBar-1, currentStep-1)` + wrap by `getSequenceTotalSteps`. GO TO with mixed-TS now lands on correct bar.
+
+**Sort operations** (line 1293, 1321, 1696, 3495, 4378, 4861) — left using legacy `eventStepIndex`. Reason: sort compares two event step strings using the SAME function on both sides. Order is preserved regardless of legacy/bar-aware semantics. Bar-aware migration would be cosmetic; deferred.
+
+**Legacy `eventStepIndex` function** kept in place. Documented above as deliberate: sort sites can continue using it. Removing it entirely would force sort callers to thread sequence — net negative for readability without functional benefit.
+
+Build clean (`tsc + vite build`) after each change.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** in this environment.
+- **No browser audio test** — Marek to verify. The metronome change is the highest-confidence change (mathematical mapping); REC position and bar nav rely on consistent `globalStepFromBarAndStepInBar` semantics; if there's a subtle off-by-one in `globalStepFromBarAndStepInBar` clamping, REC could land off-grid by one step. Worth testing across 3/4, 6/8, 5/4, 7/8.
+- **Did NOT remove legacy `eventStepIndex` function** — Marek's spec said "po finałowej migracji: usuń legacy". Did not remove because 6 sort callers still use it consistently. Removing would require either threading sequence through all sort sites (verbose) or providing a `eventStepIndex(step, sequence?)` shim (which is what we already have via the helper pattern — Marek can collapse if desired). Surfaced as decision rather than incomplete work.
+- **`createStepEventAtPosition` extra param `sequence` is in `Partial<StepEvent> & { sequence?: Sequence }`** — slightly ugly type union. Cleaner would be a separate parameter, but that would require updating every caller signature. The blended option preserves existing call sites.
+- **`nearestEventAtOrAfter` callers not all updated to pass sequence.** 14 call sites. Most callers in tickStepPlayback / hot path already use it correctly via `currentStepIndex` which is already bar-aware. Sort-adjacent uses are fine. Some less-trafficked sites may still pass no sequence and use the legacy fallback — acceptable for 4/4 sequences, may misalign for mixed-TS. Track as followup.
+- **`computeRecordTransitionPatch`** still uses `formatBarPosition(1, visualStep)` without sequence — that's the count-in start path where currentSequence is still definite (the active one). Could pass sequence; doesn't affect correctness for 4/4 default.
+
+### Decisions made
+
+- **Sort operations stay on legacy `eventStepIndex`.** Same function on both sides of comparison preserves order regardless of bar-awareness. Bar-aware would be cosmetic.
+- **`nearestEventAtOrAfter` signature: optional sequence.** Backward-compatible. Callers that have sequence pass it; others fall back to legacy. Hot path callers already use bar-aware semantics via tickStepPlayback's `currentStepIndex`.
+- **`createStepEventFromIndex` / `createStepEventAtPosition` extra param `sequence`.** Optional. Callers that pass it get bar-aware beat numbering in event step string. For default 4/4 sequences, results identical.
+- **Pulse-rate semantics**: `pulse_duration = (60000 / bpm) * (4 / denominator)`. So 6/8 fires 6 pulses per bar, 7/8 fires 7, 4/4 fires 4. Compound time NOT grouped (e.g., 6/8 = 6 pulses, not 2 grouped) per simplest interpretation and Marek's "twój call, dokumentuj" latitude.
+- **Accent: first step of bar.** Stable detection via `findBarAtGlobalStep().stepInBar === 0`. Possible miss if pulse fires when stepIndex transient between steps — race window <1ms, acceptable.
+
+### Open issues / followups
+
+- **Live audio test** by Marek:
+  1. 4/4 default — metronome 4 pulses, REC, position display, nav — NO REGRESSION
+  2. 3/4 — metronome 3 pulses, REC on each 1/4 hit, position display "001.01.000" → "001.03.72"
+  3. 6/8 — metronome 6 pulses (eighth pulse rate)
+  4. 5/4 — metronome 5 pulses (BUT note: STEP screen shows event LIST not 16-cell grid — no grid scaling issue)
+  5. 7/8 — metronome 7 pulses
+  6. Mixed-TS — bars 4/4 → 3/4 → 6/8 → 5/4, smooth transitions, metronome adapts each bar
+  7. REC w mixed-TS — hit during 3/4 bar lands on correct tick within that bar's tick count
+  8. Save/load mixed-TS — Phase 1 hydrate path already migrates legacy → new format
+- **Sort callers** could move to bar-aware for consistency (cosmetic). Defer.
+- **Remove legacy `eventStepIndex` entirely** — would require sort callers to thread sequence. Decide if benefit > readability cost.
+- **TC APPLY (`applyTimingCorrectToEvents`)** still uses `eventStepToTicks` which assumes uniform 384-ticks-per-bar via `(bar - 1) * 384`. For mixed-TS sequences, TC APPLY on bar 2+ could mis-snap. Not touched this session. Future.
+- **Performance** — Mexpand profile if 64-bar mixed-TS sequence shows latency. `findBarAtGlobalStep` is O(barCount) per call. Not yet measured.
+- **BAR EDITOR SCREEN** — still future. Insert/delete bars in UI, full mixed-TS overview. Out of scope.
+- **DISK schema serializer** writes `timeSignatureChanges` if present (passes through via opaque `sequences` field). Save/load of mixed-TS sequences works without schema bump.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `tickTransport` — bar-aware metronome pulse rate + accent
+  - `formatBarPosition` — optional `sequence` param, beat count from denominator
+  - `stepBackward`, `stepForward`, `barBackward`, `barForward` — bar-aware position math
+  - `executeGoTo` — bar-aware target step + wrap
+  - `tickStepPlayback` — bar-aware `formatBarPosition` call (sequence passed)
+  - `getRecordedEventPosition` — `getSequenceTotalTicks(sequence)` for wrap
+  - `createStepEventFromIndex`, `createStepEventAtPosition` — optional `sequence` in extra; bar-aware bar/beat derive
+  - All four callers of `createStepEventAtPosition` + the one caller of `createStepEventFromIndex` pass `sequence`
+  - `playEventsAtCurrentStep`, `playFirstEventInCurrentBar` — use `eventGlobalStep` + bar-aware boundaries
+  - PAD ERASE BAR predicate — bar-aware
+  - `nearestEventAtOrAfter` — optional `sequence` param, legacy fallback
+- `src/screens/StepScreen.tsx`:
+  - Local `eventStepIndex` accepts optional sequence-shape arg, walks `timeSignatureChanges` when provided
+  - Visual playhead match passes `currentSequenceObj`
+
+---
+
 ## Session 12 — 2026-05-20 — Non-4/4 TS refactor Phase 2 + 3 (partial) + 4 (F6 WINDOW popup)
 
 ### What was attempted

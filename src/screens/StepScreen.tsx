@@ -125,7 +125,7 @@ export function StepScreen() {
                 const eventMuted = event.muted === true;
                 const dimmed = trackMuted || eventMuted;
                 const selected = event.id === selectedEventId;
-                const playing = !dimmed && eventStepIndex(event.step) === currentStepIndex;
+                const playing = !dimmed && eventStepIndex(event.step, currentSequenceObj) === currentStepIndex;
                 const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
                 const eventBank = event.padBank ?? "A";
                 const eventPadNumber = event.padNumber ?? (Number(event.pad.replace(/^P/, "")) || 1);
@@ -316,8 +316,25 @@ function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-function eventStepIndex(step: string) {
+function eventStepIndex(step: string, sequence?: { lengthBars: number; timeSignatureChanges?: Array<{ fromBar: number; num: number; den: number }>; timeSignature?: string }) {
   const [eventBar, beat, tick] = step.split(".").map(Number);
+  // Bar-aware variant: walk bars to account for variable step counts.
+  if (sequence && sequence.timeSignatureChanges && sequence.timeSignatureChanges.length > 0) {
+    const targetBarIdx = Math.max(0, (eventBar ?? 1) - 1);
+    let cumulative = 0;
+    for (let i = 0; i < targetBarIdx && i < sequence.lengthBars; i += 1) {
+      // Resolve TS at bar i.
+      let resolved = sequence.timeSignatureChanges[0];
+      for (const c of sequence.timeSignatureChanges) {
+        if (c.fromBar <= i) resolved = c;
+        else break;
+      }
+      const barTicks = Math.round((resolved.num * 384) / resolved.den);
+      cumulative += Math.max(1, Math.floor(barTicks / 24));
+    }
+    const ticksInBar = ((beat ?? 1) - 1) * 96 + (tick ?? 0);
+    return cumulative + Math.floor(ticksInBar / 24);
+  }
   return (eventBar - 1) * 16 + (beat - 1) * 4 + Math.floor(tick / 24);
 }
 

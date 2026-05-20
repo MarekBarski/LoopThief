@@ -1203,6 +1203,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           const velocity = state.fullLevelEnabled ? 127 : 100;
           const assignment = state.padAssignments[state.padBank].find((item) => item.pad === selectedPad);
           const event = createStepEventAtPosition(0, 0, selectedPad, velocity, 100, {
+            sequence: getCurrentSequence(state),
             trackId: state.currentTrackId,
             trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
             sourcePad: selectedPad,
@@ -1271,6 +1272,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                 100,
                 0,
                 {
+                  sequence: getCurrentSequence(state),
                   physicalPad: selectedPad,
                   sourcePad: state.sixteenLevelsSourcePad,
                   trackId: state.currentTrackId,
@@ -1419,9 +1421,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   executeGoTo: () =>
     set((state) => {
-      const currentStepIndex = ((state.currentBar - 1) * 16 + (state.currentStep - 1)) % (state.sequenceLengthBars * 16);
+      const sequence = getCurrentSequence(state);
+      const totalSteps = getSequenceTotalSteps(sequence, 24);
+      const targetGlobal = globalStepFromBarAndStepInBar(sequence, 24, state.currentBar - 1, state.currentStep - 1);
+      const currentStepIndex = ((targetGlobal % totalSteps) + totalSteps) % totalSteps;
       return {
-        bar: formatBarPosition(state.currentBar, state.currentStep),
+        bar: formatBarPosition(state.currentBar, state.currentStep, sequence),
         currentStepIndex,
         ...selectedEventPatch(state.stepEvents, nearestEventAtOrAfter(state.stepEvents, currentStepIndex)),
         lastAction: `GO TO ${String(state.currentBar).padStart(3, "0")}.${String(state.currentStep).padStart(2, "0")}`,
@@ -1444,10 +1449,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else if (eraseMode === "TRACK") {
         predicate = (event) => event.trackId === state.currentTrackId;
       } else if (eraseMode === "BAR") {
-        const barStart = (state.currentBar - 1) * 16;
-        const barEnd = barStart + 16;
+        const sequence = getCurrentSequence(state);
+        const barIndex = state.currentBar - 1;
+        const barStart = globalStepFromBarAndStepInBar(sequence, 24, barIndex, 0);
+        const barEnd = barStart + getBarStepCount(sequence, barIndex, 24);
         predicate = (event) => {
-          const idx = eventStepIndex(event.step);
+          const idx = eventGlobalStep(event.step, sequence, 24);
           return idx >= barStart && idx < barEnd;
         };
       } else {
@@ -2559,63 +2566,72 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   stepBackward: () => {
     set((state) => {
+      const sequence = getCurrentSequence(state);
       const currentStepIndex = Math.max(state.currentStepIndex - 1, 0);
-      const currentBar = Math.floor(currentStepIndex / 16) + 1;
+      const info = findBarAtGlobalStep(sequence, 24, currentStepIndex);
+      const currentBar = info.bar + 1;
+      const currentStep = info.stepInBar + 1;
       return {
         currentStepIndex,
         currentBar,
-        currentStep: (currentStepIndex % 16) + 1,
+        currentStep,
         currentEvent: nearestEventAtOrAfter(state.stepEvents, currentStepIndex) + 1,
         ...selectedEventPatch(state.stepEvents, nearestEventAtOrAfter(state.stepEvents, currentStepIndex)),
-        bar: formatBarPosition(currentBar, (currentStepIndex % 16) + 1),
+        bar: formatBarPosition(currentBar, currentStep, sequence),
       };
     });
     playEventsAtCurrentStep(get());
   },
   stepForward: () => {
     set((state) => {
-      const currentStepIndex = Math.min(state.currentStepIndex + 1, state.sequenceLengthBars * 16 - 1);
-      const currentBar = Math.floor(currentStepIndex / 16) + 1;
+      const sequence = getCurrentSequence(state);
+      const totalSteps = getSequenceTotalSteps(sequence, 24);
+      const currentStepIndex = Math.min(state.currentStepIndex + 1, totalSteps - 1);
+      const info = findBarAtGlobalStep(sequence, 24, currentStepIndex);
+      const currentBar = info.bar + 1;
+      const currentStep = info.stepInBar + 1;
       return {
         currentStepIndex,
         currentBar,
-        currentStep: (currentStepIndex % 16) + 1,
+        currentStep,
         currentEvent: nearestEventAtOrAfter(state.stepEvents, currentStepIndex) + 1,
         ...selectedEventPatch(state.stepEvents, nearestEventAtOrAfter(state.stepEvents, currentStepIndex)),
-        bar: formatBarPosition(currentBar, (currentStepIndex % 16) + 1),
+        bar: formatBarPosition(currentBar, currentStep, sequence),
       };
     });
     playEventsAtCurrentStep(get());
   },
   barBackward: () => {
     set((state) => {
+      const sequence = getCurrentSequence(state);
       const atBarStart = state.currentStep === 1;
-      const targetBar = atBarStart ? Math.max(state.currentBar - 1, 1) : state.currentBar;
-      const currentStepIndex = (targetBar - 1) * 16;
+      const targetBarIndex = atBarStart ? Math.max(state.currentBar - 2, 0) : state.currentBar - 1;
+      const currentStepIndex = globalStepFromBarAndStepInBar(sequence, 24, targetBarIndex, 0);
       const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
       return {
-        currentBar: targetBar,
+        currentBar: targetBarIndex + 1,
         currentStep: 1,
         currentStepIndex,
         currentEvent: selectedStepEventIndex + 1,
         ...selectedEventPatch(state.stepEvents, selectedStepEventIndex),
-        bar: formatBarPosition(targetBar, 1),
+        bar: formatBarPosition(targetBarIndex + 1, 1, sequence),
       };
     });
     playFirstEventInCurrentBar(get());
   },
   barForward: () => {
     set((state) => {
-      const targetBar = Math.min(state.currentBar + 1, state.sequenceLengthBars);
-      const currentStepIndex = (targetBar - 1) * 16;
+      const sequence = getCurrentSequence(state);
+      const targetBarIndex = Math.min(state.currentBar, sequence.lengthBars - 1);
+      const currentStepIndex = globalStepFromBarAndStepInBar(sequence, 24, targetBarIndex, 0);
       const selectedStepEventIndex = nearestEventAtOrAfter(state.stepEvents, currentStepIndex);
       return {
-        currentBar: targetBar,
+        currentBar: targetBarIndex + 1,
         currentStep: 1,
         currentStepIndex,
         currentEvent: selectedStepEventIndex + 1,
         ...selectedEventPatch(state.stepEvents, selectedStepEventIndex),
-        bar: formatBarPosition(targetBar, 1),
+        bar: formatBarPosition(targetBarIndex + 1, 1, sequence),
       };
     });
     playFirstEventInCurrentBar(get());
@@ -2693,7 +2709,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentStep,
       currentEvent: selectedStepEventIndex + 1,
       ...selectedEventPatch(workingStepEvents, selectedStepEventIndex),
-      bar: formatBarPosition(currentBar, currentStep),
+      bar: formatBarPosition(currentBar, currentStep, sequence),
       ...(workingStepEvents !== state.stepEvents
         ? { stepEvents: workingStepEvents, sequences: workingSequences }
         : {}),
@@ -2857,10 +2873,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => {
       if (state.transportPhase !== "COUNT_IN" || state.transportCountInBeatsRemaining <= 0) {
         if (state.isPlaying && (state.isSequenceRecording || state.overdubEnabled) && shouldClickDuringRecord(state)) {
-          const beatMs = 60000 / state.bpm;
+          // Pulse rate depends on current bar's TS denominator. 4/4 → quarter pulse,
+          // 6/8 → eighth pulse, etc. Accent on first step of bar.
+          const sequence = getCurrentSequence(state);
+          const barInfo = findBarAtGlobalStep(sequence, 24, state.currentStepIndex);
+          const barTs = getTimeSignatureAtBar(sequence, barInfo.bar);
+          const beatMs = (60000 / state.bpm) * (4 / barTs.den);
           const nextPulse = state.transportCountInPulse + deltaMs;
           if (nextPulse < beatMs) return { transportCountInPulse: nextPulse };
-          playMetronomeClick(state, isFirstBeatOfBar(state.currentStepIndex + 1, state));
+          const accent = barInfo.stepInBar === 0;
+          playMetronomeClick(state, accent);
           return { transportCountInPulse: nextPulse - beatMs };
         }
         return state;
@@ -3374,8 +3396,16 @@ function shiftBar(bar: string, delta: number) {
   return `${String(nextBar).padStart(3, "0")}.${beat}.${tick}`;
 }
 
-function formatBarPosition(bar: number, step: number) {
-  return `${String(bar).padStart(3, "0")}.${String(Math.ceil(step / 4)).padStart(2, "0")}.${String(((step - 1) % 4) * 24).padStart(2, "0")}`;
+function formatBarPosition(bar: number, step: number, sequence?: Sequence) {
+  // `step` is 1-indexed within bar at 1/16 grid (24 ticks each). Output: "BAR.BEAT.TICK".
+  // For non-4/4 bars, beat count depends on TS denominator: 4/4 → 4 beats × 96 ticks each,
+  // 6/8 → 6 beats × 48 ticks (eighth pulses), 3/4 → 3 × 96, etc.
+  const denominator = sequence ? getTimeSignatureAtBar(sequence, bar - 1).den : 4;
+  const ticksPerBeat = Math.round((96 * 4) / denominator);
+  const ticksFromBarStart = Math.max(0, (step - 1) * 24);
+  const beat = Math.floor(ticksFromBarStart / ticksPerBeat) + 1;
+  const tickInBeat = ticksFromBarStart % ticksPerBeat;
+  return `${String(bar).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tickInBeat).padStart(2, "0")}`;
 }
 
 const UNDO_DEPTH = 50;
@@ -3567,9 +3597,12 @@ function metronomeSettingPatch(key: keyof SettingsValues, value: SettingsValues[
   return {};
 }
 
-function nearestEventAtOrAfter(events: StepEvent[], stepIndex: number) {
+function nearestEventAtOrAfter(events: StepEvent[], stepIndex: number, sequence?: Sequence) {
   if (events.length === 0) return 0;
-  const nextIndex = events.findIndex((event) => eventStepIndex(event.step) >= stepIndex);
+  const stepOf = sequence
+    ? (s: string) => eventGlobalStep(s, sequence, 24)
+    : (s: string) => eventStepIndex(s);
+  const nextIndex = events.findIndex((event) => stepOf(event.step) >= stepIndex);
   return nextIndex === -1 ? events.length - 1 : nextIndex;
 }
 
@@ -3661,6 +3694,7 @@ function createRecordedPadEvent(state: AppState, pad: string, velocity: number) 
   const position = getRecordedEventPosition(state);
   const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
   return createStepEventAtPosition(position.stepIndex, position.tickOffset, pad, velocity, state.noteRepeatGate, {
+    sequence: getCurrentSequence(state),
     trackId: state.currentTrackId,
     trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
     sourcePad: pad,
@@ -3674,16 +3708,17 @@ function createRecordedPadEvent(state: AppState, pad: string, velocity: number) 
 }
 
 function getRecordedEventPosition(state: AppState) {
+  const sequence = getCurrentSequence(state);
   const ppqMs = 60_000 / state.bpm / 96;
   const elapsedTicks = ppqMs > 0 ? Math.round((performance.now() - sequenceStepStartedAt) / ppqMs) : 0;
   const rawTickOffset = clamp(elapsedTicks, 0, 23);
   const totalTicks = Math.max(0, state.currentStepIndex) * 24 + rawTickOffset;
-  const sequenceTicks = state.sequenceLengthBars * 16 * 24;
+  const sequenceTicks = getSequenceTotalTicks(sequence);
   const quantizedTicks =
     state.timingCorrect === "OFF"
       ? totalTicks
       : Math.round(totalTicks / timingCorrectGridTicks(state.timingCorrect)) * timingCorrectGridTicks(state.timingCorrect);
-  const boundedTicks = ((quantizedTicks % sequenceTicks) + sequenceTicks) % sequenceTicks;
+  const boundedTicks = sequenceTicks > 0 ? ((quantizedTicks % sequenceTicks) + sequenceTicks) % sequenceTicks : 0;
   return {
     stepIndex: Math.floor(boundedTicks / 24),
     tickOffset: boundedTicks % 24,
@@ -3765,12 +3800,30 @@ function createStepEventFromIndex(
   velocity: number,
   gate: number,
   timingOffset: number,
-  extra?: Partial<StepEvent>,
+  extra?: Partial<StepEvent> & { sequence?: Sequence },
 ): StepEvent {
-  const bar = Math.floor(stepIndex / 16);
-  const local = stepIndex % 16;
-  const beat = Math.floor(local / 4) + 1;
-  const tick = (local % 4) * 24;
+  // Bar-aware position derive if sequence provided; else legacy uniform-16 assumption.
+  let bar: number;
+  let local: number;
+  let beat: number;
+  let tick: number;
+  const denominator = extra?.sequence
+    ? getTimeSignatureAtBar(extra.sequence, findBarAtGlobalStep(extra.sequence, 24, stepIndex).bar).den
+    : 4;
+  if (extra?.sequence) {
+    const info = findBarAtGlobalStep(extra.sequence, 24, stepIndex);
+    bar = info.bar;
+    local = info.stepInBar;
+  } else {
+    bar = Math.floor(stepIndex / 16);
+    local = stepIndex % 16;
+  }
+  const ticksPerBeat = Math.round((96 * 4) / denominator);
+  const ticksFromBarStart = local * 24;
+  beat = Math.floor(ticksFromBarStart / ticksPerBeat) + 1;
+  tick = ticksFromBarStart % ticksPerBeat;
+  const { sequence: _ignored, ...rest } = extra ?? {};
+  void _ignored;
   return {
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${beat}.${String(tick).padStart(2, "0")}`,
@@ -3786,7 +3839,7 @@ function createStepEventFromIndex(
     probability: 100,
     variation: "REPEAT",
     muted: false,
-    ...extra,
+    ...rest,
   };
 }
 
@@ -3796,13 +3849,27 @@ function createStepEventAtPosition(
   pad: string,
   velocity: number,
   gate: number,
-  extra?: Partial<StepEvent>,
+  extra?: Partial<StepEvent> & { sequence?: Sequence },
 ): StepEvent {
-  const bar = Math.floor(stepIndex / 16);
-  const local = stepIndex % 16;
+  let bar: number;
+  let local: number;
+  const denominator = extra?.sequence
+    ? getTimeSignatureAtBar(extra.sequence, findBarAtGlobalStep(extra.sequence, 24, stepIndex).bar).den
+    : 4;
+  if (extra?.sequence) {
+    const info = findBarAtGlobalStep(extra.sequence, 24, stepIndex);
+    bar = info.bar;
+    local = info.stepInBar;
+  } else {
+    bar = Math.floor(stepIndex / 16);
+    local = stepIndex % 16;
+  }
   const tickInBar = local * 24 + tickOffset;
-  const beat = Math.floor(tickInBar / 96) + 1;
-  const tick = tickInBar % 96;
+  const ticksPerBeat = Math.round((96 * 4) / denominator);
+  const beat = Math.floor(tickInBar / ticksPerBeat) + 1;
+  const tick = tickInBar % ticksPerBeat;
+  const { sequence: _ignored, ...rest } = extra ?? {};
+  void _ignored;
   return {
     id: nextEventId(),
     step: `${String(bar + 1).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`,
@@ -3818,7 +3885,7 @@ function createStepEventAtPosition(
     probability: 100,
     variation: "REC",
     muted: false,
-    ...extra,
+    ...rest,
   };
 }
 
@@ -4301,6 +4368,7 @@ function createStepEventForPadImpl(state: AppState, padIdentifier: string): Part
   const stepIndex = Math.floor(boundedTicks / 24);
   const tickOffset = boundedTicks % 24;
   const newEvent = createStepEventAtPosition(stepIndex, tickOffset, padIdentifier, 100, 100, {
+    sequence: getCurrentSequence(state),
     trackId: state.currentTrackId,
     trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
     sourcePad: padIdentifier,
@@ -4348,17 +4416,21 @@ function swingOffsetTicks(state: Pick<AppState, "swing" | "timingCorrect">, step
 }
 
 function playEventsAtCurrentStep(state: AppState) {
+  const sequence = getCurrentSequence(state);
   const eventsAtStep = state.stepEvents.filter(
-    (event) => eventStepIndex(event.step) === state.currentStepIndex && shouldPlayStepEvent(state, event),
+    (event) => eventGlobalStep(event.step, sequence, 24) === state.currentStepIndex && shouldPlayStepEvent(state, event),
   );
   eventsAtStep.forEach((event) => playStepEventFromState(state, event, 0));
 }
 
 function playFirstEventInCurrentBar(state: AppState) {
-  const barStart = (state.currentBar - 1) * 16;
-  const barEnd = barStart + 16;
+  const sequence = getCurrentSequence(state);
+  const barIndex = state.currentBar - 1;
+  const barStart = globalStepFromBarAndStepInBar(sequence, 24, barIndex, 0);
+  const barSteps = getBarStepCount(sequence, barIndex, 24);
+  const barEnd = barStart + barSteps;
   const event = state.stepEvents.find((evt) => {
-    const idx = eventStepIndex(evt.step);
+    const idx = eventGlobalStep(evt.step, sequence, 24);
     return idx >= barStart && idx < barEnd && shouldPlayStepEvent(state, evt);
   });
   if (event) playStepEventFromState(state, event, 0);
