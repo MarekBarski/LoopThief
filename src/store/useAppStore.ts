@@ -7951,14 +7951,15 @@ function scheduleSongEvent(
     source.start(startTime, offset, duration);
   }
 
-  // Diagnostic snapshot for the caller. Source-buffer peak is computed only on
-  // first encounter per buffer; subsequent identical samples may show a cached
-  // value (or recompute — cheap enough for small buffers).
+  // Diagnostic snapshot for the caller. Full-buffer peak scan — sparse scan
+  // (every 46th sample at 48 kHz × 1 s) was under-reporting transients in
+  // kick/snare samples by 10–30 dB, masking the true source peak. Full scan
+  // costs ~50k ops per event for a 1-second 48 kHz sample, capped at 5 diag
+  // samples per render. Negligible.
   let sourcePeak = 0;
   for (let c = 0; c < buffer.numberOfChannels; c += 1) {
     const data = buffer.getChannelData(c);
-    const step = Math.max(1, Math.floor(data.length / 1024)); // sparse scan for speed
-    for (let i = 0; i < data.length; i += step) {
+    for (let i = 0; i < data.length; i += 1) {
       const v = Math.abs(data[i]);
       if (v > sourcePeak) sourcePeak = v;
     }

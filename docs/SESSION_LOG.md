@@ -99,6 +99,43 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.T — 2026-05-21 — WAV export: full-buffer source-peak scan (diagnostic accuracy fix)
+
+### What was attempted
+
+Marek reported in 22.S's diagnostic console output that source-buffer peaks were 0.01–0.05 (= −25 to −37 dBFS) for pro samples that Audacity displayed at ~0.7 peak (= −3 dBFS). Diagnosed before any fix: the sparse 1024-point scan in the 22.R diagnostic was likely under-reporting transient peaks (kick/snare hits live in samples 50–150 of a 48k buffer; sparse step=46 samples either side of the peak). Replaced sparse scan with full scan. Awaiting Marek's re-run with parallel Audacity peak-amplitude check.
+
+### What worked
+
+`scheduleSongEvent` diagnostic peak measurement changed from sparse-1024 to full-buffer scan. Cost: ~50k ops per event-buffer for a 1-second sample at 48 kHz, capped at 5 diag samples per render. Build clean.
+
+### What didn't work / pitfalls hit
+
+- **Sparse scan was added in 22.R "for speed" without considering transient-peak skip risk.** Real-world drum samples have their peaks concentrated in the first 1–5 ms. A 46-sample step over a transient that's 50 samples wide will MISS the peak ~80% of the time. Lesson: when measuring peaks in audio, ALWAYS full-scan unless you can prove the signal has no sub-sampled transients.
+- **22.R session log claimed "diagnostic logs after every render"** without acknowledging the precision tradeoff. Marek interpreted the reported numbers as ground-truth and concluded "LoopThief is dropping 17–34 dB in import pipeline" — but the code-reading audit of the import path (file.arrayBuffer → decodeAudioData → AudioBuffer → registerSampleAudio) found no plausible gain stage. The numbers were suspect, the diagnostic was lying. Fixed now.
+- **Did NOT change anything else** — no fixes to import, no fixes to render. Pure diagnostic accuracy. Waiting on Marek's re-run output before any actual fix.
+
+### Decisions made
+
+- Full scan replaces sparse. The "diagnostic speed" concern is overrated for 5 events per render.
+- No other code change — pure measurement fix.
+- Marek runs export again with same project + checks Audacity peak amplitude in parallel. Both data points needed before next move.
+
+### Open issues / followups
+
+- **Marek**: re-run WAV export with same project. Paste new `[WAV export]` console output. The sourcePeak values should now reflect true buffer peaks.
+- **Marek (parallel)**: Audacity check on "CNN-Snare 01" — Edit → Selection → Stats → Peak Amplitude — confirms actual dBFS of the source file.
+- After both data points: if sourcePeak now matches file peak, import is innocent and the loss (if any) is elsewhere (render pipeline or encoder). If sourcePeak is still low, dig into decodeAudioData behavior + register flow.
+- FX bus rendering still deferred.
+- Choke groups in offline still missing.
+- Swing in offline still missing.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — `scheduleSongEvent` diagnostic peak loop: removed `step` variable, scan every sample. Comment updated to explain the change.
+
+---
+
 ## Session 22.S — 2026-05-21 — WAV export: NOTE ON gate-off envelope-skip mirror (bass tail fix)
 
 ### What was attempted
