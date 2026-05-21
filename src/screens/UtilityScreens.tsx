@@ -1585,3 +1585,358 @@ export function TimeSigWindowScreen() {
     </ScreenFrame>
   );
 }
+
+// ============================================================================
+// SAMPLE EDIT WINDOW — 8 destructive operations on the CHOP active region.
+// ============================================================================
+
+const SAMPLE_EDIT_OP_CYCLE = [
+  "TIME_STRETCH",
+  "PITCH_SHIFT",
+  "WARP",
+  "REVERSE",
+  "NORMALIZE",
+  "BIT_REDUCE",
+  "FADE_IN",
+  "FADE_OUT",
+] as const;
+
+const SAMPLE_EDIT_OP_LABEL: Record<typeof SAMPLE_EDIT_OP_CYCLE[number], string> = {
+  TIME_STRETCH: "TIME STRETCH",
+  PITCH_SHIFT: "PITCH SHIFT",
+  WARP: "WARP / RESAMPLE",
+  REVERSE: "REVERSE",
+  NORMALIZE: "NORMALIZE",
+  BIT_REDUCE: "BIT REDUCE",
+  FADE_IN: "FADE IN",
+  FADE_OUT: "FADE OUT",
+};
+
+const BIT_REDUCE_PRESET_CYCLE = ["SP-1200", "MPC60", "NES", "ATARI", "CUSTOM"] as const;
+const BIT_REDUCE_PRESET_VALUES: Record<Exclude<typeof BIT_REDUCE_PRESET_CYCLE[number], "CUSTOM">, { bitDepth: number; reducedSampleRate: number }> = {
+  "SP-1200": { bitDepth: 12, reducedSampleRate: 26040 },
+  "MPC60": { bitDepth: 12, reducedSampleRate: 40000 },
+  "NES": { bitDepth: 7, reducedSampleRate: 22050 },
+  "ATARI": { bitDepth: 8, reducedSampleRate: 22050 },
+};
+
+const FADE_CURVE_CYCLE = ["LINEAR", "LOG", "EXP"] as const;
+const STRETCH_MODE_CYCLE = ["RATIO", "BPM_MATCH"] as const;
+const STRETCH_MODE_LABEL: Record<typeof STRETCH_MODE_CYCLE[number], string> = {
+  RATIO: "RATIO",
+  BPM_MATCH: "BPM MATCH",
+};
+
+export function SampleEditWindowScreen() {
+  const sourceIndex = useAppStore((s) => s.sampleEditSourceIndex);
+  const recordedSamples = useAppStore((s) => s.recordedSamples);
+  const op = useAppStore((s) => s.sampleEditOp);
+  const params = useAppStore((s) => s.sampleEditParams);
+  const setSampleEditOp = useAppStore((s) => s.setSampleEditOp);
+  const setSampleEditParam = useAppStore((s) => s.setSampleEditParam);
+  const applySampleEdit = useAppStore((s) => s.applySampleEdit);
+  const closeSampleEditWindow = useAppStore((s) => s.closeSampleEditWindow);
+
+  const source = recordedSamples[sourceIndex] ?? recordedSamples[0];
+  const sampleName = source?.name ?? "---";
+
+  const cycleOp = (dir: 1 | -1) => {
+    const i = SAMPLE_EDIT_OP_CYCLE.indexOf(op);
+    const next = SAMPLE_EDIT_OP_CYCLE[(i + dir + SAMPLE_EDIT_OP_CYCLE.length) % SAMPLE_EDIT_OP_CYCLE.length];
+    setSampleEditOp(next);
+  };
+
+  const doIt = () => {
+    if (!source) {
+      window.alert("No sample selected.");
+      return;
+    }
+    void applySampleEdit();
+  };
+
+  return (
+    <ScreenFrame title="SAMPLE EDIT" subtitle={`Sample: ${sampleName}`}>
+      {shell(
+        <div className="grid h-full grid-rows-[auto_1fr] gap-[10px]">
+          {/* Operation selector */}
+          <section className="grid grid-cols-[1fr_1fr] gap-[2.3%] border border-[#46533b] bg-black/20 p-[2.4%]">
+            <div className="grid content-start gap-[6px] text-[clamp(10px,0.84vw,13px)] tracking-[0.14em]">
+              <p className="text-[#91a477]">OPERATION</p>
+              <ArrowRow
+                label=""
+                value={SAMPLE_EDIT_OP_LABEL[op]}
+                onPrev={() => cycleOp(-1)}
+                onNext={() => cycleOp(1)}
+              />
+            </div>
+            <div className="grid content-start gap-[4px] text-[clamp(10px,0.78vw,12px)] tracking-[0.12em]">
+              <p className="text-[#91a477]">SOURCE</p>
+              <div className="grid grid-cols-[1fr_auto]"><span>SAMPLE</span><span className="text-[#eef6d8]">{sampleName}</span></div>
+              <div className="grid grid-cols-[1fr_auto]"><span>LENGTH</span><span className="text-[#eef6d8]">{source ? `${source.durationMs} ms` : "---"}</span></div>
+              <div className="grid grid-cols-[1fr_auto]"><span>RATE</span><span className="text-[#eef6d8]">{source ? `${source.sampleRate} Hz` : "---"}</span></div>
+              <div className="grid grid-cols-[1fr_auto]"><span>CHANNELS</span><span className="text-[#eef6d8]">{source ? source.channelCount : "---"}</span></div>
+            </div>
+          </section>
+
+          {/* Per-op params */}
+          <section className="grid min-h-0 content-start gap-[8px] overflow-auto border border-[#46533b] bg-black/20 p-[3%] text-[clamp(10px,0.84vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">PARAMETERS</p>
+            {renderOpParams(op, params, setSampleEditParam)}
+          </section>
+        </div>,
+        [
+          "F1 —",
+          "F2 —",
+          "F3 —",
+          "F4 —",
+          { label: "F5 DO IT", onClick: doIt },
+          { label: "F6 EXIT", onClick: closeSampleEditWindow },
+        ],
+        closeSampleEditWindow,
+      )}
+    </ScreenFrame>
+  );
+}
+
+type SetParamFn = <K extends keyof import("../audio/sampleEditOps").SampleEditParams>(
+  key: K,
+  value: import("../audio/sampleEditOps").SampleEditParams[K],
+) => void;
+
+function renderOpParams(
+  op: typeof SAMPLE_EDIT_OP_CYCLE[number],
+  params: import("../audio/sampleEditOps").SampleEditParams,
+  setParam: SetParamFn,
+): ReactNode {
+  if (op === "TIME_STRETCH") {
+    const mode = params.stretchMode ?? "RATIO";
+    return (
+      <>
+        <ArrowRow
+          label="MODE"
+          value={STRETCH_MODE_LABEL[mode]}
+          onPrev={() => setParam("stretchMode", mode === "RATIO" ? "BPM_MATCH" : "RATIO")}
+          onNext={() => setParam("stretchMode", mode === "RATIO" ? "BPM_MATCH" : "RATIO")}
+        />
+        {mode === "RATIO" ? (
+          <ArrowRow
+            label="RATIO"
+            value={`${params.stretchRatio ?? 100}%`}
+            onPrev={() => setParam("stretchRatio", Math.max(25, (params.stretchRatio ?? 100) - 1))}
+            onNext={() => setParam("stretchRatio", Math.min(400, (params.stretchRatio ?? 100) + 1))}
+          />
+        ) : (
+          <>
+            <ArrowRow
+              label="ORIG BPM"
+              value={`${params.originalBpm ?? 120}`}
+              onPrev={() => setParam("originalBpm", Math.max(30, (params.originalBpm ?? 120) - 1))}
+              onNext={() => setParam("originalBpm", Math.min(300, (params.originalBpm ?? 120) + 1))}
+            />
+            <ArrowRow
+              label="NEW BPM"
+              value={`${params.newBpm ?? 120}`}
+              onPrev={() => setParam("newBpm", Math.max(30, (params.newBpm ?? 120) - 1))}
+              onNext={() => setParam("newBpm", Math.min(300, (params.newBpm ?? 120) + 1))}
+            />
+          </>
+        )}
+      </>
+    );
+  }
+  if (op === "PITCH_SHIFT") {
+    return (
+      <>
+        <ArrowRow
+          label="SEMITONES"
+          value={String(params.semitones ?? 0)}
+          onPrev={() => setParam("semitones", Math.max(-24, (params.semitones ?? 0) - 1))}
+          onNext={() => setParam("semitones", Math.min(24, (params.semitones ?? 0) + 1))}
+        />
+        <ArrowRow
+          label="CENTS"
+          value={String(params.cents ?? 0)}
+          onPrev={() => setParam("cents", Math.max(-100, (params.cents ?? 0) - 1))}
+          onNext={() => setParam("cents", Math.min(100, (params.cents ?? 0) + 1))}
+        />
+      </>
+    );
+  }
+  if (op === "WARP") {
+    return (
+      <>
+        <ArrowRow
+          label="SPEED"
+          value={`${params.warpSpeed ?? 100}%`}
+          onPrev={() => setParam("warpSpeed", Math.max(25, (params.warpSpeed ?? 100) - 1))}
+          onNext={() => setParam("warpSpeed", Math.min(400, (params.warpSpeed ?? 100) + 1))}
+        />
+        <p className="text-[#91a477] text-[clamp(9px,0.72vw,11px)]">Vinyl-style: changes pitch + tempo together.</p>
+      </>
+    );
+  }
+  if (op === "REVERSE") {
+    return <p className="text-[#91a477]">No parameters. Flips sample playback direction.</p>;
+  }
+  if (op === "NORMALIZE") {
+    return (
+      <ArrowRow
+        label="TARGET dB"
+        value={`${(params.targetDb ?? -0.3).toFixed(1)} dB`}
+        onPrev={() => setParam("targetDb", Math.max(-60, (params.targetDb ?? -0.3) - 0.1))}
+        onNext={() => setParam("targetDb", Math.min(0, (params.targetDb ?? -0.3) + 0.1))}
+      />
+    );
+  }
+  if (op === "BIT_REDUCE") {
+    const bits = params.bitDepth ?? 12;
+    const rate = params.reducedSampleRate ?? 26040;
+    // Detect preset match for display
+    let presetLabel: string = "CUSTOM";
+    for (const [name, vals] of Object.entries(BIT_REDUCE_PRESET_VALUES)) {
+      if (vals.bitDepth === bits && vals.reducedSampleRate === rate) {
+        presetLabel = name;
+        break;
+      }
+    }
+    return (
+      <>
+        <ArrowRow
+          label="PRESET"
+          value={presetLabel}
+          onPrev={() => cyclePreset(presetLabel, -1, setParam)}
+          onNext={() => cyclePreset(presetLabel, 1, setParam)}
+        />
+        <ArrowRow
+          label="BIT DEPTH"
+          value={String(bits)}
+          onPrev={() => setParam("bitDepth", Math.max(1, bits - 1))}
+          onNext={() => setParam("bitDepth", Math.min(16, bits + 1))}
+        />
+        <ArrowRow
+          label="SAMPLE RATE"
+          value={`${rate} Hz`}
+          onPrev={() => setParam("reducedSampleRate", Math.max(1000, rate - 250))}
+          onNext={() => setParam("reducedSampleRate", Math.min(48000, rate + 250))}
+        />
+      </>
+    );
+  }
+  if (op === "FADE_IN" || op === "FADE_OUT") {
+    const curve = params.fadeCurve ?? "LINEAR";
+    return (
+      <>
+        <ArrowRow
+          label="LENGTH"
+          value={`${params.fadeMs ?? 50} ms`}
+          onPrev={() => setParam("fadeMs", Math.max(1, (params.fadeMs ?? 50) - 5))}
+          onNext={() => setParam("fadeMs", Math.min(10000, (params.fadeMs ?? 50) + 5))}
+        />
+        <ArrowRow
+          label="CURVE"
+          value={curve}
+          onPrev={() => {
+            const i = FADE_CURVE_CYCLE.indexOf(curve);
+            const next = FADE_CURVE_CYCLE[(i - 1 + FADE_CURVE_CYCLE.length) % FADE_CURVE_CYCLE.length];
+            setParam("fadeCurve", next);
+          }}
+          onNext={() => {
+            const i = FADE_CURVE_CYCLE.indexOf(curve);
+            const next = FADE_CURVE_CYCLE[(i + 1) % FADE_CURVE_CYCLE.length];
+            setParam("fadeCurve", next);
+          }}
+        />
+      </>
+    );
+  }
+  return null;
+}
+
+function cyclePreset(currentLabel: string, dir: 1 | -1, setParam: SetParamFn) {
+  const i = BIT_REDUCE_PRESET_CYCLE.indexOf(currentLabel as typeof BIT_REDUCE_PRESET_CYCLE[number]);
+  const startIndex = i >= 0 ? i : 0;
+  const next = BIT_REDUCE_PRESET_CYCLE[(startIndex + dir + BIT_REDUCE_PRESET_CYCLE.length) % BIT_REDUCE_PRESET_CYCLE.length];
+  if (next === "CUSTOM") return; // Keep user's manual values when cycling to CUSTOM.
+  const preset = BIT_REDUCE_PRESET_VALUES[next];
+  setParam("bitDepth", preset.bitDepth);
+  setParam("reducedSampleRate", preset.reducedSampleRate);
+}
+
+// ============================================================================
+// SAMPLE KEEP / RETRY — confirm dialog after Sample Edit operation.
+// ============================================================================
+
+export function SampleKeepRetryScreen() {
+  const pending = useAppStore((s) => s.pendingSampleEdit);
+  const keepEditedSample = useAppStore((s) => s.keepEditedSample);
+  const overwriteEditedSample = useAppStore((s) => s.overwriteEditedSample);
+  const retryEditedSample = useAppStore((s) => s.retryEditedSample);
+  const previewEditedSample = useAppStore((s) => s.previewEditedSample);
+
+  const [editingName, setEditingName] = useState(pending?.proposedName ?? "");
+  // Keep local name in sync if pending changes (Retry → new op → new pending).
+  useEffect(() => {
+    if (pending?.proposedName) setEditingName(pending.proposedName);
+  }, [pending?.proposedName]);
+
+  if (!pending) {
+    return (
+      <ScreenFrame title="SAMPLE KEEP / RETRY" subtitle="">
+        {shell(
+          <div className="grid h-full content-center justify-center text-[#91a477]">
+            <p>No pending sample edit.</p>
+          </div>,
+          ["F1 —", "F2 —", "F3 —", "F4 —", "F5 —", { label: "F6 EXIT", onClick: retryEditedSample }],
+          retryEditedSample,
+        )}
+      </ScreenFrame>
+    );
+  }
+
+  const onKeep = () => keepEditedSample(editingName);
+
+  return (
+    <ScreenFrame title="NEW SAMPLE" subtitle={`${pending.opLabel} applied to ${pending.sourceSampleName}`}>
+      {shell(
+        <div className="grid h-full grid-rows-[auto_1fr] gap-[12px]">
+          <section className="grid grid-cols-[1fr_1fr] gap-[2.3%] border border-[#46533b] bg-black/20 p-[3%] text-[clamp(10px,0.84vw,13px)] tracking-[0.14em]">
+            <div className="grid content-start gap-[6px]">
+              <p className="text-[#91a477]">NEW SAMPLE NAME</p>
+              <input
+                type="text"
+                value={editingName}
+                onChange={(e) => setEditingName(e.target.value)}
+                maxLength={24}
+                className="border border-[#46533b] bg-black/30 px-[8px] py-[4px] text-[#eef6d8] tracking-[0.14em] outline-none focus:border-amber-100"
+              />
+              <p className="text-[#91a477] text-[clamp(9px,0.72vw,11px)]">Max 24 chars. Collisions auto-resolved with _N suffix.</p>
+            </div>
+            <div className="grid content-start gap-[4px] text-[clamp(10px,0.78vw,12px)]">
+              <p className="text-[#91a477]">RESULT</p>
+              <div className="grid grid-cols-[1fr_auto]"><span>OP</span><span className="text-[#eef6d8]">{pending.opLabel}</span></div>
+              <div className="grid grid-cols-[1fr_auto]"><span>LENGTH</span><span className="text-[#eef6d8]">{pending.newDurationMs} ms</span></div>
+              <div className="grid grid-cols-[1fr_auto]"><span>RATE</span><span className="text-[#eef6d8]">{pending.newSampleRate} Hz</span></div>
+              <div className="grid grid-cols-[1fr_auto]"><span>CHANNELS</span><span className="text-[#eef6d8]">{pending.newChannelCount}</span></div>
+            </div>
+          </section>
+          <section className="grid min-h-0 content-center gap-[10px] border border-[#46533b] bg-black/20 p-[3%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477] text-center">F2 PLAY · F3 OVERWRITE · F4 RETRY · F5 KEEP</p>
+            <p className="text-center text-[#d8e3b7]">
+              KEEP saves as new sample. OVERWRITE replaces the original (all pads using it play the new audio).
+              RETRY discards the edit and returns to the Sample Edit window.
+            </p>
+          </section>
+        </div>,
+        [
+          "F1 —",
+          { label: "F2 PLAY", onClick: previewEditedSample },
+          { label: "F3 OVERWRITE", onClick: overwriteEditedSample },
+          { label: "F4 RETRY", onClick: retryEditedSample },
+          { label: "F5 KEEP", onClick: onKeep },
+          "F6 —",
+        ],
+        retryEditedSample,
+      )}
+    </ScreenFrame>
+  );
+}

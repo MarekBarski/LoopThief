@@ -69,6 +69,7 @@ export function ChopScreen() {
   const keepChops = useAppStore((state) => state.keepChops);
   const discardChopEdits = useAppStore((state) => state.discardChopEdits);
   const assignCurrentSliceToSelectedPad = useAppStore((state) => state.assignCurrentSliceToSelectedPad);
+  const openSampleEditWindow = useAppStore((state) => state.openSampleEditWindow);
 
   const waveformRectRef = useRef<HTMLDivElement>(null);
   const baseNameInputRef = useRef<HTMLInputElement>(null);
@@ -389,7 +390,15 @@ export function ChopScreen() {
             )}
             <Info label="TARGET PAD" value={`${padBank}:${selectedPad}`} />
             <Info label="ASSIGNED" value={selectedPadAssignment} />
-            <Info label="NORMALIZE" value={normalizeEnabled ? "ON" : "OFF"} />
+            <button
+              type="button"
+              onClick={() => openSampleEditWindow("NORMALIZE")}
+              className="grid grid-cols-[auto_1fr] items-center gap-[8px] border border-[#46533b] bg-black/20 px-[8px] py-[4px] text-left text-[#d8e3b7] hover:bg-black/30"
+              title="Click to open Sample Edit window with NORMALIZE preselected"
+            >
+              <span className="text-[#91a477]">NORMALIZE</span>
+              <span className="text-right text-[#eef6d8]">{normalizeEnabled ? "ON" : "OFF"}</span>
+            </button>
             <div className="grid grid-cols-2 gap-[8px]">
               {chopEditMode === "CHOP" && <MiniButton label="PREV" onClick={previousSlice} />}
               {chopEditMode === "CHOP" && <MiniButton label="NEXT" onClick={nextSlice} />}
@@ -451,7 +460,7 @@ export function ChopScreen() {
             <Softkey label="F2 END" onClick={() => { setChopEditMode("TRIM"); setSelectedMarker("sampleEnd"); }} />
             <Softkey label="F3 LOOP" onClick={() => { enableLoopMode(); setSelectedMarker(selectedMarker === "loopStart" ? "loopEnd" : "loopStart"); }} />
             <Softkey label="F4 CHOP" onClick={enterChopMode} />
-            <Softkey label="F5 ZOOM" onClick={() => setWaveformZoom(cycleZoomStep(waveformZoom))} />
+            <Softkey label="F5 SAMPLE EDIT" onClick={() => openSampleEditWindow()} />
             <Softkey label="F6 SAVE" onClick={saveChopEdits} />
           </div>
         )}
@@ -745,11 +754,6 @@ function nextZoomStep(current: number) {
 
 function previousZoomStep(current: number) {
   return [...zoomSteps].reverse().find((step) => step < current) ?? zoomSteps[0];
-}
-
-function cycleZoomStep(current: number) {
-  const currentIndex = zoomSteps.indexOf(current);
-  return zoomSteps[(currentIndex + 1) % zoomSteps.length] ?? zoomSteps[0];
 }
 
 function toViewportPercent(value: number, offset: number, length: number) {

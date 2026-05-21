@@ -21,6 +21,8 @@ import {
   NextSeqUtilityScreen,
   NoteRepeatUtilityScreen,
   PadMuteUtilityScreen,
+  SampleEditWindowScreen,
+  SampleKeepRetryScreen,
   SixteenLevelsScreen,
   SequenceEditUtilityScreen,
   TimeSigWindowScreen,
@@ -56,4 +58,6 @@ export const screensById: Record<ScreenId, ComponentType> = {
   BAR_EDITOR: BarEditorScreen,
   FX: FxScreen,
   FX_SEND_WINDOW: FxSendWindowScreen,
+  SAMPLE_EDIT_WINDOW: SampleEditWindowScreen,
+  SAMPLE_KEEP_RETRY: SampleKeepRetryScreen,
 };

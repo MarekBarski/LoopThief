@@ -14,6 +14,14 @@ import {
   type EffectType,
 } from "../audio/fxEngine";
 import { createSampleId, createWaveformCache, encodeWavRegion, getSampleAudioRef, getSampleBuffer, registerSampleAudio } from "../audio/sampleLibrary";
+import {
+  applyOp as applySampleOp,
+  DEFAULT_OP_PARAMS,
+  extractRegion,
+  OP_NAME_SUFFIX,
+  type SampleEditOp,
+  type SampleEditParams,
+} from "../audio/sampleEditOps";
 import metronomeSampleUrl from "../../assets/Samples/Metronome.wav?url";
 import {
   loadFromBlob,
@@ -228,6 +236,11 @@ type AppState = {
   masterFx: MasterFX;
   fxChainFX1ToFX2: boolean;
   fxChainFX3ToFX4: boolean;
+  // Sample Edit window state (Phase A — destructive sample operations)
+  sampleEditSourceIndex: number;          // recordedSamples index being edited
+  sampleEditOp: SampleEditOp;
+  sampleEditParams: SampleEditParams;
+  pendingSampleEdit: PendingSampleEdit | null;
   diskFolders: DiskFolder[];
   activeDiskFolderId: string;
   selectedDiskItemIndex: number;
@@ -468,6 +481,16 @@ type AppState = {
   setPadFxSendLevel: (pad: string, level: number) => void;
   openFxSendWindow: () => void;
   closeFxSendWindow: () => void;
+  // Sample Edit window actions
+  openSampleEditWindow: (preselectedOp?: SampleEditOp) => void;
+  closeSampleEditWindow: () => void;
+  setSampleEditOp: (op: SampleEditOp) => void;
+  setSampleEditParam: <K extends keyof SampleEditParams>(key: K, value: SampleEditParams[K]) => void;
+  applySampleEdit: () => Promise<void>;
+  keepEditedSample: (name?: string) => void;
+  overwriteEditedSample: () => void;
+  retryEditedSample: () => void;
+  previewEditedSample: () => void;
   createProjectSnapshot: () => ProjectSnapshot;
   saveProjectFile: (name: string) => Promise<void>;
   saveAllFile: (name: string) => Promise<void>;
@@ -497,6 +520,22 @@ type PadAssignment = {
   chokeGroup: number;
   muteTargetMode: "OFF" | "PAIR" | "GROUP";
   muteTargets: string[];
+};
+
+// ============================================================================
+// Sample Edit window — pending edit (awaiting Keep/Retry decision)
+// ============================================================================
+type PendingSampleEdit = {
+  sourceSampleIndex: number;       // index in recordedSamples being edited
+  sourceSampleName: string;
+  newAudioBufferId: string;        // already registered in sampleLibrary
+  newDurationSec: number;
+  newDurationMs: number;
+  newSampleRate: number;
+  newChannelCount: number;
+  newWaveform: number[];
+  opLabel: string;                 // "REVERSED" / "STRETCHED" etc. (for UI message)
+  proposedName: string;
 };
 
 // ============================================================================
@@ -848,6 +887,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   masterFx: createDefaultMasterFx(),
   fxChainFX1ToFX2: false,
   fxChainFX3ToFX4: false,
+  sampleEditSourceIndex: 0,
+  sampleEditOp: "TIME_STRETCH" as SampleEditOp,
+  sampleEditParams: { ...DEFAULT_OP_PARAMS.TIME_STRETCH },
+  pendingSampleEdit: null,
   diskFolders: createDiskFolders(),
   activeDiskFolderId: "memory",
   selectedDiskItemIndex: 0,
@@ -3424,6 +3467,192 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       activeScreen: state.utilityReturnScreen,
     })),
+  // ============================================================
+  // Sample Edit window (Phase A — destructive sample operations)
+  // ============================================================
+  openSampleEditWindow: (preselectedOp) =>
+    set((state) => {
+      const op: SampleEditOp = preselectedOp ?? state.sampleEditOp;
+      const sourceIndex = state.chopSelectedSampleIndex;
+      return {
+        activeScreen: "SAMPLE_EDIT_WINDOW",
+        utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
+        sampleEditSourceIndex: sourceIndex,
+        sampleEditOp: op,
+        sampleEditParams: { ...DEFAULT_OP_PARAMS[op] },
+        pendingSampleEdit: null,
+      };
+    }),
+  closeSampleEditWindow: () =>
+    set((state) => ({
+      activeScreen: state.utilityReturnScreen,
+      pendingSampleEdit: null,
+    })),
+  setSampleEditOp: (op) =>
+    set(() => ({
+      sampleEditOp: op,
+      sampleEditParams: { ...DEFAULT_OP_PARAMS[op] },
+    })),
+  setSampleEditParam: (key, value) =>
+    set((state) => ({
+      sampleEditParams: { ...state.sampleEditParams, [key]: value },
+    })),
+  applySampleEdit: async () => {
+    const state = get();
+    const source = state.recordedSamples[state.sampleEditSourceIndex];
+    if (!source) {
+      set({ lastAudioMessage: "NO SAMPLE SELECTED" });
+      return;
+    }
+    const sourceBuffer = getSampleBuffer(source.audioBufferId);
+    const ctx = samplerEngine.getContext();
+    if (!sourceBuffer || !ctx) {
+      set({ lastAudioMessage: "AUDIO NOT READY" });
+      return;
+    }
+    set({ lastAudioMessage: `${state.sampleEditOp.replace(/_/g, " ")}...` });
+    // Yield once so the "processing" message paints before we block.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    try {
+      // Extract the CHOP active region first — Sample Edit ops apply to the active region only.
+      const editState = source.editState;
+      const regionStart = editState?.sampleStart ?? 0;
+      const regionEnd = editState?.sampleEnd ?? 1;
+      const regionBuffer = regionStart === 0 && regionEnd === 1
+        ? sourceBuffer
+        : extractRegion(ctx, sourceBuffer, regionStart, regionEnd);
+      const newBuffer = applySampleOp(ctx, regionBuffer, state.sampleEditOp, state.sampleEditParams);
+      const newId = createSampleId();
+      registerSampleAudio(newId, newBuffer);
+      const opLabel = state.sampleEditOp.replace(/_/g, " ");
+      const proposedName = buildProposedSampleName(source.name, state.sampleEditOp, get().recordedSamples);
+      const pending: PendingSampleEdit = {
+        sourceSampleIndex: state.sampleEditSourceIndex,
+        sourceSampleName: source.name,
+        newAudioBufferId: newId,
+        newDurationSec: newBuffer.duration,
+        newDurationMs: Math.max(1, Math.round(newBuffer.duration * 1000)),
+        newSampleRate: newBuffer.sampleRate,
+        newChannelCount: newBuffer.numberOfChannels,
+        newWaveform: createWaveformCache(newBuffer, 256),
+        opLabel,
+        proposedName,
+      };
+      set({
+        pendingSampleEdit: pending,
+        activeScreen: "SAMPLE_KEEP_RETRY",
+        lastAudioMessage: `${opLabel} READY`,
+      });
+    } catch (error) {
+      console.warn("[sample-edit] op failed:", error);
+      set({ lastAudioMessage: "SAMPLE EDIT FAILED" });
+    }
+  },
+  keepEditedSample: (name) =>
+    set((state) => {
+      const pending = state.pendingSampleEdit;
+      if (!pending) return {};
+      const finalName = sanitizeSampleName(name ?? pending.proposedName, state.recordedSamples);
+      const newEditState: SampleEditState = {
+        sampleStart: 0,
+        sampleEnd: 1,
+        loopEnabled: false,
+        loopStart: 0,
+        loopEnd: 1,
+        loopBars: 4,
+        sliceMarkers: [],
+      };
+      const newSample: RecordedSample = {
+        id: createSampleId(),
+        name: finalName,
+        audioBufferId: pending.newAudioBufferId,
+        durationMs: pending.newDurationMs,
+        duration: pending.newDurationSec,
+        sampleRate: pending.newSampleRate,
+        channelCount: pending.newChannelCount,
+        waveform: pending.newWaveform,
+        keptSlices: [],
+        editState: newEditState,
+      };
+      const newIndex = state.recordedSamples.length; // appended at end
+      return {
+        recordedSamples: [...state.recordedSamples, newSample],
+        pendingSampleEdit: null,
+        // Post-KEEP navigation: jump to CHOP/TRIM with the new sample active so user can
+        // immediately assign / continue editing without hunting in the disk view.
+        activeScreen: "CHOP",
+        ...loadChopStateForIndex(newIndex, newEditState),
+        lastAudioMessage: `KEPT ${finalName}`,
+        ...recordUndo(state, `SAMPLE ${pending.opLabel}`, `sample-edit-keep:${Date.now()}`),
+      };
+    }),
+  overwriteEditedSample: () =>
+    set((state) => {
+      const pending = state.pendingSampleEdit;
+      if (!pending) return {};
+      const idx = pending.sourceSampleIndex;
+      if (idx < 0 || idx >= state.recordedSamples.length) return {};
+      const original = state.recordedSamples[idx];
+      // Re-register the new buffer under the ORIGINAL sample's audioBufferId so all pads
+      // referencing this sample play the new audio. The previously-created newAudioBufferId
+      // entry becomes orphaned (sampleAudioRefs map keeps both, but only the original ID is referenced).
+      const newBuffer = getSampleBuffer(pending.newAudioBufferId);
+      if (newBuffer) {
+        registerSampleAudio(original.audioBufferId, newBuffer);
+      }
+      const newEditState: SampleEditState = {
+        sampleStart: 0,
+        sampleEnd: 1,
+        loopEnabled: false,
+        loopStart: 0,
+        loopEnd: 1,
+        loopBars: 4,
+        sliceMarkers: [],
+      };
+      const updated: RecordedSample = {
+        ...original,
+        durationMs: pending.newDurationMs,
+        duration: pending.newDurationSec,
+        sampleRate: pending.newSampleRate,
+        channelCount: pending.newChannelCount,
+        waveform: pending.newWaveform,
+        editState: newEditState,
+      };
+      const recordedSamples = state.recordedSamples.map((s, i) => (i === idx ? updated : s));
+      return {
+        recordedSamples,
+        pendingSampleEdit: null,
+        // Post-OVERWRITE: same sample at same index, but waveform + edit state must refresh
+        // to reflect the new buffer. activeScreen explicitly CHOP per Marek's spec.
+        activeScreen: "CHOP",
+        ...loadChopStateForIndex(idx, newEditState),
+        lastAudioMessage: `OVERWROTE ${original.name}`,
+        ...recordUndo(state, `SAMPLE ${pending.opLabel} OVERWRITE`, `sample-edit-overwrite:${Date.now()}`),
+      };
+    }),
+  retryEditedSample: () =>
+    set(() => ({
+      pendingSampleEdit: null,
+      activeScreen: "SAMPLE_EDIT_WINDOW",
+      lastAudioMessage: "RETRY — adjust params and try again",
+    })),
+  previewEditedSample: () => {
+    const state = get();
+    const pending = state.pendingSampleEdit;
+    if (!pending) return;
+    const buffer = getSampleBuffer(pending.newAudioBufferId);
+    if (!buffer) return;
+    samplerEngine.play(
+      {
+        name: pending.proposedName,
+        durationMs: pending.newDurationMs,
+        waveform: pending.newWaveform,
+        audioBufferId: pending.newAudioBufferId,
+        sampleRate: pending.newSampleRate,
+      },
+      { gain: 1, pan: 0 },
+    );
+  },
   selectMixerPad: (selectedPad) => set({ selectedPad }),
   toggleSelectedMixerMute: () =>
     set((state) => {
@@ -4765,6 +4994,30 @@ function nextSampleName(index: number) {
   return `SAMPLE_${String(index).padStart(3, "0")}`;
 }
 
+/** Build a default name for an edited sample. Appends OP-specific suffix and resolves collisions with a numeric suffix. */
+function buildProposedSampleName(originalName: string, op: SampleEditOp, samples: RecordedSample[]): string {
+  const base = originalName.replace(/_(stretched|pitched|warped|reversed|normalized|crushed|fadein|fadeout)(_\d+)?$/i, "");
+  const suffix = OP_NAME_SUFFIX[op];
+  const candidate = `${base}${suffix}`.toUpperCase().slice(0, 24);
+  if (!samples.some((s) => s.name === candidate)) return candidate;
+  for (let n = 2; n < 100; n += 1) {
+    const numbered = `${candidate}_${n}`.slice(0, 24);
+    if (!samples.some((s) => s.name === numbered)) return numbered;
+  }
+  return candidate;
+}
+
+/** Normalize a user-provided sample name (uppercase, safe chars, collision-resolved). */
+function sanitizeSampleName(raw: string, samples: RecordedSample[]): string {
+  const cleaned = createSampleName(raw);
+  if (!samples.some((s) => s.name === cleaned)) return cleaned;
+  for (let n = 2; n < 100; n += 1) {
+    const numbered = `${cleaned}_${n}`.slice(0, 24);
+    if (!samples.some((s) => s.name === numbered)) return numbered;
+  }
+  return cleaned;
+}
+
 function isWavFile(file: File) {
   return file.name.toLowerCase().endsWith(".wav") || file.type === "audio/wav" || file.type === "audio/x-wav";
 }
@@ -5298,6 +5551,32 @@ function createChopPreviewCursorState(preview: { sampleStart: number; sampleEnd:
     chopPreviewEnd: preview.sampleEnd,
     chopPreviewStartedAt: performance.now(),
     chopPreviewDurationMs: Math.max(1, (preview.sampleEnd - preview.sampleStart) * preview.durationMs),
+  };
+}
+
+/**
+ * Returns the partial state required for the CHOP screen to display a specific sample
+ * by index. Used by post-Sample-Edit navigation (KEEP / OVERWRITE) so the user lands
+ * on CHOP/TRIM with the right waveform + edit state.
+ */
+function loadChopStateForIndex(targetIndex: number, editState: SampleEditState): Partial<AppState> {
+  return {
+    chopSelectedSampleIndex: targetIndex,
+    waveformZoom: 1,
+    waveformOffset: 0,
+    chopEditMode: "TRIM",
+    chopSliceMode: editState.sliceMarkers.length > 0 ? "MANUAL" : "AUTO",
+    selectedMarker: "sampleStart",
+    sampleStart: editState.sampleStart,
+    sampleEnd: editState.sampleEnd,
+    loopEnabled: editState.loopEnabled,
+    loopStart: editState.loopStart,
+    loopEnd: editState.loopEnd,
+    loopBars: editState.loopBars,
+    sliceMarkers: editState.sliceMarkers,
+    chopMarkers: editState.sliceMarkers,
+    selectedSlice: 1,
+    chopCursor: editState.sliceMarkers[0] ?? editState.sampleStart,
   };
 }
 
@@ -6403,7 +6682,7 @@ function createDiskItem(
 }
 
 function isUtilityScreen(screen: ScreenId) {
-  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW" || screen === "BAR_EDITOR" || screen === "FX_SEND_WINDOW";
+  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW" || screen === "BAR_EDITOR" || screen === "FX_SEND_WINDOW" || screen === "SAMPLE_EDIT_WINDOW" || screen === "SAMPLE_KEEP_RETRY";
 }
 
 function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {

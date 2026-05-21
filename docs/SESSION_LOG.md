@@ -99,6 +99,201 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 20.1 — 2026-05-21 — Sample Edit: post-KEEP / post-OVERWRITE navigation jumps to CHOP/TRIM
+
+### What was attempted
+
+Marek's small UX follow-up on Session 20: after a successful Sample Edit operation (F5 KEEP or F3 OVERWRITE), the user should land on the CHOP screen with the new/updated sample as the active chop sample, edit state reset to `[0, 1]` (whole new buffer visible), so they can immediately assign to pad or continue editing without hunting in the disk view. RETRY behavior stays unchanged (returns to Sample Edit window with sample untouched).
+
+### What worked
+
+**Single point of change in `useAppStore.ts`:**
+
+- Extracted `loadChopStateForIndex(targetIndex, editState)` helper near `switchChopSample`. Returns the partial state needed to display a sample on the CHOP screen: `chopSelectedSampleIndex`, waveform view reset (zoom=1, offset=0), `chopEditMode: "TRIM"`, `chopSliceMode` based on slice presence, `selectedMarker: "sampleStart"`, and full edit state passthrough (sampleStart/sampleEnd/loop/slice markers/cursor).
+
+- **`keepEditedSample`** updated:
+  - Computes `newIndex = state.recordedSamples.length` (where the appended sample lands).
+  - Returns `activeScreen: "CHOP"` (explicit, not via `utilityReturnScreen` — Marek wants this guaranteed even if the user opened the window from a non-CHOP path in the future).
+  - Spreads `loadChopStateForIndex(newIndex, newEditState)` into the partial state — CHOP screen renders with the new sample's `[0, 1]` editState.
+
+- **`overwriteEditedSample`** updated:
+  - Same pattern: `activeScreen: "CHOP"` + `loadChopStateForIndex(idx, newEditState)`. Index unchanged (in-place update), but the spread refreshes `sampleStart/sampleEnd/sliceMarkers/etc.` to match the new buffer's reset edit state — so the CHOP waveform redraws against the new audio instead of stale markers.
+
+- **`retryEditedSample`** untouched — still sets `activeScreen: "SAMPLE_EDIT_WINDOW"`, clears `pendingSampleEdit`. User stays in the window with the source sample intact.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **`loadChopStateForIndex` duplicates a subset of `switchChopSample`'s body** (zoom reset, edit-state spread). Did not refactor `switchChopSample` to use the new helper because `switchChopSample` also saves the *current* sample's edit state via `buildCurrentSampleEditState` before navigating away — that behavior would be wrong for post-KEEP (the source sample is unchanged by Sample Edit ops; we don't need to save anything from it because nothing was edited in the CHOP UI). Cleaner to keep two paths than to over-generalize. Logged as light tech-debt; could merge later.
+- **`switchChopSample` calls `state.recordedSamples.map(...)` to persist the outgoing sample's edit state** — but my new helper does NOT. For post-KEEP/OVERWRITE this is correct: the source sample's CHOP edit state in component state may be different from the saved sample.editState (e.g., user moved sampleStart slightly without hitting F6 SAVE in CHOP before opening Sample Edit). Marek's spec doesn't require preserving those uncommitted CHOP edits; the new sample replaces focus. If Marek later reports "I lost my chop trim from before I ran SAMPLE EDIT", revisit.
+- **No live test by me** — Marek to verify the 4 scenarios from spec (KEEP → CHOP with new sample, OVERWRITE → CHOP with refreshed waveform, RETRY → stays in window, REVERSE end-to-end smoke test).
+
+### Decisions made
+
+- **`activeScreen: "CHOP"` set explicitly** (not relying on `utilityReturnScreen`). Per Marek's spec the post-KEEP destination is CHOP regardless of where Sample Edit was opened from.
+- **Edit state reset to `[0, 1]`** matches the new sample's stored editState — sampleStart/sampleEnd/loop/slices all reset. Marek's spec wording: "active sample = nowy 'samplename_reversed', waveform odwrócony widoczny" — i.e., whole new waveform visible.
+- **No new helper for OVERWRITE refresh** beyond `loadChopStateForIndex` — same shape as KEEP, just different index. DRY.
+- **BPM MATCH default unchanged at 120** per Marek's "deferred decision" — no auto-fill from LOOP BPM EST.
+
+### Open issues / followups
+
+- **Marek's 4 verification scenarios** pending live test.
+- **Uncommitted CHOP edits lost** on KEEP/OVERWRITE navigation — if Marek finds this surprising, add an autosave of the source sample's component-state edit before the jump.
+- **LOOP BPM EST auto-fill** for BPM MATCH mode in Sample Edit window — deferred decision.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — `loadChopStateForIndex` helper added; `keepEditedSample` + `overwriteEditedSample` now navigate to CHOP with target sample active.
+
+---
+
+## Session 20 — 2026-05-21 — Sample Edit window: 8 destructive ops + SoundTouch + Keep/Retry + CHOP F5 rewire
+
+### What was attempted
+
+Marek's TIME STRETCH + Sample Edit Operations Phase 1 spec — MPC2000XL / MPC5000 canonical "Sample Editing" workflow. Build a dedicated Sample Edit window behind CHOP F5 with 8 destructive operations (TIME STRETCH, PITCH SHIFT, WARP/RESAMPLE, REVERSE, NORMALIZE, BIT REDUCE, FADE IN, FADE OUT), followed by an MPC-canonical Keep/Retry confirmation flow with PLAY / OVERWRITE / RETRY / KEEP actions. Folded sub-phases 1a (UI + simple ops) + 1b (SoundTouchJS integration) + 1c (NORMALIZE shortcut) into one delivery — Marek can't really test ops without the full chain landing together.
+
+### What worked
+
+**SoundTouchJS dependency** (`npm install soundtouchjs`):
+- Version 0.3.0, MIT, ~50KB. No type definitions shipped — added `src/types/soundtouchjs.d.ts` declaring the parts we use (`SoundTouch`, `WebAudioBufferSource`, `SimpleFilter`, `PitchShifter`).
+- Quality assessment: SoundTouch's defaults give clean pitch-preserved time stretch + length-preserved pitch shift. No A/B/C quality toggle exposed — per Marek's "laptop nie ma problemu z CPU" decision. No 18 AKAI vocal presets — SoundTouch's algorithm is one general-purpose path.
+
+**New module `src/audio/sampleEditOps.ts` (~280 LOC):**
+- `applyOp(ctx, input, op, params): AudioBuffer` — dispatch entry point for all 8 ops.
+- `extractRegion(ctx, buffer, startNorm, endNorm)` — slices the CHOP active region into a fresh buffer. Sample Edit ops operate on the active region only, NOT the full original buffer.
+- Per-op implementations:
+  - **REVERSE**: per-channel `dst[i] = src[length - 1 - i]`. Trivial.
+  - **NORMALIZE**: find absolute peak across all channels; compute gain = `10^(targetDb/20) / peak`; multiply all samples.
+  - **FADE IN / FADE OUT**: apply `curveValue(t, curve)` ramp to the first/last `fadeMs` window. Three curves: LINEAR, LOG (`log10(1+9t)`), EXP (`(e^t - 1)/(e-1)`). All return 0..1.
+  - **BIT REDUCE**: combined bit-depth quantization (`Math.round(sample * 2^(bits-1)) / 2^(bits-1)`) + sample-rate decimation via sample-and-hold (every Nth sample where N = `floor(origRate/targetRate)`). Quick + dirty per spec — no anti-alias filter.
+  - **WARP / RESAMPLE**: vinyl-style. Create new buffer with SAME samples but `sampleRate = origRate × speed`. At speed=50% → 22050Hz buffer → plays 2× longer + 1 octave down. At 200% → 88200Hz → plays 2× shorter + 1 octave up. Browser handles the playback rate translation via stored sample rate.
+  - **TIME STRETCH** (SoundTouch): `tempo` controls duration (>1 shorter, <1 longer), `pitch=1.0`. Two modes: RATIO (50–400% manual) and BPM MATCH (ratio = newBPM / originalBPM).
+  - **PITCH SHIFT** (SoundTouch): `pitch = 2^(semitones/12) * 2^(cents/1200)`, `tempo=1.0`. Range ±24 semitones, ±100 cents. Always returns stereo (SoundTouch processes interleaved L+R; mono inputs duplicate L to R then collapse back to mono in output).
+- `OP_NAME_SUFFIX` registry maps op type → name suffix (`_stretched`, `_pitched`, `_warped`, `_reversed`, `_normalized`, `_crushed`, `_fadein`, `_fadeout`).
+- `DEFAULT_OP_PARAMS` registry for op switching (UI reseeds params on op change).
+- `BIT_REDUCE_PRESETS` constants: SP-1200 (12-bit/26040Hz), MPC60 (12-bit/40000Hz), NES (7-bit/22050Hz), ATARI (8-bit/22050Hz).
+
+**Store actions + state** (`useAppStore.ts`):
+- New `PendingSampleEdit` type holds the new buffer's ID, duration, sample rate, channel count, downsampled waveform, op label, and proposed name — everything needed to render the Keep/Retry screen + audition.
+- New state fields: `sampleEditSourceIndex`, `sampleEditOp`, `sampleEditParams`, `pendingSampleEdit`.
+- New actions:
+  - `openSampleEditWindow(preselectedOp?)` — opens screen, captures `chopSelectedSampleIndex` as source, seeds op + default params.
+  - `closeSampleEditWindow()` — back to previous screen, clears pending.
+  - `setSampleEditOp(op)` — switch op, reset params to op's defaults.
+  - `setSampleEditParam<K>(key, value)` — typed per-key updater.
+  - `applySampleEdit()` (async) — extracts region, runs `applyOp`, registers new buffer in sampleLibrary, builds `PendingSampleEdit`, transitions to `SAMPLE_KEEP_RETRY` screen. Wraps body in try/catch and logs failures.
+  - `keepEditedSample(name)` — creates a new `RecordedSample` referencing the new buffer ID, name sanitized + collision-resolved, appends to `recordedSamples`. Records undo.
+  - `overwriteEditedSample()` — re-registers the new buffer under the ORIGINAL sample's `audioBufferId` (so all pads using it now play the new audio), updates the existing `RecordedSample` metadata in place (durationMs, duration, sampleRate, channelCount, waveform, editState reset to `[0,1]`). Records undo.
+  - `retryEditedSample()` — discards pending, returns to Sample Edit window. New buffer is orphaned in sampleLibrary (GC eligible but Map entry persists; acceptable for MVP).
+  - `previewEditedSample()` — plays the pending new buffer via `samplerEngine.play`. No loop.
+- Helpers `buildProposedSampleName(originalName, op, samples)` and `sanitizeSampleName(raw, samples)` handle naming + numeric `_N` collision resolution.
+- `isUtilityScreen` extended to include `SAMPLE_EDIT_WINDOW` + `SAMPLE_KEEP_RETRY`.
+
+**Two new screens** (`UtilityScreens.tsx`):
+- **`SampleEditWindowScreen`** — two-row layout:
+  1. Top: OPERATION cycle (ArrowRow over 8 ops) + SOURCE info panel (sample name, length, rate, channels).
+  2. Bottom (scrollable): per-op parameter editor. Each op renders only the relevant params via `renderOpParams(op, params, setParam)`:
+     - TIME STRETCH: MODE cycle (RATIO ↔ BPM MATCH) + conditional RATIO % OR ORIG BPM + NEW BPM.
+     - PITCH SHIFT: SEMITONES (±24) + CENTS (±100).
+     - WARP: SPEED % (25–400) + helper text.
+     - REVERSE: no params, helper text.
+     - NORMALIZE: TARGET dB slider (–60 to 0, step 0.1).
+     - BIT REDUCE: PRESET cycle (SP-1200 / MPC60 / NES / ATARI / CUSTOM) + BIT DEPTH + SAMPLE RATE arrows. Preset cycle auto-detects when manual values match a known preset.
+     - FADE IN / FADE OUT: LENGTH (ms) + CURVE cycle (LINEAR / LOG / EXP).
+  - F5 DO IT runs `applySampleEdit`. F6 EXIT closes window.
+- **`SampleKeepRetryScreen`** — confirmation popup matching Marek's MPC canonical layout:
+  - Left: text input for sample name (defaults to proposed auto-name, editable up to 24 chars). Helper text about collision auto-resolution.
+  - Right: result summary (op, length, sample rate, channels).
+  - Below: F2 PLAY · F3 OVERWRITE · F4 RETRY · F5 KEEP softkey layout with explainer text. F6 disabled.
+  - If `pendingSampleEdit` is null (defensive), renders an empty state with retry as fallback.
+
+**CHOP rewiring** (`ChopScreen.tsx`):
+- F5 button label `"F5 ZOOM"` → `"F5 SAMPLE EDIT"`. Click handler now `openSampleEditWindow()`.
+- Dead `cycleZoomStep` helper removed (was only used by the old F5).
+- Right-panel `NORMALIZE` field (previously `<Info>` read-only) replaced with a clickable `<button>` styled to match the surrounding info panels. Click opens the Sample Edit window with `NORMALIZE` preselected. The displayed value (`ON`/`OFF`) still reads `normalizeEnabled` — that flag remains a visual indicator only since the actual normalize is destructive via the window. **Option C from Marek's spec chosen.**
+- ZOOM controls preserved as ZOOM-/ZOOM+ MiniButtons in the right panel + mouse wheel handler — F5 no longer needed for zoom per Marek's earlier preference.
+
+**F5 label final choice**: `"F5 SAMPLE EDIT"` (per Marek's leaning toward scope-accurate naming). Time Stretch is one of 8 ops; "SAMPLE EDIT" better captures the window's role as a gateway.
+
+**Auto-naming**: `${base}_${suffix}` with collision resolution to `${base}_${suffix}_N` up to 99. Original suffix is stripped from base before re-appending — so applying STRETCH to a sample already named `KICK_STRETCHED` produces `KICK_STRETCHED_2`, not `KICK_STRETCHED_STRETCHED`.
+
+Build clean (`tsc + vite build`). Bundle gained ~30 KB for SoundTouchJS source.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** — could not consult MPC5000 manual pp. 106–110 or MPC2000XL pp. 106–107 directly. Implementation strictly followed Marek's detailed spec.
+- **No live audio test by me** — Marek must verify all 14 test scenarios. Likely-suspect areas:
+  1. **TIME STRETCH with very short samples** (< 4096 samples) may produce empty output — SoundTouch needs a minimum buffer to fill internal state. The `processWithSoundTouch` fallback returns a clone of input in that case, but the user sees no apparent change. Worth flagging if Marek tests with short hits.
+  2. **WARP at extreme speeds** (e.g., 25% or 400%) produces sample rates outside common bounds (11025Hz, 176400Hz). Clamped to 1000..192000 Hz in code. WAV encoder should handle these but worth testing save/load round-trip at extremes.
+  3. **BIT REDUCE sample-rate reduction without anti-alias filter** will produce aliasing artifacts at low rates — intentional per spec ("'dirty' character jest pożądany"). If Marek finds it too harsh, anti-alias is ~10 LOC to add.
+  4. **Stereo → mono inputs through SoundTouch** — `WebAudioBufferSource` always interleaves as stereo (mono samples get duplicated). Output buffer respects the input's channel count (mono in → mono out), so the output isn't silently inflated to stereo, but the intermediate processing is stereo. CPU cost ~2× for mono — acceptable.
+  5. **Region extraction for ops on chopped samples**: ops apply to the `editState.sampleStart`–`sampleEnd` region. The new sample's editState resets to `[0, 1]` (whole new buffer). User who wants to apply NORMALIZE to a chopped slice gets a new sample containing JUST the normalized slice, not the whole original with normalized slice region. Per Marek's spec this is intentional (operations are destructive on the active region).
+- **OVERWRITE intentionally reuses the original `audioBufferId`** — `registerSampleAudio(originalId, newBuffer)` overwrites the Map entry. Any pads referencing this sample immediately play the new audio. The previously-created `newAudioBufferId` Map entry is orphaned (JS GC will reclaim when nothing references the AudioBuffer). Acceptable memory leak for MVP; could add an `unregisterSampleAudio` helper in cleanup.
+- **No Web Worker / async off-thread processing** — all ops run synchronously on the main thread. For typical drum hits (1–4 seconds) this is fine; for 30-second loops with TIME STRETCH, may briefly stutter audio. A `setTimeout(0)` yield happens before processing so the "PROCESSING..." `lastAudioMessage` paints, but the op itself blocks. AudioWorklet / Web Worker would fix this — Phase 2 polish.
+- **No progress indicator** — spec mentioned "Processing... 45%" for long ops; not implemented. Would need chunked processing + state updates. Phase 2.
+- **Reverse + Normalize + Fade ops produce no audible change at zero/identity values** (e.g., Normalize with peak already at target). Code defensively returns a clone. Worth flagging in Keep/Retry if "nothing happened" — not implemented.
+- **GAIN operation NOT included** in Phase 1 — per Marek's deferred-Phase-2 list. Easy to add later (single multiplier per channel).
+- **No undo for sample edits** — Marek's spec suggested Keep/Retry replaces undo for these ops. Confirmed via decision. `keepEditedSample` and `overwriteEditedSample` DO call `recordUndo` (for the project-version bump + autosave trigger), but the snapshot doesn't capture AudioBuffer contents (which live in sampleLibrary, not state). So Ctrl+Z after a sample edit won't restore the old buffer — only restore which RecordedSample entries existed. Acceptable per spec.
+- **NORMALIZE field's `normalizeEnabled` state is still cosmetic** — the toggle from the dead toggle never wired up; the field now just opens the Sample Edit window. The displayed `ON`/`OFF` value remains a static `normalizeEnabled` boolean from state (defaults to false, never updated by anything). Could be hidden entirely; left as low-priority display.
+- **`SampleKeepRetryScreen` uses native `<input type="text">`** — first use of a real keyboard-editable field in a utility screen. Existing patterns are arrow-cycled values. The input is styled to match the LCD aesthetic but may feel out of place. Marek to verify if it's acceptable or needs an alternative (e.g., on-screen character picker).
+- **`recordUndo` calls in keep/overwrite reference `state` directly** — pattern works because we're inside a `set` callback. Confirmed.
+- **The orphaned `newAudioBufferId` after OVERWRITE** is unreferenced from any RecordedSample, but the buffer stays in sampleLibrary's Map. Memory cost = the new AudioBuffer (typically 1–10 MB per op). After ~50 overwrites a project would accumulate ~100–500 MB orphans. Worth a cleanup pass: track all `newAudioBufferId`s in PendingSampleEdit history and unregister on overwrite. Phase 2.
+
+### Decisions made
+
+- **F5 label = "SAMPLE EDIT"** (not "TIME STRETCH"). Better reflects the window's 8-op scope.
+- **NORMALIZE field in CHOP = quick action** (Option C from Marek's spec). Click → opens window with NORMALIZE preselected. The cosmetic `ON`/`OFF` display kept for now.
+- **No undo for sample buffer mutations**. Keep/Retry is the cancel mechanism (Retry = discard). `recordUndo` still fires on Keep/Overwrite for autosave/project-version bookkeeping, but snapshot doesn't include AudioBuffer contents.
+- **Ops apply to CHOP active region only** — not the whole original buffer. New sample's editState reset to `[0, 1]`.
+- **SoundTouch quality = always max** — no toggle. Laptop CPU handles it.
+- **18 AKAI vocal presets NOT included** — SoundTouch defaults are sufficient. Phase 2 if Marek wants character presets.
+- **OVERWRITE reuses original `audioBufferId`** so existing pad assignments transparently play the new audio.
+- **Auto-name strips existing op suffix from base before appending** to prevent suffix stacking (`KICK_STRETCHED` + STRETCH → `KICK_STRETCHED_2`, not `KICK_STRETCHED_STRETCHED`).
+- **Native `<input>` for sample renaming** in Keep/Retry — first text input in the utility screen system. Marek to verify acceptable.
+- **No GAIN, COPY, STEREO→MONO, TRIM SILENCE** in this phase — Marek's deferred list.
+- **Phase 1a / 1b / 1c folded** because the layers chain (ops need UI to test, SoundTouch needs ops scaffold, NORMALIZE shortcut needs the window). One commit serves the full Phase 1.
+
+### Open issues / followups
+
+- Marek's 14 test scenarios all pending live audio verification:
+  1. TIME STRETCH RATIO 50%/200% and BPM MATCH
+  2. PITCH SHIFT ±12 semitones + cents
+  3. WARP 50%/200%
+  4. REVERSE
+  5. NORMALIZE quiet vs loud sample
+  6. BIT REDUCE presets (SP-1200, NES) + CUSTOM
+  7. FADE IN linear/log/exp
+  8. FADE OUT linear/log/exp
+  9. Keep/Retry: PLAY audition, RETRY rollback, KEEP creates new, OVERWRITE replaces
+  10. Auto-naming + manual rename + collision resolution
+  11. Save/load with edited samples
+  12. NORMALIZE quick action from CHOP right panel
+  13. Build clean ✓
+  14. Performance on long samples (no thread blocking measured)
+- **Web Worker for long ops** — Phase 2 polish if Marek hits stuttering on 30+ second samples.
+- **Progress indicator** — Phase 2 if needed.
+- **GAIN op + COPY + TRIM SILENCE + STEREO→MONO** — Phase 2 deferred candidates.
+- **Anti-alias filter before BIT REDUCE sample-rate decimation** — Phase 2 if dirty character is too harsh.
+- **18 AKAI vocal presets for TIME STRETCH / PITCH SHIFT** — Phase 2 if Marek wants character.
+- **Orphan cleanup** — track `newAudioBufferId`s and unregister on overwrite.
+- **`normalizeEnabled` cosmetic field** in CHOP — clean up or hide once Marek decides.
+- **In-app text input pattern** — `<input>` works but may need styling polish or alternative for hardware-style consistency.
+
+### Files modified
+
+- **New**: `src/audio/sampleEditOps.ts` — 8 destructive operations + region extraction + SoundTouch wrapper (~280 LOC).
+- **New**: `src/types/soundtouchjs.d.ts` — ambient type declarations for soundtouchjs.
+- `src/store/useAppStore.ts` — `PendingSampleEdit` type, sample edit state fields, 8 new actions, `buildProposedSampleName` + `sanitizeSampleName` helpers, `isUtilityScreen` extended.
+- `src/types/navigation.ts` — `SAMPLE_EDIT_WINDOW` + `SAMPLE_KEEP_RETRY` screen IDs added.
+- `src/screens/index.ts` — `SampleEditWindowScreen` + `SampleKeepRetryScreen` registered.
+- `src/screens/UtilityScreens.tsx` — both new screens implemented (~350 LOC).
+- `src/screens/ChopScreen.tsx` — F5 ZOOM → SAMPLE EDIT, NORMALIZE field clickable, dead `cycleZoomStep` removed.
+- `package.json` / `package-lock.json` — `soundtouchjs@0.3.0` dependency added.
+
+---
+
 ## Session 19.1 — 2026-05-21 — FX screen middle panel scroll + project-wide phosphor green scrollbars
 
 ### What was attempted
