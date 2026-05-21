@@ -99,6 +99,197 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.B — 2026-05-21 — Keyboard overhaul Phase B: global mappings (pads, banks, transport, tracks, dialogs, F-keys, Ctrl+S)
+
+### What was attempted
+
+Second sub-phase of the keyboard interaction overhaul. Implements the full global keyboard mapping per spec: 16-pad MPC-standard grid, bank select + cycle, transport, M/O track shortcuts, screen-aware dialog Esc/Enter/Delete, F1–F6 softkey passthrough, and Ctrl+S project save. All wired in a single rewrite of `KeyboardShortcuts.tsx`. Phase A's typing guard + undo/redo kept intact.
+
+### What worked
+
+**Pad grid** (16 pads, MPC standard top→bottom = QWERTY top→bottom):
+- Row 1: `1 2 3 4` → P01–P04
+- Row 2: `Q W E R` → P05–P08
+- Row 3: `A S D F` → P09–P12
+- Row 4: `Z X C V` → P13–P16
+- `keydown` → `triggerPad(padId)` (bank-relative — `triggerPad` resolves the active bank)
+- `keyup` → `releasePad(padId)`
+- OS key-repeat dedup via a `useRef<Set<string>>` of currently-held pad keys; `keydown` ignored if key already in set
+- Multiple pads simultaneously OK — each key is independent
+
+**Banks**:
+- `7 8 9 0` → direct A/B/C/D (via `setPadBank`)
+- `Tab` → cycle forward A→B→C→D→A
+- `Shift+Tab` → cycle reverse D→C→B→A→D
+- Tab `preventDefault`'d so browser doesn't focus next element
+
+**Transport**:
+- `Space` → `togglePlay()` (PLAY/STOP toggle)
+- `Shift+Space` → `requestTransportStart("REC")` (MPC-canonical REC+PLAY)
+
+**Tracks**:
+- `M` → set `trackMuteMode = "MUTE"`, then `togglePerformanceTrack` for current track index
+- `O` → `toggleOverdub()`
+- **`S` is reserved for pad P10** (Marek's call, see decisions). Solo has no keyboard shortcut; mouse-only via MIX screen.
+
+**Dialogs / modals**:
+- `Esc` → screen-aware close. Switch on `state.activeScreen`:
+  - `FX_SEND_WINDOW` → `closeFxSendWindow()`
+  - `TIME_SIG_WINDOW` → `closeTimeSigWindow()`
+  - `SAMPLE_EDIT_WINDOW` → `closeSampleEditWindow()`
+  - `SAMPLE_KEEP_RETRY` → `retryEditedSample()` (RETRY = "close + discard")
+  - `BAR_EDITOR` → `closeBarEditor()`
+  - `COUNT_IN` / `GO_TO` / `ERASE` / `UNDO` / `SEQUENCE_EDIT` / `TIMING_CORRECT` / all `UTILITY_*` → `exitUtilityWorkflow()`
+  - Other screens → no-op
+- `Enter` → synthesizes click on the F5 softkey via DOM text-prefix lookup. Convention: every confirm/DO IT/KEEP button is on F5. Pure click → screen's own onClick handler runs.
+- `Delete` → only wired for STEP screen with a selected event → `deleteSelectedEvent()`. Other deletable contexts (BAR EDITOR, SONG) can be added later.
+
+**F-keys F1–F6** (softkey passthrough):
+- Each F-key calls `clickSoftkey(n)` which queries `document.querySelectorAll("button")` and clicks the first one whose `textContent` starts with `"F{n} "`. Only one such button is visible at a time (active screen's softkey row), so the query is unambiguous.
+- Zero modification to existing screens — works because every screen's softkey labels follow the `"Fn LABEL"` convention.
+- Edge case: `"F1 —"` placeholder buttons in utility windows are still clicked (no-op since their `onClick` is undefined).
+
+**Ctrl+S project save**:
+- New binding. Calls `saveProjectFile("untitled")` — there's no project-name field in state, so the file always downloads as `untitled.lthief`. User renames in OS file picker.
+- Documented in code comment as a Phase B limitation; smarter naming (resume from `lastAudioMessage` LOADED prefix or add a `projectName` state field) is Phase D polish.
+
+**Edit (kept from Phase A)**:
+- `Ctrl/Meta+Z` → undo
+- `Ctrl/Meta+Shift+Z` → redo
+- `Ctrl/Meta+Y` → redo
+
+**Layout editor (from Phase A)**:
+- `F7` toggles edit mode (in AppShell). When editMode is on, this entire global handler short-circuits — layout-overlay shortcuts (Ctrl+S layout save, Alt-letter align, arrow nudge, Delete element) take over.
+
+**Focus management**:
+- Typing guard skips ALL globals when `document.activeElement` is `<input>` / `<textarea>` / contentEditable. Phase C will wire per-input `onKeyDown` handlers for Enter/Esc/Tab confirm/cancel/next.
+- After per-input handler calls `.blur()` (existing pattern in MainScreen, ChopScreen), focus returns to body → globals reactivate.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **`S` key conflict** — pad P10 vs track solo. Initial implementation had S=solo wins (Marek's first spec). Marek reversed: pad P10 wins, solo has no keyboard binding. Final implementation matches the reversal.
+- **`R` key is now pad P08** (Row 2 QWERTY). The old `R = toggleSequenceRecording` is gone; that role moved to `Shift+Space`. Marek's spec is the canonical source.
+- **`E` key is now pad P07**. Old `E hold = eraseHoldActive` is gone. No keyboard equivalent for erase-hold; mouse press on ERASE button still works.
+- **No live verification** — Marek tests on his system.
+- **Synthetic F-key clicks rely on visible DOM text**. If any screen renames a softkey to break the `"Fn "` prefix (e.g., "F1.START" without space), the lookup fails. All current screens follow the convention; documented as an implicit contract.
+- **Enter = F5 click is a convention** — most popups have F5 = confirm. The Sample Edit Window's `SAMPLE_KEEP_RETRY` has F5 = KEEP. Bar Editor's F5 = DO IT. FX SEND Window has F5 dash (no action) — Enter does nothing there, which is fine (only Esc closes that window). If a future popup puts its confirm action elsewhere (e.g., F3), Enter won't trigger it; we'd need to special-case.
+- **`Ctrl+S` always downloads `untitled.lthief`** — Marek's spec asks for "overwrite if loaded from file, save as new if untitled". State doesn't currently track a project name. Limitation flagged; Phase D candidate.
+- **M = mute SIDE-EFFECTS `trackMuteMode = "MUTE"`** — if user had set trackMuteMode to SOLO via the TRACK MUTE utility screen, M now switches them back to MUTE. Acceptable but worth noting. Same pattern would be needed for a future S=solo if reinstated.
+- **Pad ASDF row inheritance**: Marek's spec ROW 3 = A/S/D/F. The S=solo conflict cost the solo binding. M (mute) sits on a non-conflicting key. O (overdub) sits on a non-conflicting key. Net result: the only TRACK binding lost is solo, which is fine — solo is a less-common workflow than mute.
+
+### Decisions made
+
+- **`S` key = pad P10**, NOT solo. Solo has no keyboard binding. (Marek's explicit reversal during this phase.)
+- **`Enter` = click F5 softkey via DOM lookup**. F5 is universally the confirm/DO IT key across screens.
+- **`Delete` = STEP-only for Phase B**. Other deletable selections (BAR EDITOR, SONG) added later if Marek wants.
+- **`Ctrl+S` → `saveProjectFile("untitled")`**. No project-name field today; user renames at OS level. Smarter behavior is Phase D polish.
+- **F-key dispatch via text-prefix DOM query** — zero modification to existing screens. Implicit contract: softkey labels start with `"Fn "`.
+- **Pad-key dedup via `useRef<Set>`** — avoids OS key-repeat spam. Multiple-pad-press supported because each key tracked independently.
+- **Tab = bank cycle**, even though browsers reserve Tab for focus navigation. `preventDefault()` overrides browser behavior. Acceptable trade-off; user has no other reason to Tab through the UI (no form-style focus chain).
+
+### Open issues / followups
+
+- **Phase C**: editable numeric + text input fields with focus management.
+- **Phase D**: regression check + polish (Backspace alias for Delete?, Ctrl+S smart naming, edge cases).
+- **`Backspace` global alias for Delete** — TBD if Marek wants it.
+- **Enter dispatch to non-F5 confirm buttons** — currently brittle if a future popup breaks the F5 convention.
+- **Solo via keyboard** — Marek explicitly skipped. If he changes his mind, candidates: `Shift+S`, dedicated key like `;`, or a modifier combo.
+- **Project name in state** for Ctrl+S smart save — needs a `projectName: string | null` AppState field, set on load + save, used here.
+- **Live tests by Marek** (16 scenarios from spec) all pending.
+
+### Files modified
+
+- `src/components/workstation/KeyboardShortcuts.tsx` — rewritten as the all-in-one global keyboard handler (~210 LOC). Pad/bank/transport/track/dialog/F-key/save/edit + typing guard + layout-edit short-circuit.
+
+---
+
+## Session 22.A — 2026-05-21 — Keyboard overhaul Phase A: audit + cleanup legacy shortcuts
+
+### What was attempted
+
+First sub-phase of the full keyboard interaction overhaul per Marek's spec. Three goals: inventory every keyboard listener in the codebase, remove improvised shortcuts not on the explicit keep list, and move the layout-editor-toggle from F2 to F7 so F2 can be a normal softkey passthrough in Phase B. Two more keep-list items survive untouched (undo/redo via Ctrl+Z / Shift+Z / Y, layout-editor in-mode shortcuts).
+
+### What worked
+
+**Full inventory of keyboard listeners (5 files found):**
+
+1. **`src/components/workstation/KeyboardShortcuts.tsx`** — global handler, listens `keydown` + `keyup` on window. Has typing guard (`<input>` / `<textarea>` / contentEditable). Pre-cleanup bindings:
+   - `Ctrl/Meta+Z` → undo — **KEEP**
+   - `Ctrl/Meta+Shift+Z` → redo — **KEEP**
+   - `Ctrl/Meta+Y` → redo — **KEEP**
+   - `e` keydown → eraseHoldActive=true; keyup → false — **REMOVED** (improvised hold-to-erase, not on keep list)
+   - `Space` → togglePlay — **REMOVED** (will be replaced in Phase B with PLAY/STOP toggle + Shift+Space REC)
+   - `r` → toggleSequenceRecording — **REMOVED** (replaced by Shift+Space in Phase B)
+   - `t` → tapTempo — **REMOVED**
+   - `Tab` → nextPadBank — **REMOVED** (will be re-added in Phase B with Shift+Tab reverse + 7890 direct bank picks)
+   - In STEP: `ArrowDown` / `ArrowUp` → next/previous step event — **REMOVED** (Phase B may re-add as a STEP-specific binding or assign Arrows globally)
+   - In DISK: `ArrowDown` / `ArrowUp` → next/previous disk item — **REMOVED**
+   - In GO_TO: `ArrowLeft/ArrowDown` / `ArrowRight/ArrowUp` → -1 / +1 — **REMOVED**
+   - Pad mapping `padKeys = ["1","2","3","4","5","6","7","8","9","q","w","e","r","a","s","d"]` → P01–P16 — **REMOVED** (Phase B replaces with MPC-standard `1234`/`qwer`/`asdf`/`zxcv`)
+
+2. **`src/components/layout/AppShell.tsx`** — `F2` toggled `editMode` (layout editor) — **REMAPPED** to `F7` per spec.
+
+3. **`src/components/layout/LayoutEditorOverlay.tsx`** — guarded by `editMode`. Bindings:
+   - `Ctrl+S` → save layout (POST to `/__layout/save`) — **KEEP** (layout editor save, on keep list)
+   - `Ctrl+D` → duplicate selected — **KEEP** (layout editor shortcut, on keep list)
+   - `Delete` / `Backspace` → delete selected — **KEEP** (layout editor)
+   - `Alt+L/R/T/B/H/V/W/S` → align/distribute/match — **KEEP** (layout editor)
+   - Arrow keys → nudge selected (Shift = ×8) — **KEEP** (layout editor)
+
+4. **`src/screens/ChopScreen.tsx`** — window-level listener at lines 178–188: `Delete` → `removeSlice()` (only when in CHOP/MANUAL mode). **REMOVED** (improvised, not on keep list). Global Delete will be wired in Phase B for "delete current selection" with screen-aware dispatch.
+
+5. **Component-level `onKeyDown` handlers on input elements** (not global listeners):
+   - `ChopScreen.tsx:620` — Enter handler on slice-count input. **KEEP** (per-field text input pattern; Marek's Phase C uses this same shape).
+   - `ChopScreen.tsx:673` — Enter handler on KeepChopsPopup base-name input. **KEEP**.
+   - `MainScreen.tsx:183` — Enter/Escape handler on a draft input (sequence name editor). **KEEP** — already follows the Phase C contract (Enter confirms, Esc cancels).
+
+**Marek's "Ctrl+S = save w app (już działa)" claim** — searched `Ctrl+S` / `ctrlKey.*['"]s['"]` across `src/`. Only match is the layout-editor save in `LayoutEditorOverlay`. **App-level project save via Ctrl+S DOES NOT currently exist** despite Marek's "already works" note. Flagged here; not adding it in this phase (out of scope per ZACHOWUJEMY rules — keep is only for what already exists).
+
+**Changes landed:**
+
+- `src/components/workstation/KeyboardShortcuts.tsx` — rewritten down to just the three undo/redo bindings + the typing guard. ~85 LOC → ~50 LOC. Header doc comment updated to explain Phase A scope.
+- `src/components/layout/AppShell.tsx` — `event.key === "F2"` changed to `event.key === "F7"` for `editMode` toggle. Single string change. Comment updated.
+- `src/screens/ChopScreen.tsx` — window-level `Delete → removeSlice` `useEffect` (lines 178–188) deleted. Replaced with a one-line `//` comment noting the removal and that Phase B will re-wire global Delete.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **`Ctrl+S` app save was claimed by Marek as "already works"** but doesn't exist in code. Did not add it — explicit ZACHOWUJEMY scope is about preserving what exists, not adding. Marek may want this in Phase B or later; flagged.
+- **Removing `Tab → nextPadBank` mid-session means Tab is currently dead** until Phase B lands. Same for Space, R, T, E, the pad keys, and the screen-specific arrow handlers. The Phase A → Phase B gap is the "bezpieczne midpoint" Marek explicitly allowed in the spec — app is usable, just keyboard-light.
+- **F2 was a long-lived binding** for the layout editor toggle. If Marek has muscle memory for F2, the F7 remap is a small adjustment cost. Doc + this log entry note the move.
+- **`Backspace` is also bound to delete-selected in layout overlay** (alongside `Delete`). Phase B's global Delete binding will need to also accept Backspace, OR layout-overlay-Backspace will continue to override globally only when in editMode (current behavior). I'll wire Phase B's Delete as Delete-only by default and revisit if Marek wants Backspace as a global alias.
+- **Component-level `onKeyDown` on input elements is the future pattern** for Phase C editable fields. The three existing instances already implement Enter/Esc/blur correctly — they're examples to mirror for new editable fields, not legacy to clean up.
+- **No way to test cleanup result visually by me** — Marek to verify nothing he uses today breaks. The "things to test" list: layout editor still openable via F7, undo/redo still work via Ctrl+Z / Y, and confirm that pad keys / Space / Tab / etc. are deliberately dead (will return in Phase B).
+
+### Decisions made
+
+- **F2 → F7** for layout editor toggle. F2 is reserved for normal softkey passthrough in Phase B.
+- **Window-level Delete handler in CHOP removed**. Slice removal still works via the MARK button in the right panel; global Delete returns in Phase B with screen-aware dispatch.
+- **Pad keys removed entirely** rather than half-remapped. Phase B does the new mapping in one place.
+- **`Backspace` global alias for Delete: defer**. Phase B uses Delete only. Layout-editor in-mode Backspace stays as the explicit current behavior.
+- **Marek's "Ctrl+S app save already works" claim: flagged, not acted on**. Add separately if needed.
+- **Existing component-level `onKeyDown` input handlers stay untouched**. They're the pattern Phase C will replicate.
+
+### Open issues / followups
+
+- **Phase B**: re-implement pad/transport/bank/track/dialog/F-key mappings per spec.
+- **Phase C**: editable numeric + text input fields with focus management.
+- **Phase D**: regression check + polish (pad-hold deduplication, edge cases).
+- **`Ctrl+S` app project save**: doesn't actually exist. Either add it (Phase B or later) or update Marek's mental model that it requires going through DISK screen save buttons.
+- **`Backspace` global alias for Delete**: TBD if Marek wants it once Phase B's Delete lands.
+- **Test coverage for Phase A**: Marek to verify layout editor opens via F7, undo/redo still work, and that the removed bindings are confirmed dead (no rogue handler picks them up).
+
+### Files modified
+
+- `src/components/workstation/KeyboardShortcuts.tsx` — gutted to undo/redo + typing guard only.
+- `src/components/layout/AppShell.tsx` — F2 → F7 for layout editor toggle.
+- `src/screens/ChopScreen.tsx` — removed window-level Delete handler for slice removal.
+
+---
+
 ## Session 21 — 2026-05-21 — UI scaling investigation (3 reverted attempts) + bg_v3 swap + flex shrink-0 fix
 
 ### What was attempted

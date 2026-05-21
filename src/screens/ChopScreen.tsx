@@ -175,17 +175,8 @@ export function ChopScreen() {
     };
   }, [activeLength, activeStart, moveMarkerTo, panWaveform, visibleLength, waveformOffset]);
 
-  useEffect(() => {
-    if (chopEditMode !== "CHOP" || chopSliceMode !== "MANUAL") return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Delete") return;
-      if (event.target instanceof HTMLInputElement) return;
-      event.preventDefault();
-      removeSlice();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [chopEditMode, chopSliceMode, removeSlice]);
+  // Legacy improvised "Delete to remove slice" window-listener removed in Phase A
+  // keyboard cleanup. Global Delete handler is added in Phase B.
 
   const beginMarkerDrag = (marker: MarkerId) => (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();

@@ -26,7 +26,8 @@ export function AppShell() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "F2") {
+      // F7 toggles layout editor mode (moved from F2 so F2 can be a normal softkey passthrough).
+      if (event.key === "F7") {
         event.preventDefault();
         setEditMode(!useLayoutStore.getState().editMode);
       }
