@@ -34,6 +34,40 @@ const MIGRATIONS: Migration[] = [
       return { ...m, schemaVersion: 2 };
     },
   },
+  // v2 → v3: Phase 2 FX — 2 effect blocks per bus (blockA/blockB) + chaining flags.
+  // The v2 single-effect-per-bus shape collapses into blockA, blockB defaults to OFF.
+  // chainFX1ToFX2 + chainFX3ToFX4 default to false (no chaining).
+  {
+    from: 2,
+    to: 3,
+    apply: (m) => {
+      if (m.type === "project") {
+        const v2Project = m as typeof m & { fxBuses?: unknown };
+        const oldBuses = Array.isArray(v2Project.fxBuses) ? v2Project.fxBuses as Array<Record<string, unknown>> : [];
+        const newBuses = ([1, 2, 3, 4] as const).map((id) => {
+          const old = oldBuses.find((b) => b && b.id === id);
+          const oldEffect = (old?.effect as string | null | undefined) ?? null;
+          const oldParams = (old?.params && typeof old.params === "object") ? old.params : {};
+          const oldBypass = typeof old?.bypass === "boolean" ? old.bypass : false;
+          const oldDirect = typeof old?.direct === "boolean" ? old.direct : true;
+          return {
+            id,
+            direct: oldDirect,
+            blockA: { effect: oldEffect, bypass: oldBypass, params: oldParams },
+            blockB: { effect: null, bypass: false, params: {} },
+          };
+        });
+        return {
+          ...m,
+          schemaVersion: 3,
+          fxBuses: newBuses,
+          fxChainFX1ToFX2: false,
+          fxChainFX3ToFX4: false,
+        };
+      }
+      return { ...m, schemaVersion: 3 };
+    },
+  },
 ];
 
 export function applyMigrations(input: AnyManifest): AnyManifest {

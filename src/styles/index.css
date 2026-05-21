@@ -31,3 +31,43 @@ body {
 button {
   cursor: pointer;
 }
+
+/* ============================================================
+   Phosphor-green LCD scrollbars (project-wide).
+   Matches hardware-shell color palette: muted #91a477, brighter #d8e3b7,
+   dark olive border #46533b.
+   ============================================================ */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(145, 164, 119, 0.55) rgba(0, 20, 0, 0.4);
+}
+
+/* WebKit (Chrome / Edge / Safari) */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(0, 20, 0, 0.4);
+  border: 1px solid #46533b;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(145, 164, 119, 0.55);
+  border: 1px solid #46533b;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(216, 227, 183, 0.75);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(238, 246, 216, 0.9);
+}
+
+*::-webkit-scrollbar-corner {
+  background: rgba(0, 20, 0, 0.4);
+}

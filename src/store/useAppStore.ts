@@ -7,7 +7,9 @@ import {
   fxEngine,
   MASTER_COMP_DEFAULTS,
   MASTER_EQ_DEFAULTS,
+  type BusBlockId,
   type BusId,
+  type ChainPair,
   type EffectParamMap,
   type EffectType,
 } from "../audio/fxEngine";
@@ -74,6 +76,8 @@ type UndoSnapshot = {
   selectedEventId: string | null;
   fxBuses: FXBus[];
   masterFx: MasterFX;
+  fxChainFX1ToFX2: boolean;
+  fxChainFX3ToFX4: boolean;
 };
 
 type UndoEntry = {
@@ -222,6 +226,8 @@ type AppState = {
   performancePulse: number;
   fxBuses: FXBus[];
   masterFx: MasterFX;
+  fxChainFX1ToFX2: boolean;
+  fxChainFX3ToFX4: boolean;
   diskFolders: DiskFolder[];
   activeDiskFolderId: string;
   selectedDiskItemIndex: number;
@@ -441,18 +447,22 @@ type AppState = {
   selectSetting: (index: number) => void;
   adjustSelectedSetting: (delta: number) => void;
   toggleSelectedSetting: () => void;
-  // ---- FX system (Phase A) ----
-  setFxBusEffect: (busId: BusId, effect: EffectType | null) => void;
+  // ---- FX system (Phase 2 — 2 blocks per bus + chaining) ----
+  setFxBusBlockEffect: (busId: BusId, block: BusBlockId, effect: EffectType | null) => void;
+  toggleFxBusBlockBypass: (busId: BusId, block: BusBlockId) => void;
+  adjustFxBusBlockParam: (busId: BusId, block: BusBlockId, key: string, delta: number) => void;
+  setFxBusBlockParam: (busId: BusId, block: BusBlockId, key: string, value: number) => void;
   toggleFxBusDirect: (busId: BusId) => void;
-  toggleFxBusBypass: (busId: BusId) => void;
-  adjustFxBusParam: (busId: BusId, key: string, delta: number) => void;
-  setFxBusParam: (busId: BusId, key: string, value: number) => void;
+  toggleFxChain: (pair: ChainPair) => void;
+  resetBusBlock: (busId: BusId, block: BusBlockId) => void;
   toggleMasterEqBypass: () => void;
   toggleMasterCompBypass: () => void;
   adjustMasterEqParam: (key: string, delta: number) => void;
   setMasterEqParam: (key: string, value: number) => void;
   adjustMasterCompParam: (key: string, delta: number) => void;
   setMasterCompParam: (key: string, value: number) => void;
+  resetMasterEq: () => void;
+  resetMasterComp: () => void;
   setPadFxBus: (pad: string, busId: 0 | BusId) => void;
   adjustPadFxSendLevel: (pad: string, delta: number) => void;
   setPadFxSendLevel: (pad: string, level: number) => void;
@@ -490,14 +500,19 @@ type PadAssignment = {
 };
 
 // ============================================================================
-// FX system state types (Phase A — MPC5000 routing model)
+// FX system state types (Phase 2 — MPC5000 routing model with 2 blocks per bus + chaining)
 // ============================================================================
+type FXBlock = {
+  effect: EffectType | null;   // null = block OFF (passthrough)
+  bypass: boolean;             // bypass routes around this block (passthrough)
+  params: EffectParamMap;      // per-effect params; switching effect resets to defaults
+};
+
 type FXBus = {
   id: BusId;
-  effect: EffectType | null;   // null = empty bus (passthrough)
-  direct: boolean;             // true = SEND mode (dry+wet), false = INSERT mode (wet only)
-  bypass: boolean;
-  params: EffectParamMap;      // shape depends on effect type; switching effect resets to defaults
+  blockA: FXBlock;
+  blockB: FXBlock;
+  direct: boolean;             // SEND vs INSERT (per-bus, not per-block)
 };
 
 type MasterFX = {
@@ -831,6 +846,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   performancePulse: 0,
   fxBuses: createDefaultFxBuses(),
   masterFx: createDefaultMasterFx(),
+  fxChainFX1ToFX2: false,
+  fxChainFX3ToFX4: false,
   diskFolders: createDiskFolders(),
   activeDiskFolderId: "memory",
   selectedDiskItemIndex: 0,
@@ -3128,19 +3145,71 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
   // ============================================================
-  // FX system actions (Phase A)
+  // FX system actions (Phase 2 — 2 blocks per bus + chaining + reset)
   // ============================================================
-  setFxBusEffect: (busId, effect) =>
+  setFxBusBlockEffect: (busId, block, effect) =>
     set((state) => {
       const params: EffectParamMap = effect ? { ...EFFECT_DEFAULTS[effect] } : {};
-      const fxBuses = state.fxBuses.map((b) =>
-        b.id === busId ? { ...b, effect, params } : b,
-      );
-      fxEngine.setBusEffect(busId, effect, params);
+      const fxBuses = state.fxBuses.map((b) => {
+        if (b.id !== busId) return b;
+        const updated = block === "A"
+          ? { ...b, blockA: { ...b.blockA, effect, params } }
+          : { ...b, blockB: { ...b.blockB, effect, params } };
+        return updated;
+      });
+      fxEngine.setBusBlockEffect(busId, block, effect, params);
       return {
         fxBuses,
-        lastAudioMessage: effect ? `FX${busId} ${effect}` : `FX${busId} OFF`,
-        ...recordUndo(state, `FX BUS ${busId} EFFECT`, `fx-effect:${busId}:${Date.now()}`),
+        lastAudioMessage: effect ? `FX${busId}${block} ${effect}` : `FX${busId}${block} OFF`,
+        ...recordUndo(state, `FX BUS ${busId} BLOCK ${block} EFFECT`, `fx-effect:${busId}:${block}:${Date.now()}`),
+      };
+    }),
+  toggleFxBusBlockBypass: (busId, block) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) => {
+        if (b.id !== busId) return b;
+        return block === "A"
+          ? { ...b, blockA: { ...b.blockA, bypass: !b.blockA.bypass } }
+          : { ...b, blockB: { ...b.blockB, bypass: !b.blockB.bypass } };
+      });
+      const bus = fxBuses.find((b) => b.id === busId)!;
+      const newBypass = block === "A" ? bus.blockA.bypass : bus.blockB.bypass;
+      fxEngine.setBusBlockBypass(busId, block, newBypass);
+      return {
+        fxBuses,
+        lastAudioMessage: `FX${busId}${block} BYPASS ${newBypass ? "ON" : "OFF"}`,
+        ...recordUndo(state, `FX BUS ${busId} BLOCK ${block} BYPASS`, `fx-bypass:${busId}:${block}:${Date.now()}`),
+      };
+    }),
+  adjustFxBusBlockParam: (busId, block, key, delta) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) => {
+        if (b.id !== busId) return b;
+        const blk = block === "A" ? b.blockA : b.blockB;
+        const cur = blk.params[key] ?? 0;
+        const newBlk = { ...blk, params: { ...blk.params, [key]: cur + delta } };
+        return block === "A" ? { ...b, blockA: newBlk } : { ...b, blockB: newBlk };
+      });
+      const bus = fxBuses.find((b) => b.id === busId)!;
+      const value = (block === "A" ? bus.blockA : bus.blockB).params[key];
+      fxEngine.setBusBlockParam(busId, block, key, value);
+      return {
+        fxBuses,
+        ...recordUndo(state, `FX ${key.toUpperCase()}`, `fx-param:${busId}:${block}:${key}`),
+      };
+    }),
+  setFxBusBlockParam: (busId, block, key, value) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) => {
+        if (b.id !== busId) return b;
+        const blk = block === "A" ? b.blockA : b.blockB;
+        const newBlk = { ...blk, params: { ...blk.params, [key]: value } };
+        return block === "A" ? { ...b, blockA: newBlk } : { ...b, blockB: newBlk };
+      });
+      fxEngine.setBusBlockParam(busId, block, key, value);
+      return {
+        fxBuses,
+        ...recordUndo(state, `FX ${key.toUpperCase()}`, `fx-param:${busId}:${block}:${key}`),
       };
     }),
   toggleFxBusDirect: (busId) =>
@@ -3155,43 +3224,48 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, `FX BUS ${busId} DIRECT`, `fx-direct:${busId}:${Date.now()}`),
       };
     }),
-  toggleFxBusBypass: (busId) =>
+  toggleFxChain: (pair) =>
     set((state) => {
-      const fxBuses = state.fxBuses.map((b) =>
-        b.id === busId ? { ...b, bypass: !b.bypass } : b,
-      );
-      const bus = fxBuses.find((b) => b.id === busId)!;
-      fxEngine.setBusBypass(busId, bus.bypass);
-      fxEngine.setBusEffect(busId, bus.bypass ? null : bus.effect, bus.params);
-      return {
-        fxBuses,
-        lastAudioMessage: `FX${busId} BYPASS ${bus.bypass ? "ON" : "OFF"}`,
-        ...recordUndo(state, `FX BUS ${busId} BYPASS`, `fx-bypass:${busId}:${Date.now()}`),
-      };
+      if (pair === "FX1_FX2") {
+        const next = !state.fxChainFX1ToFX2;
+        fxEngine.setFxChain("FX1_FX2", next);
+        return {
+          fxChainFX1ToFX2: next,
+          lastAudioMessage: `FX1>FX2 ${next ? "ON" : "OFF"}`,
+          ...recordUndo(state, `FX CHAIN 1>2 ${next ? "ON" : "OFF"}`, `fx-chain:1-2:${Date.now()}`),
+        };
+      } else {
+        const next = !state.fxChainFX3ToFX4;
+        fxEngine.setFxChain("FX3_FX4", next);
+        return {
+          fxChainFX3ToFX4: next,
+          lastAudioMessage: `FX3>FX4 ${next ? "ON" : "OFF"}`,
+          ...recordUndo(state, `FX CHAIN 3>4 ${next ? "ON" : "OFF"}`, `fx-chain:3-4:${Date.now()}`),
+        };
+      }
     }),
-  adjustFxBusParam: (busId, key, delta) =>
+  resetBusBlock: (busId, block) =>
     set((state) => {
       const fxBuses = state.fxBuses.map((b) => {
         if (b.id !== busId) return b;
-        const cur = b.params[key] ?? 0;
-        return { ...b, params: { ...b.params, [key]: cur + delta } };
+        const blk = block === "A" ? b.blockA : b.blockB;
+        // Reset SCOPE: only params. Preserve effect type + bypass.
+        const params: EffectParamMap = blk.effect ? { ...EFFECT_DEFAULTS[blk.effect] } : {};
+        const newBlk = { ...blk, params };
+        return block === "A" ? { ...b, blockA: newBlk } : { ...b, blockB: newBlk };
       });
       const bus = fxBuses.find((b) => b.id === busId)!;
-      fxEngine.setBusParam(busId, key, bus.params[key]);
+      const blk = block === "A" ? bus.blockA : bus.blockB;
+      // Push reset params into the engine. If block has effect, rebuild with defaults; else no-op.
+      if (blk.effect) {
+        for (const [key, value] of Object.entries(blk.params)) {
+          fxEngine.setBusBlockParam(busId, block, key, value);
+        }
+      }
       return {
         fxBuses,
-        ...recordUndo(state, `FX ${key.toUpperCase()}`, `fx-param:${busId}:${key}`),
-      };
-    }),
-  setFxBusParam: (busId, key, value) =>
-    set((state) => {
-      const fxBuses = state.fxBuses.map((b) =>
-        b.id === busId ? { ...b, params: { ...b.params, [key]: value } } : b,
-      );
-      fxEngine.setBusParam(busId, key, value);
-      return {
-        fxBuses,
-        ...recordUndo(state, `FX ${key.toUpperCase()}`, `fx-param:${busId}:${key}`),
+        lastAudioMessage: `FX${busId}${block} RESET`,
+        ...recordUndo(state, `FX RESET BUS ${busId} BLOCK ${block}`, `fx-reset:${busId}:${block}:${Date.now()}`),
       };
     }),
   toggleMasterEqBypass: () =>
@@ -3268,6 +3342,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         masterFx,
         ...recordUndo(state, `MASTER COMP ${key.toUpperCase()}`, `master-comp:${key}`),
+      };
+    }),
+  resetMasterEq: () =>
+    set((state) => {
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        eq: { ...state.masterFx.eq, params: { ...MASTER_EQ_DEFAULTS } },
+      };
+      // Push every band's defaults into the engine.
+      for (const [key, value] of Object.entries(MASTER_EQ_DEFAULTS)) {
+        applyMasterEqParamToEngine(masterFx.eq.params, key);
+        void value;
+      }
+      return {
+        masterFx,
+        lastAudioMessage: "MASTER EQ RESET",
+        ...recordUndo(state, "MASTER EQ RESET", `master-eq-reset:${Date.now()}`),
+      };
+    }),
+  resetMasterComp: () =>
+    set((state) => {
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        compressor: { ...state.masterFx.compressor, params: { ...MASTER_COMP_DEFAULTS } },
+      };
+      for (const [key, value] of Object.entries(MASTER_COMP_DEFAULTS)) {
+        fxEngine.setMasterCompParam(key, value);
+      }
+      return {
+        masterFx,
+        lastAudioMessage: "MASTER COMP RESET",
+        ...recordUndo(state, "MASTER COMP RESET", `master-comp-reset:${Date.now()}`),
       };
     }),
   setPadFxBus: (pad, busId) =>
@@ -3707,6 +3813,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       globalSettings: collectGlobalSettings(state),
       fxBuses: state.fxBuses,
       masterFx: state.masterFx,
+      fxChainFX1ToFX2: state.fxChainFX1ToFX2,
+      fxChainFX3ToFX4: state.fxChainFX3ToFX4,
       resolveAudioBuffer: (id) => getSampleBuffer(id),
     });
     const blob = await writeProjectZip(manifest, sampleEntries);
@@ -3766,7 +3874,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const blank = createBlankProjectState();
     set(blank);
-    if (blank.fxBuses && blank.masterFx) syncFxEngine(blank.fxBuses, blank.masterFx);
+    if (blank.fxBuses && blank.masterFx) {
+      syncFxEngine(blank.fxBuses, blank.masterFx, blank.fxChainFX1ToFX2 ?? false, blank.fxChainFX3ToFX4 ?? false);
+    }
     const { clearAutosave } = await import("../disk");
     await clearAutosave().catch(() => {});
   },
@@ -3821,6 +3931,8 @@ function createBlankProjectState(): Partial<AppState> {
     selectedSongStepIndex: 0,
     fxBuses: createDefaultFxBuses(),
     masterFx: createDefaultMasterFx(),
+    fxChainFX1ToFX2: false,
+    fxChainFX3ToFX4: false,
     undoHistory: [],
     redoHistory: [],
     pendingRecTake: null,
@@ -3909,9 +4021,16 @@ function hydrateProjectBundle(
   const firstProgram = programs[0];
   const firstSequence = sequences[0];
   const firstTrackId = firstSequence?.tracks[0]?.id ?? "TRACK01";
-  const manifestExt = bundle.manifest as unknown as { fxBuses?: unknown; masterFx?: unknown };
+  const manifestExt = bundle.manifest as unknown as {
+    fxBuses?: unknown;
+    masterFx?: unknown;
+    fxChainFX1ToFX2?: unknown;
+    fxChainFX3ToFX4?: unknown;
+  };
   const fxBuses = ensureFxBusesFromManifest(manifestExt.fxBuses);
   const masterFx = ensureMasterFxFromManifest(manifestExt.masterFx);
+  const chainFX1ToFX2 = typeof manifestExt.fxChainFX1ToFX2 === "boolean" ? manifestExt.fxChainFX1ToFX2 : false;
+  const chainFX3ToFX4 = typeof manifestExt.fxChainFX3ToFX4 === "boolean" ? manifestExt.fxChainFX3ToFX4 : false;
   set({
     recordedSamples: samples,
     programs,
@@ -3934,10 +4053,12 @@ function hydrateProjectBundle(
     selectedSongStepIndex: 0,
     fxBuses,
     masterFx,
+    fxChainFX1ToFX2: chainFX1ToFX2,
+    fxChainFX3ToFX4: chainFX3ToFX4,
     ...applyGlobalSettings(bundle.manifest.globalSettings),
     lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief`,
   });
-  syncFxEngine(fxBuses, masterFx);
+  syncFxEngine(fxBuses, masterFx, chainFX1ToFX2, chainFX3ToFX4);
 }
 
 function hydrateAllBundle(
@@ -4156,6 +4277,8 @@ function captureSnapshot(state: AppState): UndoSnapshot {
     selectedEventId: state.selectedEventId,
     fxBuses: structuredClone(state.fxBuses),
     masterFx: structuredClone(state.masterFx),
+    fxChainFX1ToFX2: state.fxChainFX1ToFX2,
+    fxChainFX3ToFX4: state.fxChainFX3ToFX4,
   };
 }
 
@@ -4164,10 +4287,12 @@ function restoreSnapshot(snapshot: UndoSnapshot): Partial<AppState> {
   // snapshot.activeScreen is captured for possible future "jump to edit site" feature.
   const fxBuses = structuredClone(snapshot.fxBuses ?? createDefaultFxBuses());
   const masterFx = structuredClone(snapshot.masterFx ?? createDefaultMasterFx());
+  const chainFX1ToFX2 = snapshot.fxChainFX1ToFX2 ?? false;
+  const chainFX3ToFX4 = snapshot.fxChainFX3ToFX4 ?? false;
   // Push restored FX state into the audio engine; restoreSnapshot is consumed by undo/redo
   // which calls set() with this partial. Side effect is acceptable here — audio nodes
   // must reflect the restored state.
-  syncFxEngine(fxBuses, masterFx);
+  syncFxEngine(fxBuses, masterFx, chainFX1ToFX2, chainFX3ToFX4);
   return {
     stepEvents: structuredClone(snapshot.stepEvents),
     sequences: structuredClone(snapshot.sequences),
@@ -4193,6 +4318,8 @@ function restoreSnapshot(snapshot: UndoSnapshot): Partial<AppState> {
     selectedEventId: snapshot.selectedEventId,
     fxBuses,
     masterFx,
+    fxChainFX1ToFX2: chainFX1ToFX2,
+    fxChainFX3ToFX4: chainFX3ToFX4,
   };
 }
 
@@ -5551,11 +5678,14 @@ function createBankAssignments(): PadAssignment[] {
 function createDefaultFxBuses(): FXBus[] {
   return ([1, 2, 3, 4] as BusId[]).map((id) => ({
     id,
-    effect: null,
     direct: true,
-    bypass: false,
-    params: {},
+    blockA: { effect: null, bypass: false, params: {} },
+    blockB: { effect: null, bypass: false, params: {} },
   }));
+}
+
+function createDefaultBlock(): FXBlock {
+  return { effect: null, bypass: false, params: {} };
 }
 
 function createDefaultMasterFx(): MasterFX {
@@ -5583,26 +5713,55 @@ function ensureProgramFxFields(program: Program): Program {
   return { ...program, padAssignments };
 }
 
+function parseEffectType(raw: unknown): EffectType | null {
+  return raw === "REVERB" || raw === "DELAY" || raw === "EQ" || raw === "FLANGER"
+    || raw === "CHORUS" || raw === "BITCRUSHER" || raw === "COMPRESSOR"
+    ? raw
+    : null;
+}
+
+function ensureBlockFromManifest(raw: unknown): FXBlock {
+  if (!raw || typeof raw !== "object") return createDefaultBlock();
+  const r = raw as Record<string, unknown>;
+  const effect = parseEffectType(r.effect);
+  return {
+    effect,
+    bypass: typeof r.bypass === "boolean" ? r.bypass : false,
+    params: (r.params && typeof r.params === "object")
+      ? { ...(r.params as EffectParamMap) }
+      : (effect ? { ...EFFECT_DEFAULTS[effect] } : {}),
+  };
+}
+
 function ensureFxBusesFromManifest(input: unknown): FXBus[] {
   if (!Array.isArray(input) || input.length === 0) return createDefaultFxBuses();
   const ids: BusId[] = [1, 2, 3, 4];
   const result: FXBus[] = ids.map((id) => {
     const found = (input as Array<Record<string, unknown>>).find((b) => b && b.id === id);
-    if (!found) return { id, effect: null, direct: true, bypass: false, params: {} };
-    const effectRaw = found.effect;
-    const effect: EffectType | null =
-      effectRaw === "REVERB" || effectRaw === "DELAY" || effectRaw === "EQ" || effectRaw === "FLANGER"
-        || effectRaw === "CHORUS" || effectRaw === "BITCRUSHER" || effectRaw === "COMPRESSOR"
-        ? effectRaw
-        : null;
+    if (!found) {
+      return { id, direct: true, blockA: createDefaultBlock(), blockB: createDefaultBlock() };
+    }
+    // v3 shape: blockA + blockB present.
+    if (found.blockA || found.blockB) {
+      return {
+        id,
+        direct: typeof found.direct === "boolean" ? found.direct : true,
+        blockA: ensureBlockFromManifest(found.blockA),
+        blockB: ensureBlockFromManifest(found.blockB),
+      };
+    }
+    // v2 shape fallback (single effect/params/bypass on bus): collapse into blockA.
     return {
       id,
-      effect,
       direct: typeof found.direct === "boolean" ? found.direct : true,
-      bypass: typeof found.bypass === "boolean" ? found.bypass : false,
-      params: (found.params && typeof found.params === "object")
-        ? { ...(found.params as EffectParamMap) }
-        : (effect ? { ...EFFECT_DEFAULTS[effect] } : {}),
+      blockA: {
+        effect: parseEffectType(found.effect),
+        bypass: typeof found.bypass === "boolean" ? found.bypass : false,
+        params: (found.params && typeof found.params === "object")
+          ? { ...(found.params as EffectParamMap) }
+          : {},
+      },
+      blockB: createDefaultBlock(),
     };
   });
   return result;
@@ -5641,14 +5800,28 @@ function applyMasterEqParamToEngine(eqParams: EffectParamMap, key: string) {
 }
 
 /** Pushes the FX state into the audio engine. Called after every FX state mutation. */
-function syncFxEngine(fxBuses: FXBus[], masterFx: MasterFX) {
+function syncFxEngine(
+  fxBuses: FXBus[],
+  masterFx: MasterFX,
+  chainFX1ToFX2: boolean,
+  chainFX3ToFX4: boolean,
+) {
   for (const bus of fxBuses) {
-    fxEngine.setBusBypass(bus.id, bus.bypass);
-    fxEngine.setBusEffect(bus.id, bus.bypass ? null : bus.effect, bus.params);
-    for (const [key, value] of Object.entries(bus.params)) {
-      fxEngine.setBusParam(bus.id, key, value);
+    // Block A
+    fxEngine.setBusBlockEffect(bus.id, "A", bus.blockA.effect, bus.blockA.params);
+    fxEngine.setBusBlockBypass(bus.id, "A", bus.blockA.bypass);
+    for (const [key, value] of Object.entries(bus.blockA.params)) {
+      fxEngine.setBusBlockParam(bus.id, "A", key, value);
+    }
+    // Block B
+    fxEngine.setBusBlockEffect(bus.id, "B", bus.blockB.effect, bus.blockB.params);
+    fxEngine.setBusBlockBypass(bus.id, "B", bus.blockB.bypass);
+    for (const [key, value] of Object.entries(bus.blockB.params)) {
+      fxEngine.setBusBlockParam(bus.id, "B", key, value);
     }
   }
+  fxEngine.setFxChain("FX1_FX2", chainFX1ToFX2);
+  fxEngine.setFxChain("FX3_FX4", chainFX3ToFX4);
   fxEngine.setMasterEqBypass(masterFx.eq.bypass);
   const bandKeys: Array<[0 | 1 | 2 | 3, "low" | "lowMid" | "highMid" | "high"]> = [
     [0, "low"], [1, "lowMid"], [2, "highMid"], [3, "high"],

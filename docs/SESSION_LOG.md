@@ -99,6 +99,194 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 19.1 — 2026-05-21 — FX screen middle panel scroll + project-wide phosphor green scrollbars
+
+### What was attempted
+
+During Marek's live test of Phase 2 (Session 19), two UI bugs surfaced — addressed before the Phase 2 commit so they land together.
+
+- **BUG 1**: PANEL 2 of the FX screen ("SELECTED BUS / BLOCK" details + ACTIONS) overflowed behind the softkey row. With the new Phase 2 layout (4 INFO rows for both blocks summary + ACTIONS section with 4 buttons), the content is taller than the panel — buttons like `BYPASS BLOCK B: OFF` got clipped and were unclickable. PANELS 1 + 3 already had `overflow-auto`; PANEL 2 was missed during the Phase 2 rewrite.
+
+- **BUG 2**: Default browser scrollbars (light gray/silver) clashed with the phosphor-green LCD aesthetic everywhere they appeared (FX panels, BAR EDITOR bar list, STEP events list, etc.). Project-wide visual inconsistency.
+
+### What worked
+
+**BUG 1 fix** — single class change on PANEL 2 in `FxScreen`:
+```
+<section className="grid content-start gap-[8px] ...">
+                  → "grid min-h-0 content-start gap-[8px] overflow-auto ..."
+```
+Matches the pattern PANELS 1 and 3 already use. Section now respects its grid-row height and scrolls inside.
+
+**BUG 2 fix** — added 40 lines to `src/styles/index.css` using universal selector (`*`) so every scrollable surface inherits the styling. Both engines covered:
+
+- **Firefox**: `scrollbar-width: thin; scrollbar-color: <thumb> <track>` on the universal selector.
+- **WebKit (Chrome / Edge / Safari)**: `::-webkit-scrollbar`, `-track`, `-thumb`, `-thumb:hover`, `-thumb:active`, `-corner` pseudo-elements.
+
+Colors pulled from the existing LCD palette rather than introducing new tokens:
+- Track: `rgba(0, 20, 0, 0.4)` — dark green-tinted bg matching `bg-black/20`-`bg-black/30` panel backgrounds
+- Thumb idle: `rgba(145, 164, 119, 0.55)` — `#91a477` muted phosphor (the project's "label" color)
+- Thumb hover: `rgba(216, 227, 183, 0.75)` — `#d8e3b7` (the project's brighter active text)
+- Thumb active: `rgba(238, 246, 216, 0.9)` — `#eef6d8` (the project's pale highlight)
+- 1px `#46533b` borders on track + thumb — matches panel borders project-wide
+- 10px width (within Marek's 8–10px spec)
+
+Single source of truth — no per-component overrides needed; future scrollable areas inherit automatically.
+
+Build clean.
+
+### What didn't work / pitfalls hit
+
+- **No visual verification by me** — Marek tests in browser, I have no eyes (per project's "wizualne verdicty: ja oceniam" rule). Both fixes are logically correct via code review.
+- **PANEL 2 fix is identical to existing PANELS 1 + 3** — the regression was a copy-paste miss during Phase 2 rewrite, not an architectural issue. Worth a checklist next time PANEL N is added: always include `min-h-0 overflow-auto` on grid-row children when their content might exceed available height.
+- **Universal `*` selector for scrollbar styling has a tiny perf cost** (CSSOM has to evaluate the rule against every element). Negligible at this app's size; would matter at 10K+ DOM nodes. Acceptable.
+- **WebKit scrollbar pseudo-elements are non-standard** — they work in Chrome, Edge, Safari, Brave, Opera. Not Firefox. Firefox falls back to `scrollbar-color` (less customizable but still phosphor-themed). LoopThief ships in Tauri (Chromium under the hood) so the WebKit styling is the primary surface.
+- **No CSS variables introduced** — Marek's spec said "Zostań w obrębie CSS variables jeśli LoopThief je używa". LoopThief's palette is currently raw hex literals across Tailwind classes and inline styles. Not adding variables in this fix to keep scope tight; could be a separate refactor pass if Marek wants single-token palette management.
+
+### Decisions made
+
+- **PANEL 2 fix is a one-line class change**, no structural refactor.
+- **Project-wide CSS** via universal selector rather than component-by-component classes. Single change, applies everywhere.
+- **No CSS variables introduced** — palette stays inline. Variable-ization is a separate concern.
+- **10px scrollbar width** — within Marek's 8–10 range. Wide enough to grab with mouse, narrow enough not to dominate content.
+- **Hover + active states differentiated** so the scrollbar has tactile feedback when interacted with.
+- **Bundle into the Phase 2 commit** rather than separate — small, related, ships together.
+
+### Open issues / followups
+
+- **Visual verification still pending** — Marek's call before commit.
+- **CSS palette → variables refactor** if Marek wants single-source palette tokens. Separate task.
+- **Scrollbar appearance on macOS/Windows native scroll devices** (trackpad inertia, etc.) — should be fine but worth a passing test if Marek ships on macOS later.
+
+### Files modified
+
+- `src/screens/UtilityScreens.tsx` — PANEL 2 of FxScreen now `min-h-0 overflow-auto`.
+- `src/styles/index.css` — global phosphor-green scrollbar styling (WebKit + Firefox).
+
+---
+
+## Session 19 — 2026-05-21 — FX Phase 2: 2 effect blocks per bus + FX1→FX2 / FX3→FX4 chaining + F4 RESET
+
+### What was attempted
+
+Marek's Phase 2 spec (MPC5000 canonical multi-block + chaining): convert each FX bus from a single effect slot to **two effect blocks (A + B)** in series, add **bus chaining** for the canonical pairs (FX1→FX2, FX3→FX4), add an **F4 RESET** affordance that restores selected element's params to defaults (without touching effect type / bypass / direct / chaining). Schema bump v2→v3 with backward-compatible migration so Phase 1 (single-effect) projects load cleanly. All sub-phases folded into one delivery — Marek can't test data model without the audio graph, audio graph without the UI, etc.
+
+### What worked
+
+**Phase 2a — data model + migration (`useAppStore.ts`, `disk/`):**
+
+- New `FXBlock` type `{ effect: EffectType | null; bypass: boolean; params: EffectParamMap }`.
+- `FXBus` rewritten as `{ id, blockA: FXBlock, blockB: FXBlock, direct: boolean }`. `direct` stays per-bus (not per-block) per Marek's spec.
+- New AppState fields: `fxChainFX1ToFX2: boolean`, `fxChainFX3ToFX4: boolean`. Default false.
+- `createDefaultFxBuses` builds 4 buses with both blocks empty (passthrough).
+- `ensureFxBusesFromManifest` handles BOTH v3 shape (blockA/blockB present) AND v2 shape (single `effect`/`params`/`bypass` on bus, collapsed into blockA on hydrate).
+- Schema bumped `CURRENT_SCHEMA_VERSION = 3`. Migration v2→v3 in `src/disk/migrations/index.ts`:
+  - PROJECT manifests: each bus's old `effect`/`params`/`bypass` → `blockA`; `blockB` defaults to OFF; `fxChainFX1ToFX2`/`fxChainFX3ToFX4` default false. Preserves `direct`.
+  - ALL/SEQ manifests: just bump version (no FX payload).
+- `ProjectManifest` type extended with `fxChainFX1ToFX2?`, `fxChainFX3ToFX4?`.
+- Serializer + autosave pass chain flags through.
+- Hydrate path (`hydrateProjectBundle`) reads chain flags from manifest, defaults to false if absent.
+- `UndoSnapshot` captures both chain flags; `restoreSnapshot` pushes restored state through `syncFxEngine` (now accepts the chain flags as parameters).
+- `createBlankProjectState` resets chain flags to false.
+
+**Phase 2b — WebAudio graph (`fxEngine.ts`):**
+
+- `BusNodes` now holds `{ input, mid, output, blockA: BlockNodes, blockB: BlockNodes }`. `mid` is the bridge GainNode between blockA and blockB.
+- `BlockNodes` holds `{ effect: EffectChain | null, effectType: EffectType | null, bypass: boolean }`.
+- New `setBusBlockEffect(busId, block, type, params)`: tears down old block effect, builds new, calls `rewireBus(busId)` to re-route the bus path.
+- New `setBusBlockBypass(busId, block, bypass)`: flips the flag and calls `rewireBus`.
+- New `setBusBlockParam(busId, block, key, value)`: forwards to the block's effect chain.
+- New private `rewireBus(busId)`: disconnects input + mid + block outputs, then rebuilds `input → (blockA effect or passthrough) → mid → (blockB effect or passthrough) → output`. Block participates if it has an effect AND is not bypassed.
+- New `setFxChain(pair, enabled)` + private `rerouteBusOutput(busId)`: when chain is ON, upstream bus's `output` routes into downstream bus's `input` (FX1→FX2 or FX3→FX4); when OFF, it routes to `masterInput`. Per-pad sends to the downstream bus still work — its `input` GainNode receives multiple incoming connections naturally (Web Audio sums).
+- `routeVoice` unchanged: per-pad sendGain still targets `bus.input`. Chain composition happens at bus output level, transparent to per-voice routing.
+- Old single-effect methods (`setBusEffect`, `setBusBypass`, `setBusParam`) **removed entirely**. No back-compat shims — store API is the only consumer.
+
+**Phase 2c — store actions + FX screen UI (`useAppStore.ts`, `UtilityScreens.tsx`):**
+
+- New store actions: `setFxBusBlockEffect`, `toggleFxBusBlockBypass`, `adjustFxBusBlockParam`, `setFxBusBlockParam`, `toggleFxChain(pair)`. Old Phase 1 actions deleted from AppState shape.
+- `toggleFxBusDirect` kept (per-bus, not per-block).
+- `syncFxEngine` rewritten — iterates both blocks per bus, pushes effect/bypass/params, then applies chain flags. Called on load + undo restore + newProject.
+- `FxScreen` rewritten:
+  - **Selection model**: `{kind: "bus-block", busId, block: "A"|"B"} | "master-eq" | "master-comp"`. Replaces old `kind: "bus"`.
+  - **Left panel**: hierarchy — each bus shows a header row (FX#, SEND/INSERT mode), then two block rows (A/B with effect name + BYP indicator). Between FX1/FX2 and FX3/FX4, a clickable chain-indicator row shows current state (`FX1>FX2 ON/OFF`) and toggles on click. Master EQ/Comp at bottom.
+  - **Middle panel**: shows selected bus context (BUS + BLOCK identifiers, both blocks' effects, mode) + action buttons (cycle EFFECT, swap BLOCK A↔B, toggle DIRECT, toggle BYPASS for this block). For master sections, just title + bypass.
+  - **Right panel**: per-effect param editor for selected block (or master section), reading from `selectedBlock.params`. ArrowRows wire to `adjustFxBusBlockParam`.
+  - **Softkeys**: F1 EFFECT (cycle current block), F2 BLOCK (swap A↔B within bus), F3 DIRECT, F4 RESET (with confirm), F5 BYPASS (block or master), F6 EXIT. F2/F3 disabled when selection is master section.
+- `FxSendWindowScreen` (FX SEND popup) — bus.effect reference removed. Now shows `BLOCKS A:X / B:Y` instead of single effect name. `targetBus.direct` still drives send-disabled in INSERT mode.
+- `ProgramScreen` FX view — same change for the FX BUS info row (removed `targetBus.effect` reference, now just `FX{n}`).
+
+**Phase 2d — F4 RESET (`FxScreen` + store):**
+
+- New actions `resetBusBlock(busId, block)`, `resetMasterEq()`, `resetMasterComp()`.
+- `resetBusBlock` resets **only params** to `EFFECT_DEFAULTS[effect]` for the block's current effect type. Preserves effect type, bypass, direct (per-bus), chaining. No-op if block has no effect.
+- `resetMasterEq` / `resetMasterComp` reset their params to `MASTER_EQ_DEFAULTS` / `MASTER_COMP_DEFAULTS`. Preserves bypass.
+- Confirm dialogs: `window.confirm("Reset {effectLabel} params on FX{n} Block {A/B}?")` / `"Reset Master EQ params to defaults?"` / same for Comp.
+- All three are undo-able. Bucket keys: `fx-reset:{busId}:{block}:{Date.now()}`, `master-eq-reset:{Date.now()}`, `master-comp-reset:{Date.now()}`.
+- F4 RESET softkey in FxScreen routes to the correct reset based on selection.
+
+Build clean (`tsc + vite build`) after each phase.
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** — could not consult MPC5000 manual pp. 150–151 directly for "Adding additional Effects to the Effects Buss" + "Effect Buss Chaining". Followed Marek's detailed spec verbatim.
+- **No live audio test** — Marek to verify all 11 test scenarios. Top suspects for issues:
+  1. **Chain toggle mid-playback** likely glitches — `rerouteBusOutput` does `try { bus.output.disconnect(); } catch {}` then immediately `bus.output.connect(target)`. There's a momentary discontinuity. Per Marek's spec this is acceptable ("jak się rozjebie olejemy"). Future polish: ramp-down before disconnect, ramp-up after reconnect.
+  2. **Block bypass mid-playback** also causes a brief reroute (rewireBus disconnects + reconnects). Same acceptable artifact.
+  3. **Block effect change** tears down old chain (with `.dispose()`) and builds new in one synchronous pass. Reverb IR regen on size change still has its old caveat (Convolver buffer swap = abrupt tail change). No change here from Phase 1.
+- **`F2 BLOCK` softkey is a swap, not a cycle** — it flips A↔B within the current bus. Could be confusing if user thinks of it as "next block". Could also be a SELECT BLOCK style picker. Current implementation matches Marek's spec ("F2 BLOCK A/B - switch między blockami w bieżącym bus").
+- **No "current block" persistence between bus changes**. If user is on FX1 Block B and clicks FX2 header... well, clicking FX2 doesn't change selection (only the block buttons do). User must click FX2 Block A or Block B directly. Acceptable; matches the hierarchy clicks.
+- **Chain toggle for FX2 / FX4 (downstream bus)** is not directly available — only FX1→FX2 / FX3→FX4 indicators are clickable, attached to the upstream bus row. Per Marek's spec this is correct (pairs are fixed). Documented.
+- **Per-pad routing TO FX2 still works when FX1>FX2 is ON** — bus2's `input` GainNode sums per-pad sends AND chained-from-FX1 signal. This is the canonical MPC5000 behavior per Marek's spec ("Chain dotyczy SIGNALU z FX1, nie pad routing"). Confirmed via code review; pending live test.
+- **`resetBusBlock` calls `setBusBlockParam` in a loop** to push all defaults into the engine. This is correct because the block's effect chain stays the same — only param values change. If the block has no effect, the reset is a no-op (alerts user via `window.alert`).
+- **No reset for chain flags** — Marek's spec said reset SCOPE excludes routing flags. Chain stays.
+- **TypeScript noise during refactor**: deleted Phase 1 actions (`setFxBusEffect`, `toggleFxBusBypass`, `adjustFxBusParam`, `setFxBusParam`) broke ProgramScreen which had a residual `targetBus.effect` reference in the FX BUS Info row. Fixed by removing the effect name from that display (it never made sense post-Phase 2 anyway — bus has TWO effects now).
+- **Unused `void value` in `resetMasterEq`** — leftover from iterating `MASTER_EQ_DEFAULTS` while only needing the keys. Cosmetic. Could be tightened in a polish pass.
+- **`FxSelection` deprecated `"bus"` kind** — the old type only had `kind: "bus"`. New type uses `kind: "bus-block"`. Old saved selection state in component would not exist (component-local state), so no migration needed.
+- **Bus header rows in left panel are NOT clickable** — only the block rows + chain indicators. Some users might click the FX1 header expecting to navigate. Acceptable for Phase 2; consider Phase 3 polish.
+
+### Decisions made
+
+- **`direct` stays per-bus**, not per-block. Per Marek's spec. Both blocks of a bus share the same send/insert mode.
+- **Bypass per-block**, not per-bus. Each block has independent bypass. Skipping a block routes signal directly to the next stage.
+- **Reset preserves effect type + bypass + direct + chaining + per-pad routing**. Reset SCOPE is strictly params, per Marek.
+- **No reset for chain flags** — chain is routing config, not a params surface.
+- **Chain toggles are CLICKABLE in the bus list**, not separate softkeys. Per Marek's spec it's a discoverable inline control. Future polish if Marek prefers an explicit "F-key for chain toggle".
+- **F2 = BLOCK swap (A↔B) within current bus**, not "next block in some queue". User stays within the same bus selection, just flips which block is in focus.
+- **Per-pad sends to FX2 still work when FX1>FX2 is ON**. Chain only redirects FX1's output; FX2's input still accepts per-pad sends. Confirmed per MPC5000 canonical.
+- **No glitch suppression on chain/bypass toggle** — abrupt audio reroute is acceptable per Marek ("jak się rozjebie olejemy"). Phase 3 polish if it becomes a workflow issue.
+- **Phase 1 single-effect projects auto-migrate to v3** with blockA holding the old effect and blockB empty. No user action needed; on save the new shape is written back.
+- **`MixerChannel.fxSend` and `PadAssignment.fxSend` legacy fields** — still present from Phase 1, still unused. Cleanup deferred.
+
+### Open issues / followups
+
+- **Marek's 11 audio test scenarios** all pending live verification.
+- **Chain toggle audio glitch** — if Marek reports clicking/popping during chain on/off, add a ~10ms gain ramp on `bus.output` before/after disconnect (mute → swap → unmute).
+- **Block bypass mid-playback** — same potential glitch; same mitigation pattern available.
+- **F-key for chain toggle** — Marek may prefer dedicated softkey rather than inline click. Easy add to softkey row.
+- **Bus header as selection** — clicking FX1 header could select "default block A". Polish.
+- **`resetMasterEq` cleanup** — the `void value` placeholder in the iteration. Tighten to `Object.keys(MASTER_EQ_DEFAULTS).forEach(...)`.
+- **Phase 3 future scope** (NOT in Phase 2):
+  - Per-track FX routing (events trigger pads — per-pad covers the common case)
+  - FX automation (Q-Links per MPC5000 addendum)
+  - More chaining options (e.g., FX1→FX3 cross-pair)
+  - Tempo-synced Delay
+  - AudioWorklet for Bit Crusher (latency fix)
+  - Reverb IR cache + smoother size-change tail blend
+- **PERFORMANCE screen** still orphaned (since Session 17 → Session 18 hardware-button rewire).
+
+### Files modified
+
+- `src/audio/fxEngine.ts` — BusNodes restructured (blockA/blockB + mid); old setBusEffect/Bypass/Param replaced with block-aware methods; rewireBus + setFxChain + rerouteBusOutput added.
+- `src/store/useAppStore.ts` — FXBus/FXBlock types refactored; AppState gains chain flags; action signatures replaced; defaults + ensure helpers updated; syncFxEngine rewritten; UndoSnapshot extended; new actions (toggleFxChain, resetBusBlock, resetMasterEq, resetMasterComp); hydrate + restoreSnapshot + createBlankProjectState updated.
+- `src/disk/types.ts` — `CURRENT_SCHEMA_VERSION = 3`; ProjectManifest gains optional chain flags.
+- `src/disk/migrations/index.ts` — v2→v3 migration for PROJECT manifests (single effect → blockA, blockB OFF, chain flags false).
+- `src/disk/serializers/project.ts` — accepts + writes chain flags.
+- `src/App.tsx` — autosave includes chain flags.
+- `src/screens/UtilityScreens.tsx` — FxScreen rewritten (3-panel + block hierarchy + chain indicators + F4 RESET); FxSendWindowScreen tweaked (BLOCKS summary, no single-effect reference).
+- `src/screens/ProgramScreen.tsx` — FX view Info row no longer references `targetBus.effect`.
+
+---
+
 ## Session 18.1 HOTFIX — 2026-05-21 — Wire Master Comp makeupGain into audio path
 
 ### What was attempted

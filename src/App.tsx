@@ -82,6 +82,8 @@ export function App() {
             },
             fxBuses: state.fxBuses,
             masterFx: state.masterFx,
+            fxChainFX1ToFX2: state.fxChainFX1ToFX2,
+            fxChainFX3ToFX4: state.fxChainFX3ToFX4,
             resolveAudioBuffer: (id) => getSampleBuffer(id),
           });
           return writeProjectZip(manifest, sampleEntries);

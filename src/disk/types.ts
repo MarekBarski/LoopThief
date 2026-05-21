@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 2 as const;
+export const CURRENT_SCHEMA_VERSION = 3 as const;
 
 export type ManifestType = "project" | "all" | "seq";
 
@@ -51,8 +51,10 @@ export type ProjectManifest = BaseManifest & {
   sequences: unknown[];
   songs: unknown[];
   globalSettings: GlobalSettings;
-  fxBuses?: unknown[];   // Phase A FX system; absent in v1 projects (migration fills defaults).
-  masterFx?: unknown;    // Phase A master EQ + Compressor.
+  fxBuses?: unknown[];           // Phase A: single effect per bus (v2). Phase 2: blockA/blockB shape (v3).
+  masterFx?: unknown;            // Master EQ + Compressor.
+  fxChainFX1ToFX2?: boolean;     // Phase 2: FX1 → FX2 chain routing.
+  fxChainFX3ToFX4?: boolean;     // Phase 2: FX3 → FX4 chain routing.
 };
 
 export type AllManifest = BaseManifest & {

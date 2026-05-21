@@ -25,6 +25,8 @@ export type ProjectSerializationInput = {
   globalSettings: GlobalSettings;
   fxBuses?: unknown[];
   masterFx?: unknown;
+  fxChainFX1ToFX2?: boolean;
+  fxChainFX3ToFX4?: boolean;
   resolveAudioBuffer: (audioBufferId: string) => AudioBuffer | null;
 };
 
@@ -73,6 +75,8 @@ export function serializeProject(input: ProjectSerializationInput): SerializedPr
     globalSettings: input.globalSettings,
     fxBuses: input.fxBuses,
     masterFx: input.masterFx,
+    fxChainFX1ToFX2: input.fxChainFX1ToFX2,
+    fxChainFX3ToFX4: input.fxChainFX3ToFX4,
   };
 
   return { manifest, sampleEntries };

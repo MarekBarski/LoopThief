@@ -1136,105 +1136,196 @@ const MASTER_COMP_PARAMS = [
 ];
 
 type FxSelection =
-  | { kind: "bus"; busId: 1 | 2 | 3 | 4 }
+  | { kind: "bus-block"; busId: 1 | 2 | 3 | 4; block: "A" | "B" }
   | { kind: "master-eq" }
   | { kind: "master-comp" };
 
 export function FxScreen() {
   const fxBuses = useAppStore((s) => s.fxBuses);
   const masterFx = useAppStore((s) => s.masterFx);
-  const setFxBusEffect = useAppStore((s) => s.setFxBusEffect);
+  const chainFX1ToFX2 = useAppStore((s) => s.fxChainFX1ToFX2);
+  const chainFX3ToFX4 = useAppStore((s) => s.fxChainFX3ToFX4);
+  const setFxBusBlockEffect = useAppStore((s) => s.setFxBusBlockEffect);
+  const toggleFxBusBlockBypass = useAppStore((s) => s.toggleFxBusBlockBypass);
+  const adjustFxBusBlockParam = useAppStore((s) => s.adjustFxBusBlockParam);
   const toggleFxBusDirect = useAppStore((s) => s.toggleFxBusDirect);
-  const toggleFxBusBypass = useAppStore((s) => s.toggleFxBusBypass);
-  const adjustFxBusParam = useAppStore((s) => s.adjustFxBusParam);
+  const toggleFxChain = useAppStore((s) => s.toggleFxChain);
+  const resetBusBlock = useAppStore((s) => s.resetBusBlock);
   const toggleMasterEqBypass = useAppStore((s) => s.toggleMasterEqBypass);
   const toggleMasterCompBypass = useAppStore((s) => s.toggleMasterCompBypass);
   const adjustMasterEqParam = useAppStore((s) => s.adjustMasterEqParam);
   const adjustMasterCompParam = useAppStore((s) => s.adjustMasterCompParam);
+  const resetMasterEq = useAppStore((s) => s.resetMasterEq);
+  const resetMasterComp = useAppStore((s) => s.resetMasterComp);
   const setActiveScreen = useAppStore((s) => s.setActiveScreen);
 
-  const [selection, setSelection] = useState<FxSelection>({ kind: "bus", busId: 1 });
+  const [selection, setSelection] = useState<FxSelection>({ kind: "bus-block", busId: 1, block: "A" });
 
   const exit = () => setActiveScreen("MAIN");
-  const cycleEffect = (busId: 1 | 2 | 3 | 4, dir: 1 | -1) => {
+
+  const selectedBus = selection.kind === "bus-block" ? fxBuses.find((b) => b.id === selection.busId) ?? null : null;
+  const selectedBlock = selectedBus && selection.kind === "bus-block"
+    ? (selection.block === "A" ? selectedBus.blockA : selectedBus.blockB)
+    : null;
+
+  const cycleBlockEffect = (busId: 1 | 2 | 3 | 4, block: "A" | "B", dir: 1 | -1) => {
     const bus = fxBuses.find((b) => b.id === busId);
     if (!bus) return;
-    const i = FX_EFFECT_CYCLE.indexOf(bus.effect ?? null);
+    const blk = block === "A" ? bus.blockA : bus.blockB;
+    const i = FX_EFFECT_CYCLE.indexOf(blk.effect ?? null);
     const next = FX_EFFECT_CYCLE[(i + dir + FX_EFFECT_CYCLE.length) % FX_EFFECT_CYCLE.length];
-    setFxBusEffect(busId, next);
+    setFxBusBlockEffect(busId, block, next);
   };
 
-  const selectedBus =
-    selection.kind === "bus" ? fxBuses.find((b) => b.id === selection.busId) : null;
+  const handleF4Reset = () => {
+    if (selection.kind === "bus-block") {
+      const bus = fxBuses.find((b) => b.id === selection.busId);
+      if (!bus) return;
+      const blk = selection.block === "A" ? bus.blockA : bus.blockB;
+      const effectLabel = blk.effect ? FX_EFFECT_LABEL[blk.effect] : "OFF";
+      if (!blk.effect) {
+        window.alert(`FX${selection.busId} Block ${selection.block} has no effect to reset.`);
+        return;
+      }
+      if (window.confirm(`Reset ${effectLabel} params on FX${selection.busId} Block ${selection.block}?`)) {
+        resetBusBlock(selection.busId, selection.block);
+      }
+    } else if (selection.kind === "master-eq") {
+      if (window.confirm("Reset Master EQ params to defaults?")) resetMasterEq();
+    } else {
+      if (window.confirm("Reset Master Compressor params to defaults?")) resetMasterComp();
+    }
+  };
+
+  const handleF5Bypass = () => {
+    if (selection.kind === "bus-block") {
+      toggleFxBusBlockBypass(selection.busId, selection.block);
+    } else if (selection.kind === "master-eq") {
+      toggleMasterEqBypass();
+    } else {
+      toggleMasterCompBypass();
+    }
+  };
+
+  const handleF2BlockSwap = () => {
+    if (selection.kind === "bus-block") {
+      setSelection({ kind: "bus-block", busId: selection.busId, block: selection.block === "A" ? "B" : "A" });
+    }
+  };
+
+  const handleF1Effect = () => {
+    if (selection.kind === "bus-block") cycleBlockEffect(selection.busId, selection.block, 1);
+  };
+
+  const handleF3Direct = () => {
+    if (selection.kind === "bus-block") toggleFxBusDirect(selection.busId);
+  };
 
   return (
-    <ScreenFrame title="FX" subtitle="4 BUSES + MASTER (MPC5000 routing)">
+    <ScreenFrame title="FX" subtitle="4 BUSES (2 BLOCKS) + MASTER + CHAINING">
       {shell(
-        <div className="grid h-full grid-cols-[1fr_1.2fr_1.6fr] gap-[1.6%]">
-          {/* PANEL 1 — Bus list + Master entries */}
-          <section className="grid content-start gap-[6px] border border-[#46533b] bg-black/20 p-[3%] text-[clamp(9px,0.78vw,12px)] tracking-[0.12em]">
+        <div className="grid h-full grid-cols-[1.05fr_1.1fr_1.6fr] gap-[1.6%]">
+          {/* PANEL 1 — Bus list (expanded with Block A/B + chain indicators) + Master */}
+          <section className="grid min-h-0 content-start gap-[4px] overflow-auto border border-[#46533b] bg-black/20 p-[3%] text-[clamp(8px,0.7vw,11px)] tracking-[0.1em]">
             <p className="text-[#91a477]">BUSES</p>
-            {fxBuses.map((bus) => {
-              const isSelected = selection.kind === "bus" && selection.busId === bus.id;
-              const label = bus.effect ? FX_EFFECT_LABEL[bus.effect] : "OFF";
-              const mode = bus.effect ? (bus.direct ? "SEND" : "INSERT") : "---";
+            {fxBuses.map((bus, idx) => {
+              const isFx1 = bus.id === 1;
+              const isFx3 = bus.id === 3;
+              const chainBelow = (isFx1 && chainFX1ToFX2) || (isFx3 && chainFX3ToFX4);
+              const showChainAfter = bus.id === 1 || bus.id === 3;
               return (
-                <button
-                  key={bus.id}
-                  type="button"
-                  onClick={() => setSelection({ kind: "bus", busId: bus.id as 1 | 2 | 3 | 4 })}
-                  className={`grid grid-cols-[auto_1fr_auto] items-center gap-[6px] border px-[6px] py-[4px] text-left ${
-                    isSelected ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
-                  } ${bus.bypass ? "opacity-50" : ""}`}
-                >
-                  <span>{isSelected ? ">" : " "}</span>
-                  <span>FX{bus.id} {label}</span>
-                  <span className="text-[#91a477] text-[clamp(7px,0.6vw,10px)]">{mode}</span>
-                </button>
+                <div key={bus.id} className="grid gap-[2px]">
+                  <div className={`grid grid-cols-[1fr_auto] items-center px-[4px] text-[#91a477] text-[clamp(8px,0.7vw,10px)] ${idx > 0 ? "mt-[4px]" : ""}`}>
+                    <span>FX{bus.id}</span>
+                    <span>{bus.direct ? "SEND" : "INSERT"}</span>
+                  </div>
+                  {(["A", "B"] as const).map((blockKey) => {
+                    const blk = blockKey === "A" ? bus.blockA : bus.blockB;
+                    const isSel = selection.kind === "bus-block" && selection.busId === bus.id && selection.block === blockKey;
+                    const label = blk.effect ? FX_EFFECT_LABEL[blk.effect] : "OFF";
+                    return (
+                      <button
+                        key={blockKey}
+                        type="button"
+                        onClick={() => setSelection({ kind: "bus-block", busId: bus.id as 1 | 2 | 3 | 4, block: blockKey })}
+                        className={`grid grid-cols-[auto_auto_1fr_auto] items-center gap-[4px] border px-[6px] py-[3px] text-left ${
+                          isSel ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
+                        } ${blk.bypass ? "opacity-50" : ""}`}
+                      >
+                        <span>{isSel ? ">" : " "}</span>
+                        <span className="text-[#91a477]">{blockKey}:</span>
+                        <span>{label}</span>
+                        {blk.bypass ? <span className="text-[#91a477]">BYP</span> : <span />}
+                      </button>
+                    );
+                  })}
+                  {showChainAfter ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleFxChain(isFx1 ? "FX1_FX2" : "FX3_FX4")}
+                      className={`grid grid-cols-[auto_1fr_auto] items-center gap-[4px] px-[6px] py-[2px] text-[clamp(7px,0.6vw,9px)] ${
+                        chainBelow ? "text-amber-200" : "text-[#91a477]"
+                      } hover:bg-black/30`}
+                    >
+                      <span>{chainBelow ? "↓" : " "}</span>
+                      <span className="text-center">FX{bus.id}{">"} FX{bus.id + 1}</span>
+                      <span>{chainBelow ? "ON" : "OFF"}</span>
+                    </button>
+                  ) : null}
+                </div>
               );
             })}
-            <p className="mt-[6%] text-[#91a477]">MASTER</p>
+            <p className="mt-[8%] text-[#91a477]">MASTER</p>
             <button
               type="button"
               onClick={() => setSelection({ kind: "master-eq" })}
-              className={`grid grid-cols-[auto_1fr_auto] items-center gap-[6px] border px-[6px] py-[4px] text-left ${
+              className={`grid grid-cols-[auto_1fr_auto] items-center gap-[4px] border px-[6px] py-[3px] text-left ${
                 selection.kind === "master-eq" ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
               } ${masterFx.eq.bypass ? "opacity-50" : ""}`}
             >
               <span>{selection.kind === "master-eq" ? ">" : " "}</span>
               <span>EQ</span>
-              <span className="text-[#91a477] text-[clamp(7px,0.6vw,10px)]">{masterFx.eq.bypass ? "BYP" : "ON"}</span>
+              <span className="text-[#91a477]">{masterFx.eq.bypass ? "BYP" : "ON"}</span>
             </button>
             <button
               type="button"
               onClick={() => setSelection({ kind: "master-comp" })}
-              className={`grid grid-cols-[auto_1fr_auto] items-center gap-[6px] border px-[6px] py-[4px] text-left ${
+              className={`grid grid-cols-[auto_1fr_auto] items-center gap-[4px] border px-[6px] py-[3px] text-left ${
                 selection.kind === "master-comp" ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
               } ${masterFx.compressor.bypass ? "opacity-50" : ""}`}
             >
               <span>{selection.kind === "master-comp" ? ">" : " "}</span>
               <span>COMP</span>
-              <span className="text-[#91a477] text-[clamp(7px,0.6vw,10px)]">{masterFx.compressor.bypass ? "BYP" : "ON"}</span>
+              <span className="text-[#91a477]">{masterFx.compressor.bypass ? "BYP" : "ON"}</span>
             </button>
           </section>
 
-          {/* PANEL 2 — Selected details + actions */}
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.85vw,13px)] tracking-[0.12em]">
-            {selection.kind === "bus" && selectedBus ? (
+          {/* PANEL 2 — Selected bus/block details + actions */}
+          <section className="grid min-h-0 content-start gap-[8px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.82vw,13px)] tracking-[0.12em]">
+            {selection.kind === "bus-block" && selectedBus && selectedBlock ? (
               <>
-                <p className="text-[#91a477]">SELECTED BUS</p>
+                <p className="text-[#91a477]">SELECTED BUS / BLOCK</p>
                 <div className="grid grid-cols-[1fr_auto]"><span>BUS</span><span className="text-[#eef6d8]">FX{selectedBus.id}</span></div>
-                <div className="grid grid-cols-[1fr_auto]"><span>EFFECT</span><span className="text-[#eef6d8]">{selectedBus.effect ? FX_EFFECT_LABEL[selectedBus.effect] : "OFF"}</span></div>
+                <div className="grid grid-cols-[1fr_auto]"><span>BLOCK</span><span className="text-[#eef6d8]">{selection.block}</span></div>
+                <div className="grid grid-cols-[1fr_auto]"><span>EFFECT</span><span className="text-[#eef6d8]">{selectedBlock.effect ? FX_EFFECT_LABEL[selectedBlock.effect] : "OFF"}</span></div>
                 <div className="grid grid-cols-[1fr_auto]"><span>MODE</span><span className="text-[#eef6d8]">{selectedBus.direct ? "SEND" : "INSERT"}</span></div>
-                <div className="grid grid-cols-[1fr_auto]"><span>BYPASS</span><span className="text-[#eef6d8]">{selectedBus.bypass ? "ON" : "OFF"}</span></div>
-                <p className="mt-[6%] text-[#91a477]">ACTIONS</p>
-                <ArrowRow label="EFFECT" value={selectedBus.effect ? FX_EFFECT_LABEL[selectedBus.effect] : "OFF"}
-                  onPrev={() => cycleEffect(selectedBus.id, -1)} onNext={() => cycleEffect(selectedBus.id, 1)} />
+                <div className="grid grid-cols-[1fr_auto]"><span>BLOCK A</span><span className="text-[#eef6d8]">{selectedBus.blockA.effect ? FX_EFFECT_LABEL[selectedBus.blockA.effect] : "OFF"}{selectedBus.blockA.bypass ? " (BYP)" : ""}</span></div>
+                <div className="grid grid-cols-[1fr_auto]"><span>BLOCK B</span><span className="text-[#eef6d8]">{selectedBus.blockB.effect ? FX_EFFECT_LABEL[selectedBus.blockB.effect] : "OFF"}{selectedBus.blockB.bypass ? " (BYP)" : ""}</span></div>
+                <p className="mt-[4%] text-[#91a477]">ACTIONS</p>
+                <ArrowRow
+                  label="EFFECT"
+                  value={selectedBlock.effect ? FX_EFFECT_LABEL[selectedBlock.effect] : "OFF"}
+                  onPrev={() => cycleBlockEffect(selectedBus.id, selection.block, -1)}
+                  onNext={() => cycleBlockEffect(selectedBus.id, selection.block, 1)}
+                />
+                <button type="button" onClick={handleF2BlockSwap} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
+                  BLOCK: {selection.block} (swap)
+                </button>
                 <button type="button" onClick={() => toggleFxBusDirect(selectedBus.id)} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
                   DIRECT: {selectedBus.direct ? "ON (SEND)" : "OFF (INSERT)"}
                 </button>
-                <button type="button" onClick={() => toggleFxBusBypass(selectedBus.id)} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
-                  BYPASS: {selectedBus.bypass ? "ON" : "OFF"}
+                <button type="button" onClick={() => toggleFxBusBlockBypass(selectedBus.id, selection.block)} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
+                  BYPASS BLOCK {selection.block}: {selectedBlock.bypass ? "ON" : "OFF"}
                 </button>
               </>
             ) : selection.kind === "master-eq" ? (
@@ -1248,7 +1339,7 @@ export function FxScreen() {
             ) : (
               <>
                 <p className="text-[#91a477]">MASTER COMP</p>
-                <p>Dynamics, last in chain.</p>
+                <p>Dynamics + makeup gain, last in chain.</p>
                 <button type="button" onClick={toggleMasterCompBypass} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
                   BYPASS: {masterFx.compressor.bypass ? "ON" : "OFF"}
                 </button>
@@ -1256,20 +1347,20 @@ export function FxScreen() {
             )}
           </section>
 
-          {/* PANEL 3 — Effect parameters */}
+          {/* PANEL 3 — Effect parameters for the selected block / master section */}
           <section className="grid min-h-0 content-start gap-[6px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.78vw,12px)] tracking-[0.12em]">
             <p className="text-[#91a477]">PARAMETERS</p>
-            {selection.kind === "bus" && selectedBus ? (
-              selectedBus.effect ? (
-                EFFECT_PARAM_KEYS[selectedBus.effect].map(({ key, label, step, format }) => {
-                  const value = selectedBus.params[key] ?? 0;
+            {selection.kind === "bus-block" && selectedBus && selectedBlock ? (
+              selectedBlock.effect ? (
+                EFFECT_PARAM_KEYS[selectedBlock.effect].map(({ key, label, step, format }) => {
+                  const value = selectedBlock.params[key] ?? 0;
                   return (
                     <ArrowRow
                       key={key}
                       label={label}
                       value={format ? format(value) : String(value)}
-                      onPrev={() => adjustFxBusParam(selectedBus.id, key, -step)}
-                      onNext={() => adjustFxBusParam(selectedBus.id, key, step)}
+                      onPrev={() => adjustFxBusBlockParam(selectedBus.id, selection.block, key, -step)}
+                      onNext={() => adjustFxBusBlockParam(selectedBus.id, selection.block, key, step)}
                     />
                   );
                 })
@@ -1306,23 +1397,11 @@ export function FxScreen() {
           </section>
         </div>,
         [
-          {
-            label: "F1 EFFECT",
-            onClick: selection.kind === "bus" ? () => cycleEffect(selection.busId, 1) : undefined,
-          },
-          {
-            label: "F2 DIRECT",
-            onClick: selection.kind === "bus" ? () => toggleFxBusDirect(selection.busId) : undefined,
-          },
-          {
-            label: "F3 BYPASS",
-            onClick:
-              selection.kind === "bus" ? () => toggleFxBusBypass(selection.busId)
-              : selection.kind === "master-eq" ? toggleMasterEqBypass
-              : toggleMasterCompBypass,
-          },
-          "F4 —",
-          "F5 —",
+          { label: "F1 EFFECT", onClick: handleF1Effect },
+          { label: "F2 BLOCK", onClick: selection.kind === "bus-block" ? handleF2BlockSwap : undefined },
+          { label: "F3 DIRECT", onClick: selection.kind === "bus-block" ? handleF3Direct : undefined },
+          { label: "F4 RESET", onClick: handleF4Reset },
+          { label: "F5 BYPASS", onClick: handleF5Bypass },
           { label: "F6 EXIT", onClick: exit },
         ],
         exit,
@@ -1346,6 +1425,12 @@ export function FxSendWindowScreen() {
   const targetBus = busId === 0 ? null : fxBuses.find((b) => b.id === busId);
   const sendDisabled = !targetBus || !targetBus.direct;
   const padLabel = `${padBank}${selectedPad.slice(1)}`;
+  const busBlocksSummary = (() => {
+    if (!targetBus) return "---";
+    const a = targetBus.blockA.effect ? FX_EFFECT_LABEL[targetBus.blockA.effect] : "OFF";
+    const b = targetBus.blockB.effect ? FX_EFFECT_LABEL[targetBus.blockB.effect] : "OFF";
+    return `A:${a} / B:${b}`;
+  })();
 
   const cycleBus = (dir: 1 | -1) => {
     const cur = busId;
@@ -1365,7 +1450,7 @@ export function FxSendWindowScreen() {
             <p className="text-[#91a477]">ROUTING</p>
             <ArrowRow
               label="FX BUS"
-              value={busId === 0 ? "OFF" : `FX${busId}${targetBus?.effect ? ` (${FX_EFFECT_LABEL[targetBus.effect]})` : ""}`}
+              value={busId === 0 ? "OFF" : `FX${busId}`}
               onPrev={() => cycleBus(-1)}
               onNext={() => cycleBus(1)}
             />
@@ -1384,7 +1469,7 @@ export function FxSendWindowScreen() {
             <div className="grid grid-cols-[1fr_auto]"><span>PAD</span><span className="text-[#eef6d8]">{padLabel}</span></div>
             <div className="grid grid-cols-[1fr_auto]"><span>BUS</span><span className="text-[#eef6d8]">{busId === 0 ? "OFF" : `FX${busId}`}</span></div>
             <div className="grid grid-cols-[1fr_auto]"><span>MODE</span><span className="text-[#eef6d8]">{targetBus ? (targetBus.direct ? "SEND" : "INSERT") : "---"}</span></div>
-            <div className="grid grid-cols-[1fr_auto]"><span>EFFECT</span><span className="text-[#eef6d8]">{targetBus?.effect ?? "---"}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span>BLOCKS</span><span className="text-[#eef6d8]">{busBlocksSummary}</span></div>
           </section>
         </div>,
         [

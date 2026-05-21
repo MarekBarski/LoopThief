@@ -194,7 +194,7 @@ export function ProgramScreen() {
                   <div className="grid min-h-0 content-start gap-[10px]">
                     <div className="grid grid-cols-2 gap-[8px]">
                       <Info label="SELECTED PAD" value={`${padBank}${selectedAssignment.pad.slice(1)}`} />
-                      <Info label="FX BUS" value={padBus === 0 ? "OFF" : `FX${padBus}${targetBus?.effect ? ` (${targetBus.effect})` : ""}`} />
+                      <Info label="FX BUS" value={padBus === 0 ? "OFF" : `FX${padBus}`} />
                       <Info label="MODE" value={targetBus ? (targetBus.direct ? "SEND" : "INSERT") : "---"} />
                       <Info label="SEND LEVEL" value={sendDisabled ? "---" : String(padSend)} />
                     </div>

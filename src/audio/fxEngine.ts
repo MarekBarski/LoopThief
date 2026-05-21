@@ -98,12 +98,21 @@ export type VoiceFxRouting = {
   direct: boolean;        // copy of bus.direct at voice-create time (true = SEND, false = INSERT)
 };
 
-type BusNodes = {
-  input: GainNode;
-  output: GainNode;
+export type BusBlockId = "A" | "B";
+export type ChainPair = "FX1_FX2" | "FX3_FX4";
+
+type BlockNodes = {
   effect: EffectChain | null;
   effectType: EffectType | null;
   bypass: boolean;
+};
+
+type BusNodes = {
+  input: GainNode;
+  mid: GainNode;     // bridges blockA → blockB
+  output: GainNode;
+  blockA: BlockNodes;
+  blockB: BlockNodes;
 };
 
 type EffectChain = {
@@ -127,6 +136,9 @@ class FxEngine {
   private masterCompInput: GainNode | null = null;
   private masterCompOutput: GainNode | null = null;
   private buses: Map<BusId, BusNodes> = new Map();
+  // Track current chain routing so we can reroute bus.output without churning state.
+  private chainFX1ToFX2 = false;
+  private chainFX3ToFX4 = false;
 
   /** Initialize FX graph on a given context. Idempotent. Returns the master entry node where voices connect their dry path. */
   ensureReady(context: AudioContext): GainNode {
@@ -182,15 +194,18 @@ class FxEngine {
     const ctx = this.context;
     ([1, 2, 3, 4] as BusId[]).forEach((id) => {
       const input = ctx.createGain();
+      const mid = ctx.createGain();
       const output = ctx.createGain();
-      input.connect(output);
+      // Initial routing: input → mid → output (both blocks passthrough), output → master.
+      input.connect(mid);
+      mid.connect(output);
       output.connect(this.masterInput!);
       this.buses.set(id, {
         input,
+        mid,
         output,
-        effect: null,
-        effectType: null,
-        bypass: false,
+        blockA: { effect: null, effectType: null, bypass: false },
+        blockB: { effect: null, effectType: null, bypass: false },
       });
     });
   }
@@ -219,49 +234,110 @@ class FxEngine {
     return this.buses.get(busId)?.input ?? null;
   }
 
-  setBusEffect(busId: BusId, type: EffectType | null, params: EffectParamMap | null) {
+  /**
+   * Sets (or clears) the effect on a specific block of a bus. Rebuilds the bus routing afterward.
+   * Pass type=null to clear the block (passthrough). Pass params=null to use EFFECT_DEFAULTS.
+   */
+  setBusBlockEffect(busId: BusId, block: BusBlockId, type: EffectType | null, params: EffectParamMap | null) {
     const bus = this.buses.get(busId);
     if (!bus || !this.context) return;
-    // Tear down existing effect node
-    if (bus.effect) {
-      try { bus.input.disconnect(); } catch { /* noop */ }
-      try { bus.effect.output.disconnect(); } catch { /* noop */ }
-      bus.effect.dispose();
-      bus.effect = null;
-    } else {
-      // Was passthrough — disconnect input→output
-      try { bus.input.disconnect(); } catch { /* noop */ }
+    const blockNodes = block === "A" ? bus.blockA : bus.blockB;
+    // Tear down existing effect chain for this block (if any).
+    if (blockNodes.effect) {
+      try { blockNodes.effect.input.disconnect(); } catch { /* noop */ }
+      try { blockNodes.effect.output.disconnect(); } catch { /* noop */ }
+      blockNodes.effect.dispose();
+      blockNodes.effect = null;
     }
-    bus.effectType = type;
-
-    if (type === null || bus.bypass) {
-      // Passthrough
-      bus.input.connect(bus.output);
-      return;
+    blockNodes.effectType = type;
+    if (type !== null) {
+      const chain = this.createEffectChain(type, params ?? EFFECT_DEFAULTS[type]);
+      blockNodes.effect = chain ?? null;
     }
-
-    const chain = this.createEffectChain(type, params ?? EFFECT_DEFAULTS[type]);
-    if (!chain) {
-      bus.input.connect(bus.output);
-      return;
-    }
-    bus.input.connect(chain.input);
-    chain.output.connect(bus.output);
-    bus.effect = chain;
+    // Rewire entire bus path; block bypass + presence determines routing.
+    this.rewireBus(busId);
   }
 
-  setBusBypass(busId: BusId, bypass: boolean) {
+  setBusBlockBypass(busId: BusId, block: BusBlockId, bypass: boolean) {
     const bus = this.buses.get(busId);
     if (!bus) return;
-    bus.bypass = bypass;
-    // Rebuild routing
-    this.setBusEffect(busId, bus.effectType, null);
+    const blockNodes = block === "A" ? bus.blockA : bus.blockB;
+    blockNodes.bypass = bypass;
+    this.rewireBus(busId);
   }
 
-  setBusParam(busId: BusId, key: string, value: number) {
+  setBusBlockParam(busId: BusId, block: BusBlockId, key: string, value: number) {
     const bus = this.buses.get(busId);
-    if (!bus?.effect) return;
-    bus.effect.setParam(key, value);
+    if (!bus) return;
+    const blockNodes = block === "A" ? bus.blockA : bus.blockB;
+    if (!blockNodes.effect) return;
+    blockNodes.effect.setParam(key, value);
+  }
+
+  /**
+   * Rebuilds the bus's internal routing: input → (blockA effect or passthrough) → mid → (blockB effect or passthrough) → output.
+   * Block participates if it has an effect AND is not bypassed. Otherwise the bus passes audio through that block stage.
+   */
+  private rewireBus(busId: BusId) {
+    const bus = this.buses.get(busId);
+    if (!bus) return;
+    try { bus.input.disconnect(); } catch { /* noop */ }
+    try { bus.mid.disconnect(); } catch { /* noop */ }
+    if (bus.blockA.effect) {
+      try { bus.blockA.effect.output.disconnect(); } catch { /* noop */ }
+    }
+    if (bus.blockB.effect) {
+      try { bus.blockB.effect.output.disconnect(); } catch { /* noop */ }
+    }
+    // Stage A: input → blockA effect → mid (if active), else input → mid.
+    if (bus.blockA.effect && !bus.blockA.bypass) {
+      bus.input.connect(bus.blockA.effect.input);
+      bus.blockA.effect.output.connect(bus.mid);
+    } else {
+      bus.input.connect(bus.mid);
+    }
+    // Stage B: mid → blockB effect → output (if active), else mid → output.
+    if (bus.blockB.effect && !bus.blockB.bypass) {
+      bus.mid.connect(bus.blockB.effect.input);
+      bus.blockB.effect.output.connect(bus.output);
+    } else {
+      bus.mid.connect(bus.output);
+    }
+    // bus.output remains connected to its chain target (master or downstream bus); rewireBus does NOT touch that.
+  }
+
+  /**
+   * Toggles bus chaining. When enabled, the upstream bus's output routes into the downstream bus's input
+   * (FX1→FX2 or FX3→FX4) instead of directly to master. Per-pad sends to the downstream bus still work
+   * (the downstream bus.input receives both the upstream chain and per-pad sendGain connections).
+   */
+  setFxChain(pair: ChainPair, enabled: boolean) {
+    if (!this.masterInput) return;
+    if (pair === "FX1_FX2") {
+      this.chainFX1ToFX2 = enabled;
+      this.rerouteBusOutput(1);
+    } else {
+      this.chainFX3ToFX4 = enabled;
+      this.rerouteBusOutput(3);
+    }
+  }
+
+  private rerouteBusOutput(busId: BusId) {
+    if (!this.masterInput) return;
+    const bus = this.buses.get(busId);
+    if (!bus) return;
+    try { bus.output.disconnect(); } catch { /* noop */ }
+    const isChained = (busId === 1 && this.chainFX1ToFX2) || (busId === 3 && this.chainFX3ToFX4);
+    if (isChained) {
+      const downstream = this.buses.get((busId + 1) as BusId);
+      if (downstream) {
+        bus.output.connect(downstream.input);
+      } else {
+        bus.output.connect(this.masterInput);
+      }
+    } else {
+      bus.output.connect(this.masterInput);
+    }
   }
 
   setMasterEqBypass(bypass: boolean) {
