@@ -122,8 +122,8 @@ type EffectChain = {
   dispose: () => void;
 };
 
-class FxEngine {
-  private context: AudioContext | null = null;
+export class FxEngine {
+  private context: BaseAudioContext | null = null;
   private masterInput: GainNode | null = null;
   private masterEqNodes: BiquadFilterNode[] = [];
   private masterEqBypass = true;
@@ -141,7 +141,7 @@ class FxEngine {
   private chainFX3ToFX4 = false;
 
   /** Initialize FX graph on a given context. Idempotent. Returns the master entry node where voices connect their dry path. */
-  ensureReady(context: AudioContext): GainNode {
+  ensureReady(context: BaseAudioContext): GainNode {
     if (this.context && this.context === context && this.masterInput) {
       return this.masterInput;
     }
@@ -210,7 +210,7 @@ class FxEngine {
     });
   }
 
-  private makeBand(ctx: AudioContext, type: BiquadFilterType, freq: number, gainDb: number, q: number): BiquadFilterNode {
+  private makeBand(ctx: BaseAudioContext, type: BiquadFilterType, freq: number, gainDb: number, q: number): BiquadFilterNode {
     const node = ctx.createBiquadFilter();
     node.type = type;
     node.frequency.value = freq;
@@ -902,7 +902,7 @@ class FxEngine {
   }
 }
 
-function generateReverbImpulse(ctx: AudioContext, size: number, damping: number): AudioBuffer {
+function generateReverbImpulse(ctx: BaseAudioContext, size: number, damping: number): AudioBuffer {
   // size 0..100 → duration 0.1..3.5 seconds
   const seconds = 0.1 + (Math.max(0, Math.min(100, size)) / 100) * 3.4;
   const sampleRate = ctx.sampleRate;

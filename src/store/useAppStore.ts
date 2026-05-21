@@ -5,6 +5,7 @@ import { samplerEngine } from "../audio/samplerEngine";
 import {
   EFFECT_DEFAULTS,
   fxEngine,
+  FxEngine,
   MASTER_COMP_DEFAULTS,
   MASTER_EQ_DEFAULTS,
   type BusBlockId,
@@ -7697,17 +7698,37 @@ async function renderSongOffline(state: AppState, opts: RenderSongOptions = {}):
   const songSec = totalTicks / ticksPerSecond + tailSeconds;
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(sampleRate * songSec)), sampleRate);
 
+  // Build a fresh offline FX engine bound to this context, mirroring the live
+  // graph (4 buses, master EQ + Compressor, FX1↔FX2 / FX3↔FX4 chains). Voices
+  // connect their dry path to `fxMasterIn`; voices with assignment.fxBus !== 0
+  // additionally route through the bus inputs map. The FX master out feeds the
+  // master gain so the offline output reflects everything live playback hears.
+  const offlineFx = new FxEngine();
+  const fxMasterIn = offlineFx.ensureReady(ctx);
+  configureOfflineFxFromState(offlineFx, state);
+
   const master = ctx.createGain();
   master.gain.value = (state.settingsValues.masterVolume ?? 100) / 100;
+  const fxMasterOut = offlineFx.getMasterOutput();
+  if (fxMasterOut) fxMasterOut.connect(master);
   master.connect(ctx.destination);
 
-  // Cache the original-context AudioBuffers into the offline ctx where possible.
-  // AudioBuffer is spec'd to be context-independent at use time, so we can reuse
-  // the existing buffers directly — the browser handles sample-rate mismatch on
-  // the BufferSource.
+  const busInputs = new Map<number, GainNode>();
+  for (const bus of state.fxBuses) {
+    const input = offlineFx.getBusInput(bus.id);
+    if (input) busInputs.set(bus.id, input);
+  }
+
+  // Voice dry path now feeds the FX master chain (fxMasterIn) instead of the
+  // bare master gain. That way master EQ + Compressor are applied in the export.
   let cursorTicks = 0;
   let eventsScheduled = 0;
   let eventsSkipped = 0;
+  // Choke / mute-target tracking: when a voice triggers, any prior scheduled
+  // source on the same voice group OR on a mute-target voice group is stopped
+  // at the new voice's start time. Mirrors `samplerEngine.stopVoiceGroups(
+  // getMuteStopGroups(...))` semantics that live playback applies on each trigger.
+  const scheduledVoices = new Map<string, AudioBufferSourceNode[]>();
   for (const step of state.songSteps) {
     const seq = state.sequences.find((s) => s.id === step.sequenceId);
     if (!seq) continue;
@@ -7724,7 +7745,7 @@ async function renderSongOffline(state: AppState, opts: RenderSongOptions = {}):
           eventsSkipped += 1;
           continue;
         }
-        const captured = scheduleSongEvent(ctx, master, state, event, baseTicks, ticksPerSecond);
+        const captured = scheduleSongEvent(ctx, fxMasterIn, state, event, baseTicks, ticksPerSecond, busInputs, scheduledVoices);
         if (captured) {
           eventsScheduled += 1;
           if (diagSamples.length < 5) diagSamples.push(captured);
@@ -7778,8 +7799,15 @@ function scheduleSongEvent(
   baseTicks: number,
   ticksPerSecond: number,
   fxBusInputs?: Map<number, GainNode>,
+  scheduledVoices?: Map<string, AudioBufferSourceNode[]>,
 ): RenderDiagSample | null {
-  const eventTicks = baseTicks + eventStepToTicks(event.step) + (event.timingOffset ?? 0);
+  // Swing: real-time playback applies a per-step delay on odd 1/16th positions
+  // when timingCorrect is a swingable grid. Mirror here so exported audio has
+  // the same groove as live. `currentSwingTicks(state, eventStepIndex)` would
+  // be the engine helper but isn't exported; inline minimal logic instead.
+  const swingTicks = computeOfflineSwingTicks(state, event.step);
+  const eventTicks =
+    baseTicks + eventStepToTicks(event.step) + (event.timingOffset ?? 0) + swingTicks;
   const eventTimeSec = Math.max(0, eventTicks / ticksPerSecond);
 
   // Resolve the source assignment exactly like live playback does
@@ -7801,6 +7829,26 @@ function scheduleSongEvent(
   if (!resolved) return null;
   const buffer = getSampleBuffer(resolved.audioBufferId);
   if (!buffer) return null;
+
+  // Choke / mute-target enforcement: stop any prior scheduled source on this
+  // voice group AND on the assignment's mute target groups, at the new event's
+  // start time. Mirrors live `samplerEngine.stopVoiceGroups(getMuteStopGroups(
+  // ...))` behaviour. Without this, hi-hat-closed wouldn't cut hi-hat-open in
+  // the export.
+  if (scheduledVoices) {
+    const voiceKey = mixerChannelKey(lookupBank, lookupPad, assignment ? event.programId : undefined);
+    const stopGroups = getMuteStopGroups(state, assignment, lookupPad, lookupBank, padAssignments, event.programId);
+    const keysToStop: string[] = [voiceKey, ...stopGroups.filter((k) => k !== voiceKey)];
+    const eventStartSec = Math.max(0, eventTicks / ticksPerSecond);
+    for (const key of keysToStop) {
+      const priors = scheduledVoices.get(key);
+      if (!priors) continue;
+      for (const prior of priors) {
+        try { prior.stop(eventStartSec); } catch { /* prior may already be scheduled past this time */ }
+      }
+      scheduledVoices.delete(key);
+    }
+  }
 
   // 16 LEVELS parameter overrides on the event take precedence over assignment defaults.
   const tuneOverride = event.appliedParameter === "TUNE" ? event.parameterValue ?? event.appliedValue : undefined;
@@ -7951,6 +7999,15 @@ function scheduleSongEvent(
     source.start(startTime, offset, duration);
   }
 
+  // Register the scheduled source so future events on the same voice-group key
+  // (or on this assignment's mute targets) can stop it before they start.
+  if (scheduledVoices) {
+    const voiceKey = mixerChannelKey(lookupBank, lookupPad, event.programId);
+    const list = scheduledVoices.get(voiceKey) ?? [];
+    list.push(source);
+    scheduledVoices.set(voiceKey, list);
+  }
+
   // Diagnostic snapshot for the caller. Full-buffer peak scan — sparse scan
   // (every 46th sample at 48 kHz × 1 s) was under-reporting transients in
   // kick/snare samples by 10–30 dB, masking the true source peak. Full scan
@@ -7977,4 +8034,74 @@ function scheduleSongEvent(
     sourceChannels: buffer.numberOfChannels,
     sourcePeak,
   };
+}
+
+// ============================================================================
+// Offline FX configuration — walks live store state and applies the same
+// per-bus block effects, params, bypass, FX1↔FX2 / FX3↔FX4 chains, master EQ,
+// and master Compressor settings to a fresh FxEngine instance bound to the
+// offline AudioContext.
+// ============================================================================
+
+function configureOfflineFxFromState(engine: FxEngine, state: AppState): void {
+  // Per-bus block effects + bypass + params
+  for (const bus of state.fxBuses) {
+    for (const block of ["A", "B"] as BusBlockId[]) {
+      const blockState = block === "A" ? bus.blockA : bus.blockB;
+      if (blockState.effect) {
+        engine.setBusBlockEffect(bus.id, block, blockState.effect, blockState.params);
+        for (const [key, value] of Object.entries(blockState.params)) {
+          engine.setBusBlockParam(bus.id, block, key, value);
+        }
+      }
+      if (blockState.bypass) engine.setBusBlockBypass(bus.id, block, true);
+    }
+  }
+  // Bus chains
+  if (state.fxChainFX1ToFX2) engine.setFxChain("FX1_FX2" as ChainPair, true);
+  if (state.fxChainFX3ToFX4) engine.setFxChain("FX3_FX4" as ChainPair, true);
+
+  // Master EQ — 4 bands (low/lowMid/highMid/high), each with freq/gain/q.
+  const eqParams = state.masterFx.eq.params;
+  const eqBandSpecs: Array<[0 | 1 | 2 | 3, string, string, string]> = [
+    [0, "lowFreq", "lowGain", "lowQ"],
+    [1, "lowMidFreq", "lowMidGain", "lowMidQ"],
+    [2, "highMidFreq", "highMidGain", "highMidQ"],
+    [3, "highFreq", "highGain", "highQ"],
+  ];
+  for (const [idx, fKey, gKey, qKey] of eqBandSpecs) {
+    if (typeof eqParams[fKey] === "number") engine.setMasterEqBand(idx, "freq", eqParams[fKey]);
+    if (typeof eqParams[gKey] === "number") engine.setMasterEqBand(idx, "gain", eqParams[gKey]);
+    if (typeof eqParams[qKey] === "number") engine.setMasterEqBand(idx, "q", eqParams[qKey]);
+  }
+  engine.setMasterEqBypass(state.masterFx.eq.bypass);
+
+  // Master Compressor
+  const compParams = state.masterFx.compressor.params;
+  for (const key of ["threshold", "ratio", "attack", "release", "makeupGain"]) {
+    if (typeof compParams[key] === "number") engine.setMasterCompParam(key, compParams[key]);
+  }
+  engine.setMasterCompBypass(state.masterFx.compressor.bypass);
+}
+
+// ============================================================================
+// Offline swing — applies per-step delay matching the live `currentSwingTicks`
+// helper used by the live sequencer's `tickStepPlayback`. Real-time delays odd
+// 1/16th positions by (swing - 50)% of the 1/16th tick length when timingCorrect
+// is a swingable grid. For mixed-grid sequences only the dominant grid is
+// approximated here — full MPC-precise per-bar TS swing is out of MVP scope.
+// ============================================================================
+
+function computeOfflineSwingTicks(state: AppState, eventStep: string): number {
+  if (!swingApplicable(state.timingCorrect)) return 0;
+  const swingAmount = (state.swing - 50) / 100; // -0.5 .. +0.5
+  if (swingAmount === 0) return 0;
+  // For the default 1/16 grid (24-tick step), shift odd 16ths by swing% of 24.
+  // For 1/8 grid (48-tick step), shift odd 8ths by swing% of 48.
+  // swingApplicable above narrowed the type to "1/16" | "1/8" so OFF is not possible here.
+  const gridTicks = timingCorrectGridTicks(state.timingCorrect);
+  const eventTickFromBarStart = eventStepToTicks(eventStep) % 384;
+  const stepIndex = Math.floor(eventTickFromBarStart / gridTicks);
+  if (stepIndex % 2 === 0) return 0; // even-numbered grid positions don't shift
+  return Math.round(swingAmount * gridTicks);
 }

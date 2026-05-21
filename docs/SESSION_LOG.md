@@ -99,6 +99,143 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.U — 2026-05-21 — WAV export: FX bus rendering + Master EQ/Comp + choke groups + swing
+
+### What was attempted
+
+Per Marek's GO ("możesz działać z tym renderowaniem FX i innymi rzeczami których brakuje w renderze do wav"), this session closes the remaining items from the 22.R audit:
+
+1. **FX bus rendering** — refactor `fxEngine` to accept `BaseAudioContext` so a fresh instance can be created on an `OfflineAudioContext`; build `configureOfflineFxFromState` walker to mirror the live config on the offline engine; wire the offline render's voice graph through the FX master chain.
+2. **Master EQ + Compressor** — included for free once the FX engine instantiable refactor lands.
+3. **Choke groups** — track scheduled voices per `voiceKey = mixerChannelKey(bank, pad, programId)` and call `source.stop(newEventTime)` on prior voices in the same group or in any mute-target group when a new event fires. Mirrors `samplerEngine.stopVoiceGroups(getMuteStopGroups(...))`.
+4. **Swing** — inline minimal `computeOfflineSwingTicks(state, eventStep)` that mirrors live `swingOffsetTicks`: shifts odd grid positions by `(swing − 50) / 100 × gridTicks`.
+
+### What worked
+
+**`fxEngine.ts` type refactor — 4 sites**:
+
+- `private context: AudioContext | null` → `BaseAudioContext | null`
+- `ensureReady(context: AudioContext)` → `BaseAudioContext`
+- `private makeBand(ctx: AudioContext, ...)` → `BaseAudioContext`
+- `generateReverbImpulse(ctx: AudioContext, ...)` → `BaseAudioContext`
+- `class FxEngine` → `export class FxEngine` (was previously only the singleton `fxEngine` exported)
+
+The class internals use only `BaseAudioContext`-available APIs (`createGain`, `createBiquadFilter`, `createConvolver`, `createDynamicsCompressor`, `createDelay`, `createWaveShaper`, `createOscillator`). No `AudioContext`-specific calls (`suspend`/`resume`/`decodeAudioData`/`audioWorklet`) are used by the FX graph, so `OfflineAudioContext` is fully compatible.
+
+**`renderSongOffline` integration**:
+
+```ts
+const offlineFx = new FxEngine();
+const fxMasterIn = offlineFx.ensureReady(ctx);
+configureOfflineFxFromState(offlineFx, state);
+
+const master = ctx.createGain();
+master.gain.value = (state.settingsValues.masterVolume ?? 100) / 100;
+const fxMasterOut = offlineFx.getMasterOutput();
+if (fxMasterOut) fxMasterOut.connect(master);
+master.connect(ctx.destination);
+
+const busInputs = new Map<number, GainNode>();
+for (const bus of state.fxBuses) {
+  const input = offlineFx.getBusInput(bus.id);
+  if (input) busInputs.set(bus.id, input);
+}
+
+const scheduledVoices = new Map<string, AudioBufferSourceNode[]>();
+// ...
+scheduleSongEvent(ctx, fxMasterIn, state, event, baseTicks, ticksPerSecond, busInputs, scheduledVoices);
+```
+
+Voice dry paths now route into `fxMasterIn` (FX master chain entry) instead of the bare master gain. Master EQ + Compressor are processed before reaching my master gain. FX bus inputs map is passed into `scheduleSongEvent`, so any voice with `assignment.fxBus !== 0` connects to the appropriate bus.
+
+**`configureOfflineFxFromState(engine, state)` helper**:
+
+Walks live store state and mirrors it on the offline engine via existing public methods:
+
+- For each bus + each block (A, B): `setBusBlockEffect(busId, block, type, params)` when effect is set, then `setBusBlockParam` for each key (defensive — `setBusBlockEffect` already applies params, but param mutations after the chain is built need explicit re-application). `setBusBlockBypass(busId, block, true)` when bypass is on.
+- Bus chains: `setFxChain("FX1_FX2", state.fxChainFX1ToFX2)`, same for FX3/FX4.
+- Master EQ: 4-band loop with `setMasterEqBand(idx, "freq" | "gain" | "q", value)`; `setMasterEqBypass(state.masterFx.eq.bypass)`.
+- Master Comp: `setMasterCompParam(key, value)` for threshold/ratio/attack/release/makeupGain; `setMasterCompBypass`.
+
+**Choke groups in offline**:
+
+A `Map<voiceKey, AudioBufferSourceNode[]>` tracks every source registered by `scheduleSongEvent`. On each new event, before connecting/starting the new source, the renderer:
+
+1. Computes `voiceKey = mixerChannelKey(lookupBank, lookupPad, event.programId)`.
+2. Calls `getMuteStopGroups(state, assignment, lookupPad, lookupBank, padAssignments, event.programId)` — the same helper live playback uses.
+3. For each key in `[voiceKey, ...stopGroups]`, calls `source.stop(eventStartSec)` on every prior source in that key's list, then deletes the list entry.
+
+After the new source is started, it's pushed into `scheduledVoices[voiceKey]` so future events can stop it.
+
+This means hi-hat-open with a choke pair on hi-hat-closed will be cut by the closed-hat hit at the correct time in the WAV, matching live playback.
+
+**Swing in offline**:
+
+```ts
+function computeOfflineSwingTicks(state: AppState, eventStep: string): number {
+  if (!swingApplicable(state.timingCorrect)) return 0;
+  const swingAmount = (state.swing - 50) / 100;
+  if (swingAmount === 0) return 0;
+  const gridTicks = timingCorrectGridTicks(state.timingCorrect);
+  const eventTickFromBarStart = eventStepToTicks(eventStep) % 384;
+  const stepIndex = Math.floor(eventTickFromBarStart / gridTicks);
+  if (stepIndex % 2 === 0) return 0;
+  return Math.round(swingAmount * gridTicks);
+}
+```
+
+Called inside `scheduleSongEvent`:
+```ts
+const swingTicks = computeOfflineSwingTicks(state, event.step);
+const eventTicks = baseTicks + eventStepToTicks(event.step) + (event.timingOffset ?? 0) + swingTicks;
+```
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me.** Marek runs export and verifies: reverb tails audible, hi-hat choke cuts open, swing-bound 1/16 grid sounds the same as real-time.
+- **The live `fxEngine` singleton still uses `private context: BaseAudioContext`** after the type widening. Live code passes a concrete `AudioContext` to `ensureReady`, which TypeScript widens to `BaseAudioContext` automatically. No live regression expected — `BaseAudioContext` is a supertype of `AudioContext`. But if any caller relied on context-specific methods exposed via `engine.context` (none observed), that would break.
+- **Mixed-grid timing (per-bar TS changes) in swing** uses the SEQUENCE-level `state.timingCorrect` only. Per-bar TS overrides aren't reflected. Out of MVP scope; full per-bar swing would need to walk `sequence.timeSignatureChanges`.
+- **Choke groups stop ALL prior sources** registered under the same key, including ones that might already have ended. Calling `source.stop()` on an already-ended source throws — wrapped in `try/catch`. Functional correctness unaffected.
+- **`scheduledVoices` map grows for the duration of the render.** For a long song with thousands of events, the map will hold all sources until rendering completes. Memory: ~64 bytes per `AudioBufferSourceNode` reference × 5000 events = ~320 KB. Negligible.
+- **`configureOfflineFxFromState` calls `setBusBlockEffect` THEN `setBusBlockParam` per key**, which is partially redundant since `setBusBlockEffect` already applies the initial params via `EFFECT_DEFAULTS` fallback. Kept the explicit per-key calls because the live engine has identical pattern (defensive) and a missing call here would silently use a stale param.
+- **`event.programId` was nullable** when used in the choke-group voiceKey; live engine passes it through `mixerChannelKey(bank, pad, programId)` which handles undefined. Matches.
+- **22.R session log claimed "FX SEND scaffold but graph deferred"** — now the graph is built. The scaffold approach paid off; no changes to `scheduleSongEvent`'s FX routing logic were needed, only the higher-level wiring in `renderSongOffline`.
+- **The `fxEngine` singleton instance still serves live playback** unchanged. Only types widened. The new `FxEngine` class export is for fresh instances bound to other contexts (offline today, native via Tauri later).
+
+### Decisions made
+
+- `BaseAudioContext` type refactor instead of factory function — smaller diff, preserves live engine code path.
+- Export class `FxEngine` alongside `fxEngine` singleton. Both available for import.
+- `configureOfflineFxFromState` lives in `useAppStore.ts` (next to `renderSongOffline`) rather than in `fxEngine.ts` — keeps state-format knowledge local to the store.
+- Choke groups: ALL prior voices in matching groups stopped at the new event's start time (no fade). Mirrors live `samplerEngine.stopVoiceGroups` behaviour, which is hard-stop.
+- Swing: minimal inline implementation. Per-bar TS variations deferred.
+
+### Open issues / followups
+
+- Marek runtime test:
+  - Project with FX bus reverb on snare → WAV has audible reverb tails after snare hits.
+  - Project with hi-hat-closed choke targeting hi-hat-open → in WAV, closed-hat cuts open-hat at the correct moment.
+  - Sequence with swing = 58 (typical groove) → WAV grooves the same as live playback.
+  - Project with master EQ low-shelf boost + Comp ratio 4:1 → WAV reflects the same tone shaping.
+- 12 dB gain mystery — STILL pending Marek's diagnostic console output round from 22.T full-scan + Audacity check.
+- Per-bar TS swing (mixed time signatures) — deferred.
+- Native Tauri MIDI / audio path — separate Phase B work.
+
+### Files modified
+
+- `src/audio/fxEngine.ts` — `class FxEngine` → `export class FxEngine`; 4 type widenings from `AudioContext` to `BaseAudioContext` (`context` field, `ensureReady`, `makeBand`, `generateReverbImpulse`). No behavioural change for the live singleton.
+- `src/store/useAppStore.ts`:
+  - Import `FxEngine` class alongside the existing `fxEngine` singleton.
+  - `renderSongOffline`: instantiate offline FxEngine, configure from state, wire `fxMasterOut → master`, build `busInputs` map, pass `fxMasterIn` as `scheduleSongEvent` destination and the map + a fresh `scheduledVoices` Map for choke tracking.
+  - `scheduleSongEvent` signature: added `scheduledVoices?: Map<string, AudioBufferSourceNode[]>` parameter.
+  - `scheduleSongEvent` body: added choke/mute-target pre-stop loop (lines ~7830) and source registration after `source.start` (line ~8007).
+  - `scheduleSongEvent` body: added `swingTicks = computeOfflineSwingTicks(state, event.step)` to `eventTicks` computation.
+  - New helpers at bottom of file: `configureOfflineFxFromState(engine, state)` and `computeOfflineSwingTicks(state, eventStep)`.
+
+---
+
 ## Session 22.T — 2026-05-21 — WAV export: full-buffer source-peak scan (diagnostic accuracy fix)
 
 ### What was attempted
