@@ -297,7 +297,7 @@ type AppState = {
   tickChopPlayback: () => void;
   playStart: () => void;
   tapTempo: () => void;
-  triggerPad: (pad: string) => void;
+  triggerPad: (pad: string, velocityOverride?: number) => void;
   releasePad: (pad: string) => void;
   flashButton: (id: string) => void;
   setPadBank: (bank: PadBank) => void;
@@ -1296,9 +1296,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ tapHistory: recent });
   },
-  triggerPad: (selectedPad) => {
+  triggerPad: (selectedPad, velocityOverride) => {
     const padNumber = Number(selectedPad.slice(1));
-    emitMidiPadNoteOn(get(), selectedPad);
+    {
+      const s = get();
+      let v = velocityOverride ?? (s.fullLevelEnabled ? 127 : 100);
+      if (s.activeScreen === "UTILITY_16_LEVELS" && s.sixteenLevelsParameter === "VELOCITY") {
+        v = getSixteenLevelsValue(s, padNumber);
+      }
+      emitMidiPadNoteOn(s, selectedPad, v);
+    }
     const wasArmedSourcePick =
       get().activeScreen === "UTILITY_16_LEVELS" && get().sixteenLevelsSourceArmed;
     set((state) => {
@@ -4417,7 +4424,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (settings.midiAutoBankSwitch && padAddress.bank !== state.padBank) {
         set({ padBank: padAddress.bank });
       }
-      get().triggerPad(padId);
+      get().triggerPad(padId, message.velocity);
       return;
     }
     if (message.type === "NOTE_OFF" && message.channel === 1) {
@@ -7359,30 +7366,38 @@ function applyMidiCcToSelectedPad(
     get().setPadFxSendLevel(selectedPad, clamp(send, 0, 100));
     return;
   }
-  // CC 74 (CUTOFF), 71 (RESONANCE) → selected pad filter params (0-127 → 0-100).
-  if (controller === 74 || controller === 71) {
-    const field = controller === 74 ? "filterCutoff" : "filterResonance";
-    const padAssignments = state.padAssignments[bank].map((assignment) =>
-      assignment.pad === selectedPad
-        ? { ...assignment, [field]: clamp(Math.round((value / 127) * 100), 0, 100) }
-        : assignment,
-    );
-    set({
-      padAssignments: { ...state.padAssignments, [bank]: padAssignments },
-      programs: syncCurrentProgram(state, { padAssignments: { ...state.padAssignments, [bank]: padAssignments } }),
-    });
-    return;
+  // CC 74 (CUTOFF), 71 (RESONANCE), 73 (ATTACK), 75 (DECAY) → selected pad
+  // params (0-127 → 0-100). ATTACK/DECAY feed `playAssignedPadWithContext`'s
+  // envelope on next trigger; CUTOFF/RESONANCE also sync to live audio graph.
+  const ccToField: Record<number, "filterCutoff" | "filterResonance" | "attack" | "decay"> = {
+    74: "filterCutoff",
+    71: "filterResonance",
+    73: "attack",
+    75: "decay",
+  };
+  const field = ccToField[controller];
+  if (!field) return;
+  const scaled = clamp(Math.round((value / 127) * 100), 0, 100);
+  const padAssignments = state.padAssignments[bank].map((assignment) =>
+    assignment.pad === selectedPad ? { ...assignment, [field]: scaled } : assignment,
+  );
+  const nextAll = { ...state.padAssignments, [bank]: padAssignments };
+  set({
+    padAssignments: nextAll,
+    programs: syncCurrentProgram(state, { padAssignments: nextAll }),
+  });
+  if (field === "filterCutoff" || field === "filterResonance") {
+    syncSelectedPadFilterToAudio(get(), nextAll);
   }
-  // CC 73 (ATTACK), 75 (DECAY) — envelope params. Reserved for future
-  // envelope generator (per UX_AUDIT_FINDINGS — currently fake UI).
 }
 
-function emitMidiPadNoteOn(state: AppState, padId: string): void {
+function emitMidiPadNoteOn(state: AppState, padId: string, velocity: number = 100): void {
   const s = state.settingsValues;
   if (!s.midiPadOut || !s.midiOutputDeviceId) return;
   const note = padToNote(state.padBank, padIdToIndex(padId), s.midiPadMapping);
   if (note === null) return;
-  midiNoteOn(s.midiOutputDeviceId, 1, note, 100);
+  const clamped = Math.max(1, Math.min(127, Math.round(velocity)));
+  midiNoteOn(s.midiOutputDeviceId, 1, note, clamped);
 }
 
 function emitMidiPadNoteOff(state: AppState, padId: string): void {

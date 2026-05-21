@@ -99,6 +99,93 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.J — 2026-05-21 — Pre-Tauri fixes: GROUP visual + MIDI velocity + ADSR CC
+
+### What was attempted
+
+Three deferred fixes Marek flagged before the Tauri packaging session:
+
+1. **FIX 1 — GROUP MUTE LOGIC**. Marek's spec describes the broken behaviour from earlier (GROUP mode toggling mute, MUTE mode ignoring groups). On read, the LOGIC is already MPC-canonical in code (landed in 22.H); the remaining gap is **visual** — in GROUP/UNGROUP modes the tile still colours by mute state instead of emphasising the group assignment. Add the visual swap so the user can clearly see groups while in those modes.
+2. **FIX 2 — MIDI OUT dynamic velocity**. Replace the hardcoded velocity 100 in `emitMidiPadNoteOn` with a real value derived from trigger source (FULL LEVEL toggle, MIDI IN velocity, 16 LEVELS per-pad level when VELOCITY parameter active).
+3. **FIX 3 — CC 73/75 ADSR wiring**. The 22.I MIDI handler accepted CC 73 / 75 but skipped them with a "no envelope engine" comment. The comment was wrong — `playAssignedPadWithContext` already builds an envelope from `assignment.attack` / `assignment.decay` via `programValueToMs`. Wire CC 73 → attack, CC 75 → decay on the selected pad.
+
+### What worked
+
+**FIX 1 — GROUP visual (`UtilityScreens.tsx`):**
+
+- Code inspection confirmed `nextPerformanceTracks` (line 7027) and `applyPadMuteAction` (line 3993) implement MPC-canonical group propagation correctly:
+  - GROUP mode → click cycles target group `((group ?? 0) + 1) % 17` (0→1→…→16→0). No mute side effect.
+  - UNGROUP mode → click sets target group to 0.
+  - MUTE mode → if `target.group > 0`, mute toggle propagates to every pad/track sharing the group. Ungrouped pads toggle solo.
+  - SOLO mode untouched.
+  - CLEAN action preserves groups.
+- Visual change added to `PadMuteUtilityScreen` and `TrackMuteUtilityScreen` tile rendering:
+  - When mode is GROUP or UNGROUP, the tile renders a `groupLabel` (large, amber-tinted: `G1`–`G16`, or `—` for ungrouped) replacing the mute status badge.
+  - Tile border/background switches to amber when the pad/track is in a group (`group > 0`) and dim grey when ungrouped.
+  - In MUTE / SOLO modes the original mute/solo colour scheme is preserved (red muted, green live, amber solo).
+- Group badge `G{n}` in MUTE / SOLO modes remains visible in the corner of each tile as a secondary indicator.
+
+**FIX 2 — Dynamic velocity:**
+
+- `triggerPad` action signature extended: `(pad: string, velocityOverride?: number) => void`.
+- At the top of `triggerPad`, effective velocity is computed:
+  - `velocityOverride ?? (fullLevelEnabled ? 127 : 100)`
+  - If `activeScreen === "UTILITY_16_LEVELS"` and `sixteenLevelsParameter === "VELOCITY"`, the per-pad value from `getSixteenLevelsValue(state, padNumber)` overrides.
+- `emitMidiPadNoteOn(state, padId, velocity)` accepts velocity (default 100 for safety), clamped to 1–127.
+- `handleMidiInputMessage` passes `message.velocity` through: `get().triggerPad(padId, message.velocity)`. Echo-like behaviour when MIDI IN + MIDI OUT both enabled.
+
+**FIX 3 — CC 73/75 ADSR:**
+
+- `applyMidiCcToSelectedPad` filter/envelope branch rewritten as a small `ccToField` lookup map covering CC 74 → `filterCutoff`, CC 71 → `filterResonance`, CC 73 → `attack`, CC 75 → `decay`.
+- All four mapped CCs scale 0-127 → 0-100 (matches existing field range from `getParamLimits`) and update `padAssignments[bank][selectedPad]` immutably.
+- Filter CCs additionally call `syncSelectedPadFilterToAudio(nextAll)` so live filter graph picks up the change immediately (existing behaviour).
+- ATTACK/DECAY changes apply on **next trigger** — `playAssignedPadWithContext` reads `assignment.attack` / `assignment.decay` on each call and builds `envelope: { attackMs: programValueToMs(...), decayMs: programValueToMs(...), holdMode }`. No additional engine wiring needed.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies.
+- **22.I session log comment was wrong** about ADSR. It claimed "no envelope generator in audio engine" but `playAssignedPadWithContext:5699-5707` builds and passes an envelope to `samplerEngine.play`. The CC handler simply wasn't wired. Lesson: foundation-first verification missed this in 22.I — I assumed UX_AUDIT_FINDINGS' "ATTACK/DECAY are fake UI" was current, but it appears to have been resolved by an earlier session not reflected in the audit doc. The audit doc is now stale on this point.
+- **16 LEVELS velocity override only fires when VELOCITY parameter mode is active.** Other 16 LEVELS modes (TUNE, FILTER, ATTACK, DECAY) leave velocity at the default (FULL LEVEL ? 127 : 100). MPC convention is "16 LEVELS shows different per-pad VALUE based on selected param", so velocity tracking only applies to the VELOCITY-parameter mode. Acceptable.
+- **Velocity default 100 (not 127)** when not in FULL LEVEL. This matches the existing internal `velocity = 100` constants used throughout `triggerPad` (lines 1399, 1455, 1501, 1613 — though 1613 is 127). There's an inconsistency in the existing code where one branch defaults to 127; keeping 100 for MIDI to match the most common branch. Marek's test note "Mouse click pad → MIDI OUT velocity = aktualny default (sprawdź czy 127 czy 100)" implies he wants me to verify — landing on 100 is consistent with most of the trigger branches.
+- **Note Off velocity hardcoded to 0** in `noteOff` helper. This is the standard MIDI convention (Note Off velocity rarely meaningful); not addressed.
+- **`triggerPad` is a complex action with many internal `set()` callbacks** that compute their own local `velocity` (often `fullLevelEnabled ? 127 : 100`). Threading a single authoritative velocity through all of them would be a larger refactor; for MVP the entry-point computation for MIDI is sufficient and internal sequence/event recording paths keep their existing logic.
+- **CC 73/75 ADSR test requires audible verification** — values commit to `assignment.attack` / `.decay` and feed the envelope on next trigger. If the audio engine's envelope handling is broken upstream, the CC works but the sound doesn't change. Out of scope to verify here.
+- **The CC map is a Record literal** that allows TS to verify the union of fields. If a future field name changes (e.g., `attack` → `envAttack`), this map needs updating.
+
+### Decisions made
+
+- GROUP/UNGROUP visual: tile renders **group label** prominently (G1–G16, or `—` for G0) and uses amber border/background for grouped vs dim grey for ungrouped. MUTE/SOLO modes keep their original colour scheme.
+- Velocity default 100 (matches most internal trigger branches). MIDI IN passes the incoming velocity; FULL LEVEL overrides to 127; 16 LEVELS VELOCITY mode uses per-pad applied value.
+- CC 73/75 wired to existing `assignment.attack` / `.decay` (0-100 range), no new envelope engine — the existing one was already functional.
+- CC handler simplified from a chain of `if` blocks to a `ccToField` lookup map.
+- F4 CLEAN action unchanged (mutes-only, groups preserved). Marek's spec offered "shift+F4 CLEAR ALL = mutes + groups" but flagged "sugestia: dla MVP nie dodawać" — skipped.
+
+### Open issues / followups
+
+- Marek physical test of all three fixes:
+  - GROUP mode tile visual + cycle to G16 + back to G0
+  - MUTE mode propagation across grouped pads/tracks
+  - MIDI OUT velocity with FULL LEVEL toggle + 16 LEVELS VELOCITY mode
+  - CC 73/75 audibly changes envelope on next trigger
+- Verify `UX_AUDIT_FINDINGS.md` ADSR entry — current code suggests ATTACK/DECAY are NOT fake UI; the audit doc may need a correction.
+- The "shift+F4 CLEAR ALL" gesture if Marek decides cycling 16 pads back to G0 is too painful.
+- Next session: Tauri EXE packaging (per Marek's "Po tej sesji ... wracamy do Tauri EXE packaging").
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `triggerPad` action signature gains `velocityOverride?: number`; entry computes effective velocity (FULL LEVEL / 16 LEVELS VELOCITY / override / default) and passes to `emitMidiPadNoteOn`.
+  - `emitMidiPadNoteOn(state, padId, velocity = 100)` clamps + sends.
+  - `handleMidiInputMessage` passes `message.velocity` to `triggerPad`.
+  - `applyMidiCcToSelectedPad` rewritten with `ccToField` map covering 74 / 71 / 73 / 75; updates `padAssignments` immutably + calls `syncSelectedPadFilterToAudio` for filter CCs.
+- `src/screens/UtilityScreens.tsx`:
+  - `TrackMuteUtilityScreen` tile rendering: `groupView` flag + per-mode `tileClass` + conditional group-label-or-status badge.
+  - `PadMuteUtilityScreen` tile rendering: same pattern.
+
+---
+
 ## Session 22.I — 2026-05-21 — MIDI MVP: Web MIDI input/output + clock sync + MPC pad mapping + Settings UI
 
 ### What was attempted

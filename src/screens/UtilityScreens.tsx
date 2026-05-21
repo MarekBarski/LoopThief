@@ -267,7 +267,20 @@ export function TrackMuteUtilityScreen() {
           <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
             {Array.from({ length: 16 }, (_, index) => {
               const track = tracks[index];
+              const groupView = mode === "GROUP" || mode === "UNGROUP";
               const status = track?.solo ? "SOLO" : track?.muted ? "MUTED" : track ? "LIVE" : "---";
+              const groupLabel = !track ? "---" : (track.group ?? 0) === 0 ? "—" : `G${track.group}`;
+              const tileClass = !track
+                ? "border-[#293225] bg-black/10 text-[#3f4b35]"
+                : groupView
+                  ? (track.group ?? 0) > 0
+                    ? "border-[#d8b34d] bg-amber-200/10 text-amber-100"
+                    : "border-[#46533b] bg-black/20 text-[#aab691]"
+                  : track.solo
+                    ? "border-amber-300 bg-amber-200/15 text-amber-100"
+                    : track.muted
+                      ? "border-[#46533b] bg-black/25 text-[#70805c]"
+                      : "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]";
               return (
                 <button
                   key={index}
@@ -281,21 +294,21 @@ export function TrackMuteUtilityScreen() {
                         ? "Click sets group to 0"
                         : undefined
                   }
-                  className={`grid content-between border p-[8%] text-left ${
-                    track?.solo
-                      ? "border-amber-300 bg-amber-200/15 text-amber-100"
-                      : track?.muted
-                        ? "border-[#46533b] bg-black/25 text-[#70805c]"
-                        : track
-                          ? "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
-                          : "border-[#293225] bg-black/10 text-[#3f4b35]"
-                  }`}
+                  className={`grid content-between border p-[8%] text-left ${tileClass}`}
                 >
                   <span>{String(index + 1).padStart(2, "0")}</span>
                   <span className="truncate">{track?.name ?? "EMPTY"}</span>
                   <div className="flex items-center justify-between gap-[6px]">
-                    <span className="text-[#91a477]">{status}</span>
-                    {track && (track.group ?? 0) > 0 ? <span className="text-[#d8b34d]">G{track.group}</span> : null}
+                    {groupView ? (
+                      <span className="text-[clamp(11px,1vw,16px)] font-semibold tracking-[0.2em]">
+                        {groupLabel}
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-[#91a477]">{status}</span>
+                        {track && (track.group ?? 0) > 0 ? <span className="text-[#d8b34d]">G{track.group}</span> : null}
+                      </>
+                    )}
                   </div>
                 </button>
               );
@@ -334,8 +347,21 @@ export function PadMuteUtilityScreen() {
         <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
           <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
             {pads.map((pad) => {
+              const groupView = mode === "GROUP" || mode === "UNGROUP";
               const audible = !pad.muted && (!anySolo || pad.solo);
               const status = pad.solo ? "SOLO" : pad.muted ? "MUTED" : "LIVE";
+              const groupLabel = (pad.group ?? 0) === 0 ? "—" : `G${pad.group}`;
+              const tileClass = groupView
+                ? (pad.group ?? 0) > 0
+                  ? "border-[#d8b34d] bg-amber-200/10 text-amber-100"
+                  : "border-[#46533b] bg-black/20 text-[#aab691]"
+                : pad.solo
+                  ? "border-amber-300 bg-amber-200/15 text-amber-100"
+                  : pad.muted
+                    ? "border-red-400 bg-red-500/20 text-red-200"
+                    : audible
+                      ? "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
+                      : "border-[#46533b] bg-black/20 text-[#70805c]";
               return (
                 <button
                   key={pad.pad}
@@ -348,20 +374,20 @@ export function PadMuteUtilityScreen() {
                         ? "Click sets group to 0"
                         : undefined
                   }
-                  className={`grid content-between border p-[8%] text-left ${
-                    pad.solo
-                      ? "border-amber-300 bg-amber-200/15 text-amber-100"
-                      : pad.muted
-                        ? "border-red-400 bg-red-500/20 text-red-200"
-                        : audible
-                          ? "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
-                          : "border-[#46533b] bg-black/20 text-[#70805c]"
-                  }`}
+                  className={`grid content-between border p-[8%] text-left ${tileClass}`}
                 >
                   <span>{pad.pad}</span>
                   <div className="flex items-center justify-between gap-[4px]">
-                    <span className="text-[#91a477]">{status}</span>
-                    {(pad.group ?? 0) > 0 ? <span className="text-[#d8b34d]">G{pad.group}</span> : null}
+                    {groupView ? (
+                      <span className="text-[clamp(11px,1vw,16px)] font-semibold tracking-[0.2em]">
+                        {groupLabel}
+                      </span>
+                    ) : (
+                      <>
+                        <span className="text-[#91a477]">{status}</span>
+                        {(pad.group ?? 0) > 0 ? <span className="text-[#d8b34d]">G{pad.group}</span> : null}
+                      </>
+                    )}
                   </div>
                 </button>
               );
