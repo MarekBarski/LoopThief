@@ -560,26 +560,67 @@ export function GoToUtilityScreen() {
   const currentStep = useAppStore((s) => s.currentStep);
   const currentEvent = useAppStore((s) => s.currentEvent);
   const sequence = useAppStore((s) => s.sequence);
+  const sequences = useAppStore((s) => s.sequences);
+  const currentSequence = useAppStore((s) => s.currentSequence);
+  const sequenceLengthBars = useAppStore((s) => s.sequenceLengthBars);
   const goToTarget = useAppStore((s) => s.goToTarget);
   const setGoToTarget = useAppStore((s) => s.setGoToTarget);
   const adjustGoToValue = useAppStore((s) => s.adjustGoToValue);
+  const setGoToValue = useAppStore((s) => s.setGoToValue);
   const executeGoTo = useAppStore((s) => s.executeGoTo);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
+
+  const seqOrdinal = Math.max(1, sequences.findIndex((s) => s.id === currentSequence) + 1);
+
+  const rows: Array<{
+    label: typeof goToTarget;
+    value: number;
+    format: (n: number) => string;
+    min: number;
+    max: number;
+  }> = [
+    { label: "BAR", value: currentBar, format: (n) => String(n).padStart(3, "0"), min: 1, max: sequenceLengthBars },
+    { label: "STEP", value: currentStep, format: (n) => String(n).padStart(2, "0"), min: 1, max: 16 },
+    { label: "EVENT", value: currentEvent, format: (n) => String(n).padStart(3, "0"), min: 1, max: 999 },
+    { label: "SEQ", value: seqOrdinal, format: (n) => `A${String(n).padStart(2, "0")}`, min: 1, max: Math.max(1, sequences.length) },
+  ];
 
   return (
     <ScreenFrame title="GO TO" subtitle="Locate event">
       {shell(
         <div className="grid h-full grid-cols-[1fr_0.72fr] gap-[2.3%]">
-          <SelectablePanel
-            active={goToTarget}
-            onSelect={(label) => setGoToTarget(label as typeof goToTarget)}
-            rows={[
-              ["BAR", String(currentBar).padStart(3, "0")],
-              ["STEP", String(currentStep).padStart(2, "0")],
-              ["EVENT", String(currentEvent).padStart(3, "0")],
-              ["SEQ", `A${sequence.padStart(2, "0")}`],
-            ]}
-          />
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+            {rows.map((row) => (
+              <div
+                key={row.label}
+                className={`grid grid-cols-[1fr_auto] border px-[4%] py-[3%] text-left ${
+                  row.label === goToTarget
+                    ? "border-[#eef6d8] bg-[#d8e3b7]/10 text-[#eef6d8]"
+                    : "border-[#46533b] text-[#aab691]"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setGoToTarget(row.label)}
+                  className="text-left"
+                >
+                  {row.label}
+                </button>
+                <EditableNumber
+                  value={row.value}
+                  format={row.format}
+                  min={row.min}
+                  max={row.max}
+                  onCommit={(v) => {
+                    setGoToTarget(row.label);
+                    setGoToValue(row.label, Math.round(v));
+                  }}
+                  ariaLabel={row.label}
+                />
+              </div>
+            ))}
+            <span className="text-[10px] text-[#91a477]">(current seq: {`A${sequence.padStart(2, "0")}`})</span>
+          </section>
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
             <p className="text-[#91a477]">TARGET</p>
             <p className="text-xl tracking-[0.18em] text-[#eef6d8]">{goToTarget}</p>

@@ -36,6 +36,7 @@ export function ProgramScreen() {
   const setPadFxSendLevel = useAppStore((state) => state.setPadFxSendLevel);
   const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
   const setCurrentProgramName = useAppStore((state) => state.setCurrentProgramName);
+  const selectPad = useAppStore((state) => state.selectPad);
   const [assignOpen, setAssignOpen] = useState(false);
   const [sourceType, setSourceType] = useState<"SAMPLES" | "SLICES" | "PROGRAM POOL">("SAMPLES");
   const [sourceIndex, setSourceIndex] = useState(0);
@@ -85,9 +86,11 @@ export function ProgramScreen() {
             </div>
             <div className="grid grid-cols-4 grid-rows-4 gap-[2.2%]">
               {padAssignments.map((assignment) => (
-                <div
+                <button
                   key={assignment.pad}
-                  className={`grid min-h-0 grid-cols-[auto_1fr] content-center gap-x-[8px] border px-[7%] py-[5%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
+                  type="button"
+                  onClick={() => selectPad(assignment.pad)}
+                  className={`grid min-h-0 grid-cols-[auto_1fr] content-center gap-x-[8px] border px-[7%] py-[5%] text-left text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
                     assignment.pad === selectedPad
                       ? "border-amber-300 bg-amber-200/10 text-[#f1e7c8]"
                       : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
@@ -97,7 +100,7 @@ export function ProgramScreen() {
                   <span className="truncate">{assignment.assignment}</span>
                   <span>{assignment.mode}</span>
                   <span>{assignment.level}</span>
-                </div>
+                </button>
               ))}
             </div>
           </section>

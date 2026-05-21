@@ -23,6 +23,40 @@ export function App() {
   }, [preloadAudioBuffers]);
 
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("loopthief.settings");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        useAppStore.getState().hydrateSettings(parsed);
+      }
+    } catch (error) {
+      console.warn("[loopthief] settings hydrate failed", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    let lastSettings = useAppStore.getState().settingsValues;
+    let pendingTimer: number | null = null;
+    const unsubscribe = useAppStore.subscribe((state) => {
+      if (state.settingsValues === lastSettings) return;
+      lastSettings = state.settingsValues;
+      if (pendingTimer !== null) window.clearTimeout(pendingTimer);
+      pendingTimer = window.setTimeout(() => {
+        try {
+          window.localStorage.setItem("loopthief.settings", JSON.stringify(useAppStore.getState().settingsValues));
+        } catch {
+          /* localStorage unavailable */
+        }
+      }, 500);
+    });
+    return () => {
+      if (pendingTimer !== null) window.clearTimeout(pendingTimer);
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     if (promptedResumeRef.current) return;
     promptedResumeRef.current = true;
     void (async () => {

@@ -276,7 +276,9 @@ type AppState = {
   cycleInputSource: () => void;
   toggleMonitor: () => void;
   cycleThreshold: () => void;
+  setThreshold: (value: number) => void;
   adjustInputGain: (delta: number) => void;
+  setInputGain: (value: number) => void;
   importWavFile: (file: File) => Promise<void>;
   tickRecording: (deltaMs: number) => void;
   tickChopPlayback: () => void;
@@ -292,6 +294,7 @@ type AppState = {
   exitUtilityWorkflow: () => void;
   setGoToTarget: (target: AppState["goToTarget"]) => void;
   adjustGoToValue: (delta: number) => void;
+  setGoToValue: (target: "BAR" | "STEP" | "EVENT" | "SEQ", value: number) => void;
   executeGoTo: () => void;
   setEraseMode: (mode: AppState["eraseMode"]) => void;
   executeErase: () => void;
@@ -457,6 +460,7 @@ type AppState = {
   ) => void;
   setMixerChannelValue: (pad: string, field: "level" | "pan" | "fxSend", value: number) => void;
   selectMixerPad: (pad: string) => void;
+  selectPad: (pad: string) => void;
   toggleSelectedMixerMute: () => void;
   toggleSelectedMixerSolo: () => void;
   toggleMixerChannelMute: (pad: string) => void;
@@ -484,6 +488,8 @@ type AppState = {
   adjustSelectedSetting: (delta: number) => void;
   setSelectedSetting: (value: number) => void;
   toggleSelectedSetting: () => void;
+  persistSettingsNow: () => void;
+  hydrateSettings: (values: Partial<SettingsValues>) => void;
   // ---- FX system (Phase 2 — 2 blocks per bus + chaining) ----
   setFxBusBlockEffect: (busId: BusId, block: BusBlockId, effect: EffectType | null) => void;
   toggleFxBusBlockBypass: (busId: BusId, block: BusBlockId) => void;
@@ -750,6 +756,7 @@ type SettingsValues = {
   padCurve: "SOFT" | "LINEAR" | "HARD";
   displayBrightness: number;
   autoSave: boolean;
+  autosaveIntervalSec: number;
   latency: number;
   masterVolume: number;
   audioInputSource: "SYSTEM AUDIO" | "LINE IN" | "USB";
@@ -919,7 +926,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeDiskFolderId: "memory",
   selectedDiskItemIndex: 0,
   settingsCategories: createSettingsCategories(),
-  activeSettingsCategoryId: "midi",
+  activeSettingsCategoryId: "masterVolume",
   selectedSettingIndex: 0,
   settingsValues: {
     bpmSync: true,
@@ -931,6 +938,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     padCurve: "LINEAR",
     displayBrightness: 72,
     autoSave: false,
+    autosaveIntervalSec: 60,
     latency: 8,
     masterVolume: 100,
     audioInputSource: "SYSTEM AUDIO",
@@ -1178,7 +1186,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const values: Array<number | "OFF"> = [-60, -48, -36, -24, -18, -12, -6, "OFF"];
       return { threshold: values[(values.indexOf(state.threshold) + 1) % values.length] };
     }),
+  setThreshold: (value) => set(() => ({ threshold: clamp(value, -60, -1) })),
   adjustInputGain: (delta) => set((state) => ({ inputGain: clamp(state.inputGain + delta, -24, 24) })),
+  setInputGain: (value) => set(() => ({ inputGain: clamp(value, -24, 24) })),
   importWavFile: async (file) => {
     if (!isWavFile(file)) {
       set({ importStatus: "ERROR", importMessage: "WAV FILES ONLY" });
@@ -1650,6 +1660,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       const currentIndex = state.sequences.findIndex((sequence) => sequence.id === state.currentSequence);
       const nextIndex = clamp(currentIndex + delta, 0, state.sequences.length - 1);
       return applyCurrentSequence(state, state.sequences[nextIndex].id);
+    }),
+  setGoToValue: (target, value) =>
+    set((state) => {
+      if (target === "BAR") {
+        return { currentBar: clamp(Math.round(value), 1, state.sequenceLengthBars) };
+      }
+      if (target === "STEP") {
+        return { currentStep: clamp(Math.round(value), 1, 16) };
+      }
+      if (target === "EVENT") {
+        return { currentEvent: clamp(Math.round(value), 1, 999) };
+      }
+      const targetIndex = clamp(Math.round(value) - 1, 0, state.sequences.length - 1);
+      return applyCurrentSequence(state, state.sequences[targetIndex].id);
     }),
   executeGoTo: () =>
     set((state) => {
@@ -3805,6 +3829,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
   },
   selectMixerPad: (selectedPad) => set({ selectedPad }),
+  selectPad: (selectedPad) => set({ selectedPad }),
   toggleSelectedMixerMute: () =>
     set((state) => {
       const channels = state.padMixer[state.padBank].map((channel) =>
@@ -4163,6 +4188,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
       };
     }),
+  persistSettingsNow: () => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("loopthief.settings", JSON.stringify(get().settingsValues));
+    } catch {
+      /* localStorage unavailable */
+    }
+  },
+  hydrateSettings: (values) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, ...values },
+    })),
   createProjectSnapshot: () => {
     const state = get();
     return {
@@ -7009,58 +7046,34 @@ function startTransportAction(
 function createSettingsCategories(): SettingsCategory[] {
   return [
     {
-      id: "midi",
-      label: "MIDI",
-      settings: [
-        { key: "midiClock", label: "MIDI CLOCK", kind: "enum", options: ["OFF", "IN", "OUT"] },
-        { key: "bpmSync", label: "BPM SYNC", kind: "toggle" },
-        { key: "padCurve", label: "PAD CURVE", kind: "enum", options: ["SOFT", "LINEAR", "HARD"] },
-      ],
-    },
-    {
-      id: "audio",
-      label: "AUDIO",
+      id: "masterVolume",
+      label: "MASTER VOLUME",
       settings: [
         { key: "masterVolume", label: "MASTER VOL", kind: "numeric", min: 0, max: 200, step: 5 },
-        { key: "audioInputSource", label: "AUDIO INPUT", kind: "enum", options: ["SYSTEM AUDIO", "LINE IN", "USB"] },
-        { key: "latency", label: "LATENCY", kind: "numeric", min: 2, max: 24, step: 1 },
       ],
     },
     {
-      id: "sync",
-      label: "SYNC",
+      id: "autosave",
+      label: "AUTOSAVE",
       settings: [
-        { key: "bpmSync", label: "BPM SYNC", kind: "toggle" },
-        { key: "midiClock", label: "CLOCK SOURCE", kind: "enum", options: ["OFF", "IN", "OUT"] },
+        { key: "autoSave", label: "AUTO SAVE", kind: "toggle" },
+        { key: "autosaveIntervalSec", label: "INTERVAL SEC", kind: "numeric", min: 15, max: 600, step: 15 },
       ],
     },
     {
-      id: "metronome",
-      label: "METRONOME",
-      settings: [
-        { key: "metronomeEnabled", label: "METRONOME", kind: "toggle" },
-        { key: "metronomeDuringRecord", label: "DURING REC", kind: "toggle" },
-        { key: "metronomeCountInBars", label: "COUNT BARS", kind: "numeric", min: 0, max: 4, step: 1 },
-        { key: "metronomeVolume", label: "CLICK VOL", kind: "numeric", min: 0, max: 100, step: 5 },
-      ],
+      id: "midi",
+      label: "MIDI",
+      settings: [],
     },
     {
-      id: "memory",
-      label: "MEMORY",
-      settings: [{ key: "autoSave", label: "AUTO SAVE", kind: "toggle" }],
-    },
-    {
-      id: "display",
-      label: "DISPLAY",
-      settings: [{ key: "displayBrightness", label: "BRIGHTNESS", kind: "numeric", min: 10, max: 100, step: 1 }],
+      id: "keyboard",
+      label: "KEYBOARD REFERENCE",
+      settings: [],
     },
     {
       id: "system",
-      label: "SYSTEM",
-      settings: [
-        { key: "autoSave", label: "AUTO SAVE", kind: "toggle" },
-        { key: "latency", label: "LATENCY", kind: "numeric", min: 2, max: 24, step: 1 },
-      ],
+      label: "SYSTEM INFO",
+      settings: [],
     },
   ];
 }

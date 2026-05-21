@@ -6,12 +6,9 @@ import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 const softButtons = ["F1 IMPORT", "F2 PREVIEW", "F3 RENAME", "F4 DELETE", "F5 EXPORT", "F6 EXIT"];
 
 export function DiskScreen() {
-  const diskFolders = useAppStore((state) => state.diskFolders);
-  const activeDiskFolderId = useAppStore((state) => state.activeDiskFolderId);
   const selectedDiskItemIndex = useAppStore((state) => state.selectedDiskItemIndex);
   const recordedSamples = useAppStore((state) => state.recordedSamples);
   const padAssignments = useAppStore((state) => state.padAssignments);
-  const openDiskFolder = useAppStore((state) => state.openDiskFolder);
   const selectDiskItem = useAppStore((state) => state.selectDiskItem);
   const importWavFile = useAppStore((state) => state.importWavFile);
   const previewSelectedMemorySample = useAppStore((state) => state.previewSelectedMemorySample);
@@ -40,36 +37,7 @@ export function DiskScreen() {
         className="grid h-full gap-[12px]"
         style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
       >
-        <div className="grid min-h-0 grid-cols-[0.78fr_1.22fr_0.95fr] gap-[2.3%] overflow-hidden">
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
-            <p className="text-[#91a477]">DEVICE</p>
-            {diskFolders.map((folder) => (
-              <button
-                key={folder.id}
-                type="button"
-                onClick={() => openDiskFolder(folder.id)}
-                className={`border px-[4%] py-[3%] text-left ${
-                  folder.id === activeDiskFolderId
-                    ? "border-amber-300 bg-amber-200/15 text-amber-100"
-                    : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
-                }`}
-              >
-                {folder.label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => openDiskFolder("memory")}
-              className={`border px-[4%] py-[3%] text-left ${
-                activeDiskFolderId === "memory"
-                  ? "border-amber-300 bg-amber-200/15 text-amber-100"
-                  : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
-              }`}
-            >
-              RUNTIME MEMORY
-            </button>
-          </section>
-
+        <div className="grid min-h-0 grid-cols-[1.4fr_0.95fr] gap-[2.3%] overflow-hidden">
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
             <div className="grid grid-cols-[1fr_0.58fr_0.72fr_0.72fr_0.7fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
               <span>NAME</span>

@@ -4,7 +4,7 @@ import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { EditableNumber } from "../components/EditableNumber";
 
-const softButtons = ["F1 PAD MIX", "F2 BANK", "F3 MUTE", "F4 SOLO", "F5 FX SEND", "F6 OUTPUT"];
+const softButtons = ["F1 MUTE", "F2 SOLO", "F3 FX SEND", "F4", "F5", "F6"];
 
 export function MixScreen() {
   const padBank = useAppStore((state) => state.padBank);
@@ -20,7 +20,6 @@ export function MixScreen() {
   const toggleSelectedMixerSolo = useAppStore((state) => state.toggleSelectedMixerSolo);
   const toggleMixerChannelMute = useAppStore((state) => state.toggleMixerChannelMute);
   const toggleMixerChannelSolo = useAppStore((state) => state.toggleMixerChannelSolo);
-  const cycleSelectedMixerOutput = useAppStore((state) => state.cycleSelectedMixerOutput);
   const setPadFxBus = useAppStore((state) => state.setPadFxBus);
   const setPadFxSendLevel = useAppStore((state) => state.setPadFxSendLevel);
   const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
@@ -107,21 +106,26 @@ export function MixScreen() {
         </div>
 
         <div className="grid grid-cols-6 gap-[1.4%]">
-          {softButtons.map((button) => (
-            <button
-              key={button}
-              type="button"
-              onClick={() => {
-                if (button === "F3 MUTE") toggleSelectedMixerMute();
-                if (button === "F4 SOLO") toggleSelectedMixerSolo();
-                if (button === "F5 FX SEND") openFxSendWindow();
-                if (button === "F6 OUTPUT") cycleSelectedMixerOutput();
-              }}
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
-            >
-              {button}
-            </button>
-          ))}
+          {softButtons.map((button) => {
+            const isEmpty = button === "F4" || button === "F5" || button === "F6";
+            return (
+              <button
+                key={button}
+                type="button"
+                disabled={isEmpty}
+                onClick={() => {
+                  if (button === "F1 MUTE") toggleSelectedMixerMute();
+                  if (button === "F2 SOLO") toggleSelectedMixerSolo();
+                  if (button === "F3 FX SEND") openFxSendWindow();
+                }}
+                className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] ${
+                  isEmpty ? "bg-black/10 text-[#46533b]" : "bg-black/25 text-[#d8e3b7]"
+                }`}
+              >
+                {button}
+              </button>
+            );
+          })}
         </div>
       </div>
     </ScreenFrame>

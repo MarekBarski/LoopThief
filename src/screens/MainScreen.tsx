@@ -4,7 +4,7 @@ import { useHoldRepeat } from "../components/useHoldRepeat";
 import { EditableNumber } from "../components/EditableNumber";
 import { EditableText } from "../components/EditableText";
 
-const softButtons = ["F1 TC", "F2 SEQ", "F3 TRACK", "F4 PROGRAM", "F5 SONG", "F6 WINDOW"] as const;
+const softButtons = ["F1 TC", "F2 SEQ", "F3 TRACK", "F4 PROGRAM", "F5 SONG", "F6 TS"] as const;
 
 export function MainScreen() {
   const sequence = useAppStore((state) => state.sequence);
@@ -136,7 +136,12 @@ export function MainScreen() {
             </div>
             <div className="grid gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.16em]">
               <StatusBox label="TRANSPORT" value={status} active={isPlaying || isSequenceRecording || transportPhase === "COUNT_IN"} />
-              <StatusBox label="METRO" value={transportAnnouncement || clickStatus} active={metronomeEnabled} />
+              <StatusBox
+                label="METRO"
+                value={transportAnnouncement || clickStatus}
+                active={metronomeEnabled}
+                onClick={() => openUtilityWorkflow("COUNT_IN")}
+              />
             </div>
           </div>
         </section>
@@ -152,7 +157,7 @@ export function MainScreen() {
                 if (button === "F3 TRACK") openUtilityWorkflow("UTILITY_TRACK_MUTE");
                 if (button === "F4 PROGRAM") setActiveScreen("PROGRAM");
                 if (button === "F5 SONG") openUtilityWorkflow("SONG");
-                if (button === "F6 WINDOW") openTimeSigWindow();
+                if (button === "F6 TS") openTimeSigWindow();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
@@ -264,13 +269,34 @@ function BracketValue({
   );
 }
 
-function StatusBox({ label, value, active }: { label: string; value: string; active?: boolean }) {
-  return (
-    <div className={`border px-[8%] py-[7%] ${active ? "border-amber-300 bg-amber-200/10" : "border-[#46533b] bg-black/20"}`}>
+function StatusBox({
+  label,
+  value,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const className = `border px-[8%] py-[7%] text-left ${
+    active ? "border-amber-300 bg-amber-200/10" : "border-[#46533b] bg-black/20"
+  } ${onClick ? "cursor-pointer" : ""}`;
+  const content = (
+    <>
       <p className="text-[#91a477]">{label}</p>
       <p className={active ? "text-amber-100" : "text-[#eef6d8]"}>{value}</p>
-    </div>
+    </>
   );
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={className}>
+        {content}
+      </button>
+    );
+  }
+  return <div className={className}>{content}</div>;
 }
 
 function StepButton({ label, onClick }: { label: string; onClick: () => void }) {

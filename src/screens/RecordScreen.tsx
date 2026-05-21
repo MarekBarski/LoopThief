@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { EditableNumber } from "../components/EditableNumber";
 
 export function RecordScreen() {
   const isSamplingArmed = useAppStore((state) => state.isSamplingArmed);
@@ -25,7 +26,9 @@ export function RecordScreen() {
   const cycleInputSource = useAppStore((state) => state.cycleInputSource);
   const toggleMonitor = useAppStore((state) => state.toggleMonitor);
   const cycleThreshold = useAppStore((state) => state.cycleThreshold);
+  const setThreshold = useAppStore((state) => state.setThreshold);
   const adjustInputGain = useAppStore((state) => state.adjustInputGain);
+  const setInputGain = useAppStore((state) => state.setInputGain);
   const importWavFile = useAppStore((state) => state.importWavFile);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -49,12 +52,21 @@ export function RecordScreen() {
         <div className="grid min-h-0 grid-cols-[0.95fr_1.05fr] gap-[12px] overflow-hidden">
           <section className="grid min-h-0 grid-cols-2 content-start gap-x-[14px] gap-y-[10px] overflow-hidden border border-[#46533b] bg-black/20 p-[14px] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
             <Info label="SOURCE" value={inputSource} />
-            <Info label="THRESHOLD" value={threshold === "OFF" ? "OFF" : `${threshold} dB`} />
+            <ThresholdInfo
+              value={threshold}
+              onCommit={(v) => setThreshold(Math.round(v))}
+              onCycle={cycleThreshold}
+            />
             <Info label="MONITOR" value={monitorEnabled ? "ON" : "OFF"} />
             <Info label="SAMPLE LEN" value={sampleLength} />
             <Info label="FREE MEM" value={freeMemory} />
             <Info label="SAMPLE NAME" value={sampleName} />
-            <GainInfo value={`${inputGain >= 0 ? "+" : ""}${inputGain} dB`} onMinus={() => adjustInputGain(-3)} onPlus={() => adjustInputGain(3)} />
+            <GainInfo
+              value={inputGain}
+              onMinus={() => adjustInputGain(-3)}
+              onPlus={() => adjustInputGain(3)}
+              onCommit={(v) => setInputGain(Math.round(v))}
+            />
             <Info label="STATUS" value={samplingStatus} />
             <Info label="IMPORT" value={importStatus} />
             <Info label="IMPORT MSG" value={importMessage} />
@@ -124,15 +136,69 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
-function GainInfo({ value, onMinus, onPlus }: { value: string; onMinus: () => void; onPlus: () => void }) {
+function GainInfo({
+  value,
+  onMinus,
+  onPlus,
+  onCommit,
+}: {
+  value: number;
+  onMinus: () => void;
+  onPlus: () => void;
+  onCommit: (newValue: number) => void;
+}) {
   return (
     <div className="grid gap-[5%]">
       <span className="text-[#91a477]">INPUT GAIN</span>
       <span className="flex min-w-0 items-center gap-[8px] text-[#eef6d8]">
-        <button type="button" onClick={onMinus} className="border border-[#46533b] px-[6px] text-[#d8e3b7]">-</button>
-        <span>{value}</span>
-        <button type="button" onClick={onPlus} className="border border-[#46533b] px-[6px] text-[#d8e3b7]">+</button>
+        <button type="button" tabIndex={-1} onClick={onMinus} className="border border-[#46533b] px-[6px] text-[#d8e3b7]">-</button>
+        <EditableNumber
+          value={value}
+          format={(n) => `${n >= 0 ? "+" : ""}${n} dB`}
+          min={-24}
+          max={24}
+          allowNegative
+          onCommit={onCommit}
+          ariaLabel="INPUT GAIN"
+        />
+        <button type="button" tabIndex={-1} onClick={onPlus} className="border border-[#46533b] px-[6px] text-[#d8e3b7]">+</button>
       </span>
+    </div>
+  );
+}
+
+function ThresholdInfo({
+  value,
+  onCommit,
+  onCycle,
+}: {
+  value: number | "OFF";
+  onCommit: (newValue: number) => void;
+  onCycle: () => void;
+}) {
+  return (
+    <div className="grid min-w-0 gap-[4px]">
+      <span className="text-[#91a477]">THRESHOLD</span>
+      {value === "OFF" ? (
+        <button
+          type="button"
+          onClick={onCycle}
+          className="truncate text-left text-[#eef6d8]"
+          title="Click to enable threshold"
+        >
+          OFF
+        </button>
+      ) : (
+        <EditableNumber
+          value={value}
+          format={(n) => `${n} dB`}
+          min={-60}
+          max={-1}
+          allowNegative
+          onCommit={onCommit}
+          ariaLabel="THRESHOLD"
+        />
+      )}
     </div>
   );
 }
