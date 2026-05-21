@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
-import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { lcdSoftkeyHeight } from "./lcdLayout";
 import { EditableNumber } from "../components/EditableNumber";
 
 const softButtons = ["F1 INSERT", "F2 DELETE", "F3 REPEAT", "F4 MOVE", "F5 CONVERT", "F6 EXIT"];
@@ -23,6 +24,31 @@ export function SongScreen() {
   const setSongStepRepeats = useAppStore((state) => state.setSongStepRepeats);
   const setSongStepBars = useAppStore((state) => state.setSongStepBars);
   const setSongTotalBars = useAppStore((state) => state.setSongTotalBars);
+  const exportSongToWav = useAppStore((state) => state.exportSongToWav);
+
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportName, setExportName] = useState("song_export");
+  const [exportStatus, setExportStatus] = useState<"idle" | "rendering" | "done" | "error">("idle");
+  const [exportMessage, setExportMessage] = useState("");
+
+  const handleExport = async () => {
+    setExportStatus("rendering");
+    setExportMessage("Rendering…");
+    const result = await exportSongToWav(exportName);
+    if (result.ok) {
+      setExportStatus("done");
+      setExportMessage(`Exported ${result.filename}`);
+    } else {
+      setExportStatus("error");
+      setExportMessage(result.reason);
+    }
+  };
+
+  const closeExport = () => {
+    setExportOpen(false);
+    setExportStatus("idle");
+    setExportMessage("");
+  };
 
   const selectedStep = songSteps[selectedSongStepIndex] ?? songSteps[0];
   const currentStep = songSteps[currentSongStepIndex] ?? songSteps[0];
@@ -37,13 +63,16 @@ export function SongScreen() {
 
   return (
     <ScreenFrame title="SONG" subtitle="MPC-style song mode">
-      <div className="grid h-full gap-[12px]" style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}>
-        <div className="grid min-h-0 grid-cols-[1.08fr_0.82fr_0.9fr] gap-[2.3%] overflow-hidden">
+      <div className="relative flex h-full min-h-0 flex-col gap-[12px]">
+        <div
+          className="grid min-h-0 flex-1 grid-cols-[1.08fr_0.82fr_0.9fr] gap-[2.3%] overflow-hidden"
+          style={{ gridTemplateRows: "minmax(0, 1fr)" }}
+        >
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
             <div className="grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] border-b border-[#46533b] px-[4%] py-[3%] text-[clamp(9px,0.7vw,11px)] text-[#91a477]">
               <span>STEP</span><span>SEQ</span><span>REPEATS</span><span>BARS</span>
             </div>
-            <div className="grid content-start">
+            <div className="grid content-start min-h-0 overflow-y-auto">
               {songSteps.map((step, index) => {
                 const sequence = sequences.find((item) => item.id === step.sequenceId);
                 const active = index === selectedSongStepIndex;
@@ -81,7 +110,7 @@ export function SongScreen() {
             </div>
           </section>
 
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid min-h-0 content-start gap-[10px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
             <div className="grid gap-[4%]">
               <span className="text-[#91a477]">TOTAL BARS</span>
               <EditableNumber
@@ -99,7 +128,7 @@ export function SongScreen() {
             <Info label="LIVE TRACKS" value={`${String(liveTrackCount).padStart(2, "0")}/${String(performanceTracks.length).padStart(2, "0")}`} />
           </section>
 
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid min-h-0 content-start gap-[10px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
             <Info label="SELECTED STEP" value={String(selectedSongStepIndex + 1).padStart(2, "0")} />
             <Info label="SEQUENCE" value={sequences.find((item) => item.id === selectedStep.sequenceId)?.name ?? "---"} />
             <Info label="REPEATS" value={String(selectedStep.repeats).padStart(2, "0")} />
@@ -111,10 +140,20 @@ export function SongScreen() {
               <Action label="UP" onClick={() => moveSelectedSongStep(-1)} />
               <Action label="DOWN" onClick={() => moveSelectedSongStep(1)} />
             </div>
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
+              className="mt-[6px] border border-amber-300 bg-amber-200/10 px-[6%] py-[8%] text-center text-[clamp(10px,0.86vw,13px)] font-semibold tracking-[0.18em] text-amber-100 hover:bg-amber-200/20"
+            >
+              WAV
+            </button>
           </section>
         </div>
 
-        <div className="grid grid-cols-6 gap-[1.4%]">
+        <div
+          className="grid flex-none grid-cols-6 gap-[1.4%]"
+          style={{ height: lcdSoftkeyHeight }}
+        >
           {softButtons.map((button) => (
             <button
               key={button}
@@ -133,6 +172,53 @@ export function SongScreen() {
             </button>
           ))}
         </div>
+        {exportOpen && (
+          <div className="absolute inset-0 z-30 grid place-items-center bg-black/55 p-[5%]">
+            <section className="w-[min(440px,80%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.6)]">
+              <p className="mb-[12px] text-[#eef6d8]">EXPORT SONG TO WAV</p>
+              <label className="grid grid-cols-[1fr_1.4fr] items-center gap-[10px]">
+                <span className="text-[#91a477]">FILENAME</span>
+                <input
+                  type="text"
+                  value={exportName}
+                  onChange={(event) => setExportName(event.target.value)}
+                  disabled={exportStatus === "rendering"}
+                  className="min-w-0 border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+                />
+              </label>
+              <p className="mt-[10px] text-[10px] text-[#91a477]">
+                48 kHz · 16-bit · stereo · 3 s tail · master volume applied. FX bus
+                rendering not in MVP scope (deferred).
+              </p>
+              {exportMessage && (
+                <p
+                  className={`mt-[10px] text-[10px] ${
+                    exportStatus === "error" ? "text-red-300" : exportStatus === "done" ? "text-amber-200" : "text-[#d8e3b7]"
+                  }`}
+                >
+                  {exportMessage}
+                </p>
+              )}
+              <div className="mt-[14px] grid grid-cols-2 gap-[10px]">
+                <button
+                  type="button"
+                  onClick={() => void handleExport()}
+                  disabled={exportStatus === "rendering"}
+                  className="border border-amber-300 bg-amber-200/10 px-[10px] py-[8px] text-amber-100 hover:bg-amber-200/20 disabled:opacity-50"
+                >
+                  {exportStatus === "rendering" ? "RENDERING…" : "DO IT"}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeExport}
+                  className="border border-[#46533b] bg-black/25 px-[10px] py-[8px] text-[#d8e3b7] hover:border-amber-300"
+                >
+                  {exportStatus === "done" ? "CLOSE" : "CANCEL"}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </ScreenFrame>
   );

@@ -49,6 +49,7 @@ type PlayOptions = {
   envelope?: Envelope;
   sustainMs?: number;
   fxRouting?: VoiceFxRouting;
+  loop?: boolean;
 };
 
 type StopOptions = { releaseMs?: number };
@@ -166,6 +167,11 @@ class SamplerEngine {
     const filter = filterOptions ? this.context.createBiquadFilter() : null;
     source.buffer = buffer;
     source.playbackRate.value = sample.playbackRate ?? 1;
+    if (options.loop) {
+      source.loop = true;
+      source.loopStart = offset;
+      source.loopEnd = offset + duration;
+    }
     channelGain.gain.value = clamp(options.gain, 0, 2);
     pan.pan.value = clamp(options.pan, -1, 1);
     // Build source → [filter?] → envelopeGain → channelGain → pan
@@ -214,7 +220,12 @@ class SamplerEngine {
       }
       this.voices.delete(voice);
     };
-    source.start(0, offset, duration);
+    if (options.loop) {
+      // Looping voices play indefinitely; duration limit would override loop.
+      source.start(0, offset);
+    } else {
+      source.start(0, offset, duration);
+    }
 
     if (options.sustainMs && options.sustainMs > 0) {
       const releaseMs = voice.envelopeDecayMs > 0 ? voice.envelopeDecayMs : MIN_RAMP_MS * 4;

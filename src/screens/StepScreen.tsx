@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { isPadAssigned, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
-import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { lcdSoftkeyHeight } from "./lcdLayout";
 import { useHoldRepeat } from "../components/useHoldRepeat";
 import { EditableNumber } from "../components/EditableNumber";
 
@@ -90,8 +90,11 @@ export function StepScreen() {
 
   return (
     <ScreenFrame title="STEP" subtitle="Event edit">
-      <div className="grid h-full gap-[12px]" style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}>
-        <div className="grid min-h-0 grid-cols-[1.22fr_0.92fr_0.72fr] gap-[2.3%] overflow-hidden">
+      <div className="flex h-full min-h-0 flex-col gap-[12px]">
+        <div
+          className="grid min-h-0 flex-1 grid-cols-[1.22fr_0.92fr_0.72fr] gap-[2.3%] overflow-hidden"
+          style={{ gridTemplateRows: "minmax(0, 1fr)" }}
+        >
           <section className="grid min-h-0 grid-rows-[auto_auto_1fr] border border-[#46533b] bg-black/20">
             <button
               type="button"
@@ -127,7 +130,7 @@ export function StepScreen() {
               <span>TR</span>
               <span>M</span>
             </div>
-            <div className="grid content-start overflow-hidden">
+            <div className="grid content-start min-h-0 overflow-y-auto">
               {visibleEvents.map((event) => {
                 const trackMuted = performanceTracks.find((track) => track.name === event.trackId || track.id === event.trackId)?.muted ?? false;
                 const eventMuted = event.muted === true;
@@ -169,7 +172,7 @@ export function StepScreen() {
             </div>
           </section>
 
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
             <p className="text-[#91a477]">SELECTED EVENT {selectedEventId ?? "---"}</p>
             <StepNav label="EVENT" value={selectedEvent ? String(selectedTrackEventIndex + 1).padStart(3, "0") : "---"} onPrevious={previousStepEvent} onNext={nextStepEvent} />
             <StepNav label="TRACK" value={activeTrack} onPrevious={() => cycleStepTrack(-1)} onNext={() => cycleStepTrack(1)} />
@@ -260,7 +263,7 @@ export function StepScreen() {
             />
           </section>
 
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
             <Info label="BAR" value={barLabel} />
             <Info label="TC" value={timingCorrect} />
             <Info label="SWING" value={`${swing}%`} />
@@ -300,7 +303,10 @@ export function StepScreen() {
           </section>
         </div>
 
-        <div className="grid grid-cols-6 gap-[1.4%]">
+        <div
+          className="grid flex-none grid-cols-6 gap-[1.4%]"
+          style={{ height: lcdSoftkeyHeight }}
+        >
           <Softkey label="F1 VEL" onClick={() => { setEventEditMode("VELOCITY"); adjustSelectedEvent("velocity", 1); }} />
           <Softkey label="F2 OFFSET" onClick={() => { setEventEditMode("OFFSET"); adjustSelectedEvent("timingOffset", 1); }} />
           <Softkey label="F3 DUR" onClick={() => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", 1); }} />

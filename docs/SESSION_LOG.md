@@ -99,6 +99,631 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.R — 2026-05-21 — WAV export: diagnostic gain logging + NOTE ON gate-off + ONE SHOT envelope shape + FX SEND routing scaffold
+
+### What was attempted
+
+Marek reported the 22.P export was rendering 12–15 dB quieter than expected against pro sample sources. Audited the entire gain pipeline analytically (every multiplier from source PCM → WAV encoder); math predicted −3 to −6 dB max, leaving 6–9 dB unaccounted. Per Marek's GO, this session ships:
+
+1. **Diagnostic gain logging** — console output after every render so Marek can paste back per-event gain values and we can localize the missing dB.
+2. **NOTE ON gate-off** — explicit `source.stop()` scheduling for non-loop voices with recorded duration, mirroring real-time `softStopVoice`.
+3. **ONE SHOT envelope shape** — mirror real-time AD envelope (auto-decay after attack) when no recorded duration.
+4. **FX SEND routing scaffold** — per-voice FX bus routing wired in `scheduleSongEvent`, awaiting actual FX graph (deferred).
+
+### What worked
+
+**Diagnostic logging in `renderSongOffline`**:
+
+After `ctx.startRendering()`, the renderer scans the output buffer for peak Float32 magnitude and logs a collapsible console group:
+
+- Buffer dimensions (channels × frames × sampleRate)
+- Scheduled vs skipped event counts
+- Final buffer peak in both linear and dBFS
+- Master gain value
+- Offline ctx sampleRate
+- Up to 5 sample events with: pad, bank, event step, velocity, gainFromVelocity (vel/127), mixLevel, mixPan, channelGain.gain.value, source buffer sampleRate, source channel count, source PCM peak (sparse 1024-point scan)
+
+`scheduleSongEvent` now returns a `RenderDiagSample | null` instead of `void`. `null` = skipped (no assignment / no buffer / `assignment.assignment === "---"`). Caller pushes the first 5 successful captures into the diag array. Failure paths are now counted via `eventsSkipped` so Marek can spot silent skipping.
+
+**NOTE ON gate-off via source.stop**:
+
+Previous code only ramped envelope gain to 0 at `releaseStart + decayMs`. For default `decay = 100` (→ programValueToMs = 5000 ms), that's a 5-second linear fade. The sample remained audible at high amplitude for ~2–3 seconds past the event's recorded duration. Real-time engine uses the same envelope ramp BUT also calls `source.stop(now + ramp)` in `softStopVoice` — physically halting the buffer.
+
+Fix: when `sustainSec !== undefined`, compute `scheduledStopTime = releaseStart + decaySec + 0.02` and call `source.stop(scheduledStopTime)`. For non-loop voices that previously used `source.start(time, offset, duration)` with `duration = sample-region length`, switched to `source.start(time, offset)` + `source.stop(scheduledStopTime)` so the gate-off is determinative.
+
+**ONE SHOT envelope shape mirror**:
+
+Real-time `samplerEngine.applyEnvelope`:
+- NOTE ON: attack ramp 0→1, then HOLD at 1 (no auto-decay — manual release on noteOff).
+- ONE SHOT (anything not NOTE ON): attack ramp 0→1, then immediate decay ramp 1→0.
+
+My offline previously collapsed both into "linear release at sustainSec" regardless of mode. Updated to three explicit branches:
+
+1. `event.duration > 0` (recorded gate-off): release ramp at `releaseStart`, source.stop after.
+2. `assignment.mode === "ONE SHOT"` (no recorded duration): immediate decay ramp 1→0 right after attack.
+3. otherwise (NOTE ON without recorded duration): hold at 1 indefinitely; sample runs to natural end.
+
+**FX SEND routing — code wired**:
+
+`scheduleSongEvent` now accepts an optional `fxBusInputs?: Map<number, GainNode>` parameter. When provided and the event's pad has `assignment.fxBus !== 0`, the voice's post-pan signal routes either:
+
+- SEND mode (`bus.direct === true`): pan → master (dry) AND pan → `sendGain (fxSendLevel/100)` → busInput.
+- INSERT mode (`bus.direct === false`): pan → busInput only, no dry.
+
+Without the map (current state — engine not built yet), routing falls through to dry-only (current 22.P/Q behavior).
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek runs export, checks console, pastes back.
+- **FX bus rendering is NOT in this commit.** The scaffolding to PASS busInputs into scheduleSongEvent is in, but the offline FX engine itself isn't built yet. That requires:
+  - `fxEngine.ts` type refactor `AudioContext` → `BaseAudioContext` (~10 sites)
+  - Either: instantiable FxEngine with separate offline instance, or: factory `buildFxGraph(ctx, config) → { busInputs, masterOut }`
+  - A `configureFromState(state.fxBuses, state.masterFx, chainFlags)` walker
+  - Hook offline master gain through the FX master chain
+  - Estimated 250–300 LOC of careful work across two files
+  - Punted to 22.S per Marek's "A: commit this round" decision
+- **Master EQ + Compressor in offline render** also missing — same fxEngine refactor blocker.
+- **Choke groups in offline** still missing — no `getMuteStopGroups` equivalent.
+- **Swing in offline** still missing — `state.swing` not read by renderer.
+- **Source peak sparse scan** uses 1024 sample points instead of full buffer scan to keep the per-event cost down. Misses transients between sample points. Acceptable for diagnostic; if precision needed, switch to full scan.
+- **No fix to the actual 12 dB loss yet** — diagnostic round is intentional per Marek's GO. The console output from Marek's pro-sample export will identify which stage drops the dB.
+- **Math analysis** (done before this session) shows no obvious 12 dB loss in code — predicts −3 to −6 dB worst-case. The unaccounted 6–9 dB is the question the diagnostic logging is designed to answer.
+
+### Decisions made
+
+- Diagnostic-first round per Marek's explicit GO.
+- NOTE ON gate-off fix and ONE SHOT envelope mirror landed together — both are real audio-fidelity issues, both small.
+- FX SEND routing scaffold wired in renderer so the next session (22.S) only needs to build the FX graph and pass the map — minimal additional change to `scheduleSongEvent` at that point.
+- FX engine refactor deferred — too big for this round, and Marek's immediate test scenario (pro samples, no FX configured by default) doesn't depend on it.
+- Source PCM peak via sparse scan (1024 points) for diagnostic speed.
+
+### Open issues / followups
+
+- **Marek**: run a song export with pro samples, open browser console, paste the `[WAV export]` group output (and any per-event lines) back. With the per-stage gain values visible we'll see exactly where the dB go missing.
+- **22.S session**: build offline FX engine. Steps:
+  1. fxEngine.ts: change `AudioContext` types → `BaseAudioContext` everywhere.
+  2. Add `clone()` / `createOfflineInstance()` factory OR allow construction with `new FxEngine()` returning a fresh instance.
+  3. Walker function `configureFxFromState(engine, state)` that mirrors live config: `state.fxBuses[].blockA/blockB` effects + params + bypass + direct flag, `state.masterFx` EQ + Comp, chainFX1ToFX2 + chainFX3ToFX4 flags.
+  4. In `renderSongOffline`: instantiate offline FxEngine after ctx creation, configure from state, hook its master output to my master gain, build `Map<BusId, GainNode>` of bus inputs, pass to scheduleSongEvent.
+- **22.T session (after gain fix)**: choke groups + swing in offline render. Both small.
+- **Audit still missing items**: Master EQ + Compressor (fxEngine), choke groups, swing.
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `renderSongOffline`: added `diagSamples` collection, scheduled/skipped event counts, post-render console.groupCollapsed dump with buffer peak in dBFS + master gain + sampleRate + per-event diag rows.
+  - `scheduleSongEvent`: return type changed from `void` to `RenderDiagSample | null`; null on assignment-missing/buffer-missing paths.
+  - `scheduleSongEvent`: new `fxBusInputs?: Map<number, GainNode>` parameter; per-voice SEND/INSERT routing logic when bus assigned (currently no-op because caller doesn't pass the map yet).
+  - `scheduleSongEvent`: replaced single envelope shape with three: recorded duration → ramped release + source.stop, ONE SHOT no-duration → immediate AD, NOTE ON no-duration → hold-at-1.
+  - `scheduleSongEvent`: `source.stop(scheduledStopTime)` added for both loop AND non-loop voices when recorded duration is set.
+  - New `RenderDiagSample` type definition at file scope.
+
+---
+
+## Session 22.Q — 2026-05-21 — SONG WAV export: 16 LEVELS event resolution (silent hi-hats/bass fix)
+
+### What was attempted
+
+Marek reported the 22.P WAV export was missing hi-hats and bass — both were recorded in 16 LEVELS mode (VELOCITY for hats, TUNE for bass). Real-time playback voiced them correctly; the rendered WAV had silence in those tracks. Diagnose, then fix.
+
+### What worked
+
+**Diagnosis** (no code change first — surfaced root cause to Marek for confirmation):
+
+`StepEvent` fields after a 16 LEVELS recording from Session 22.O:
+
+```
+event.pad         = "P04"  ← source pad id (P-format, set from sourcePadId)
+event.padNumber   = 4
+event.padBank     = "A"    ← source bank
+event.sourcePad   = "A04"  ← bank+number format from state.sixteenLevelsSourcePad
+event.appliedParameter = "VELOCITY" | "TUNE" | "FILTER" | ...
+event.appliedValue, parameterValue, appliedFilterType, appliedFilterResonance
+event.velocity    = eventVelocity (= appliedValue when parameter === "VELOCITY")
+```
+
+Live playback `playStepEventFromState` uses `padFromEvent(event)` which returns `P${padNumber.padStart(2,"0")}` = `"P04"`. Match against `padAssignments["A"].find(p => p.pad === "P04")` → finds source pad's assignment → sample plays with 16 LEVELS overrides applied. Works.
+
+Offline renderer `scheduleSongEvent` (my 22.P code) used `const lookupPad = event.sourcePad ?? event.pad;`. For 16 LEVELS events, `event.sourcePad = "A04"` takes priority. `padAssignments["A"].find(p => p.pad === "A04")` → undefined because pads are stored as `"P04"`. Guard short-circuits: `if (!assignment || assignment.assignment === "---" || !mix) return;` → event silent in WAV.
+
+For non-16-LEVELS events: `event.sourcePad = "P05"` (same as `event.pad`), lookup works. So regular pad-triggered events render fine; only 16 LEVELS-recorded events fail.
+
+That EXACTLY matched Marek's symptom (kick fine, hi-hat / bass missing — hi-hats + bass were 16 LEVELS captures).
+
+**Fix** (single line):
+
+Replaced `const lookupPad = event.sourcePad ?? event.pad;` with `const lookupPad = padFromEvent(event);` in `scheduleSongEvent`. Now mirrors live playback's `padFromEvent` resolution. Lookup returns the source pad's assignment in correct `"P04"` format.
+
+The rest of the 16 LEVELS override pipeline (TUNE → playbackRate via tuneOverride; FILTER → filter Biquad via cutoff/type/resonance overrides; VELOCITY → already in `event.velocity` from 22.O recording; ATTACK/DECAY → envelope overrides) was already correctly wired in 22.P. Only the lookup key was wrong.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **22.P's offline renderer had a stale assumption about `event.sourcePad`'s format.** The field's "bank+number" format ("A04") was a recording artifact preserved from `state.sixteenLevelsSourcePad` (which is itself a bank-prefixed identifier used by 16 LEVELS UI), NOT a pad-id. Mistakenly using it as a lookup key against `padAssignments` was the bug. Lesson: when offline-rendering against existing live-playback data, mirror live playback's field-access path verbatim instead of inventing a fallback chain.
+- **No runtime test by me.** Marek physically verifies. Especially:
+  - 16 LEVELS VELOCITY events play with their per-variation velocity in the WAV.
+  - 16 LEVELS TUNE events play with their per-variation pitch in the WAV.
+  - Non-16-LEVELS events continue to render (regression check).
+- **`event.sourcePad` is now effectively unused for lookup.** It's still set by the recording branch and persists in saved projects, but the renderer / live playback both ignore it for lookup purposes (only `event.padNumber` + `event.padBank` matter). Could be removed in a future cleanup; harmless to keep.
+- **My 22.P session log claimed the renderer "mirrored live playback"** — it did for most of the pipeline (filter / envelope / pan / channel gain), but I diverged on the pad lookup specifically. Reviewing the live playback path FULLY before writing the offline mirror would have caught this. Lesson noted.
+
+### Decisions made
+
+- Single-line fix using `padFromEvent(event)` to mirror live playback exactly.
+- No removal of legacy `event.sourcePad` field — backward-compatible with any saved project that has it.
+- Bundle this fix into the existing uncommitted commit (22.L+M+N+O+P+Q) per Marek's "wszystko razem jako jeden gruby commit" instruction.
+
+### Open issues / followups
+
+- Marek runtime test:
+  - Song with kick (regular) + hi-hat (16 LEVELS VELOCITY) + bass (16 LEVELS TUNE) → all three audible in WAV at correct velocities/pitches.
+  - Live playback regression — nothing changed in live path so should still work.
+- Cleanup: remove `event.sourcePad` if confirmed unused everywhere else (separate session).
+- FX bus rendering still deferred from 22.P (separate session: fxEngine BaseAudioContext refactor).
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - `scheduleSongEvent` — one-line change: `const lookupPad = event.sourcePad ?? event.pad;` → `const lookupPad = padFromEvent(event);`. Inline comment explains why.
+
+---
+
+## Session 22.P — 2026-05-21 — SONG WAV export: offline render + WAV download dialog
+
+### What was attempted
+
+Add a WAV export button in the SONG screen right panel. Click opens a dialog with a filename input and DO IT / CANCEL buttons. DO IT renders the current song via `OfflineAudioContext` and triggers a `.wav` download. Per Marek's spec: master volume + per-pad mixer + tune + filter + envelope + LOOP + recorded NOTE ON duration all respected; FX bus rendering deferred (out of MVP scope per fxEngine being tied to a concrete AudioContext).
+
+### What worked
+
+**Pre-existing infrastructure reused:**
+
+- `src/disk/wavCodec.ts` already had `encodeAudioBufferToWav(buffer: AudioBuffer): ArrayBuffer` — 16-bit PCM RIFF encoder. Imported and reused as-is.
+- `downloadBytes(filename, bytes, mimeType)` helper in `useAppStore.ts` triggers a browser download via `URL.createObjectURL` + anchor click. Reused.
+- `resolveAssignedSample`, `getProgramForPlayback`, `programValueToMs`, `eventStepToTicks`, `getSampleBuffer` — every helper the live playback path uses already exists. The renderer just calls them.
+
+**New: `renderSongOffline(state, opts)` in `useAppStore.ts`**
+
+Walks `state.songSteps`, expands repeats, schedules every `StepEvent` from the matching `Sequence.events` array at the correct offset. For each event:
+
+- Resolves the pad's assignment (program-aware via `getProgramForPlayback`) and mixer channel (level, pan).
+- Resolves the source sample's `AudioBuffer` from `sampleLibrary` (existing AudioBuffers are spec'd to be context-independent at use time, so reused directly in the offline context — browser auto-resamples if source rate ≠ offline ctx rate).
+- Computes playback rate from `tune + fineTune/100` semitones.
+- Builds per-voice graph mirroring `samplerEngine.playInternal`: `BufferSource → [filter?] → envelopeGain → channelGain → pan → masterGain → ctx.destination`.
+- Applies envelope: linear attack ramp from 0→1 over `attackMs`, sustain at 1 if no event duration, or release ramp to 0 starting at `attackSec + sustainSec` over `decayMs` if event duration > 0.
+- LOOP voices: `source.loop = true`, `loopStart/loopEnd`, `source.start(time, offset)` (no duration arg so it keeps looping), explicit `source.stop` scheduled past the envelope release.
+- Non-loop voices: `source.start(time, offset, duration)`.
+- 16 LEVELS appliedParameter overrides take precedence over assignment defaults for TUNE / FILTER / ATTACK / DECAY / VELOCITY.
+- Master volume applied via a `masterGain` set to `settingsValues.masterVolume / 100` before destination.
+
+Total song length = sum of `seq.lengthBars × 384 × repeats` ticks across all song steps; duration in seconds = totalTicks / (96 × bpm / 60). Plus `tailSeconds` (default 3s) of silence so envelope decays don't get cut.
+
+**New store action: `exportSongToWav(filename): Promise<{ ok: true, filename } | { ok: false, reason }>`**
+
+- Guards against empty song.
+- Calls `renderSongOffline`, encodes via `encodeAudioBufferToWav`, sanitizes filename (`[^A-Za-z0-9._-]/g → _`), triggers download via `downloadBytes`.
+- Returns a result object so the UI can show success / failure feedback.
+
+**SongScreen UI**:
+
+- Right panel gets a new full-width `WAV` button below the existing 6-button grid (SEQ ±, REP ±, UP, DOWN). Styled with amber-tinted border + bg (matches the LOAD PROJECT button pattern from DISK).
+- Outer container gets `relative` so the export dialog can be absolutely positioned over the LCD content.
+- Dialog overlay: filename input, format hint line, status message line, DO IT / CANCEL buttons.
+  - DO IT calls `exportSongToWav(filename)`; updates `exportStatus` state to `"rendering" / "done" / "error"`.
+  - Filename input is disabled while rendering.
+  - On success the right button label flips from "CANCEL" to "CLOSE".
+- Status messages: "Rendering…" → "Exported {filename}.wav" or "{reason}".
+- F-keys unchanged (F1 INSERT / F2 DELETE / F3 REPEAT / F4 MOVE / F5 CONVERT / F6 EXIT) per Marek's spec.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies. Especially the duration math, LOOP voices stopping at duration end, NOTE ON events gating at duration, 16 LEVELS variation playback in export.
+- **FX BUS RENDERING IS NOT IN THIS EXPORT.** `fxEngine.ts` is bound to a concrete `AudioContext` (private context field, type signatures use `AudioContext`). To support FX in offline render, `fxEngine` would need to be refactored to accept `BaseAudioContext` (the common ancestor of `AudioContext` and `OfflineAudioContext`). Reverb tails / delays / EQ / etc. will be ABSENT from the exported WAV. Marek's test #7 ("FX bus enabled - reverb tails audible w końcu") will FAIL. Surfaced in the dialog format hint and in this log. Follow-up session: parameterize `fxEngine` over `BaseAudioContext`.
+- **Mixed time-signature sequences**: ticks-per-sequence is computed as `lengthBars × 384` assuming 4/4. Non-4/4 sequences will have wrong total duration in the export. Acceptable for MVP since most LoopThief sessions are 4/4; non-4/4 was flagged as "partially supported" in `MainScreen.tsx` already.
+- **Probability < 100 events**: re-rolled at export time via `Math.random()`. Each export is a different "take" for stochastic events. Per MPC convention (no seeded RNG) this is acceptable.
+- **Sample-rate mismatch**: offline ctx is hardcoded 48 kHz. Source AudioBuffers may be 44.1 / 48 / 96 kHz depending on import source. Browser implicit resampling on `AudioBufferSourceNode` handles this — slight quality hit on resampled sources, acceptable for MVP. Could be improved by matching ctx rate to the most-used source rate or by pre-resampling.
+- **AudioBuffer reuse across contexts**: per Web Audio spec, AudioBuffer is independent of its decoding context once created, so reusing buffers from the live `samplerEngine`'s context in the new `OfflineAudioContext` is valid. Verified empirically by build success; runtime verification is Marek's.
+- **LOOP voices explicit stop**: scheduled at `startTime + max(attackSec, sustainSec) + decaySec + 0.05s` to ensure they don't leak past the envelope release into the tail silence.
+- **Source buffer length vs sample region**: `resolveAssignedSample` returns fractional start/end. Multiplied by `buffer.duration` to get seconds for `source.start` offset and duration.
+- **Did NOT use `applyEnvelope` helper from samplerEngine** — replicated the envelope shape inline because samplerEngine's helper is method-bound to its private context. Adding 5 lines of inline ramp logic is cleaner than exporting and reusing the method.
+- **Master volume from settings**, not from the live `samplerEngine.masterVolume`. Same value source; settings are the source of truth and persist via localStorage.
+- **No progress reporting during render** — for songs longer than a few seconds the user sees "Rendering…" then "Done". A long song may freeze the UI briefly during `startRendering()`. Acceptable for MVP; could add a progress indicator via `suspend/resume` later.
+- **Single commit strategy**: per Marek's direction "Marek powiedział że nie chce splitów - wszystko razem z song export jako jeden gruby commit 22.P". Bundling 22.L (scroll + LOOP per pad + 16 LEVELS Note On release) + 22.M (flex column outer) + 22.N (real overflow fix with minmax + per-section min-h-0) + 22.O (sequencer real noteOff duration) + 22.P (WAV export) into one commit.
+
+### Decisions made
+
+- Offline render mirrors `samplerEngine.playInternal` voice-by-voice rather than reusing the live engine. Cleaner separation between live playback and offline render.
+- FX bus deferred per scope/effort tradeoff. Documented prominently in dialog hint + session log so user is aware.
+- WAV format: 16-bit PCM, 48 kHz, stereo — matches `encodeAudioBufferToWav` output. Bit-depth dropdown deferred (mentioned as optional in spec).
+- 3-second tail default. Matches typical reverb decay; safe even when FX is off.
+- Filename sanitization: strip everything except `A-Za-z0-9._-` to avoid OS / Tauri filesystem issues.
+- Right panel WAV button styled amber to match the existing LOAD PROJECT visual hierarchy.
+
+### Open issues / followups
+
+- Marek runtime test:
+  - Build a 2-step song (SEQ01 × 2, SEQ02 × 1) at BPM 120 → expect ~16s + 3s tail ≈ 19s WAV.
+  - Open in VLC / Audacity → verify audio matches live playback (minus FX).
+  - LOOP pad with recorded duration → loop bounded by duration in the export.
+  - NOTE ON pad with recorded duration → sample gates off at duration end.
+  - 16 LEVELS VELOCITY-mode events → variations play at their applied velocity.
+- **FX bus offline render** — separate session: refactor `fxEngine` to `BaseAudioContext`, hook into `renderSongOffline`'s voice graph.
+- Progress indicator for long-song renders.
+- Optional bit-depth dropdown (24-bit / 32-float would need a wavCodec update).
+- Tauri native save dialog instead of browser download for the .exe build (currently `downloadBytes` uses `URL.createObjectURL` which works in WebView2 too but goes through the browser's default download chrome — a Tauri-side `dialog.save` would be nicer).
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - Added `exportSongToWav` action signature + implementation that calls `renderSongOffline`, encodes via `encodeAudioBufferToWav`, sanitizes filename, triggers download.
+  - Added `renderSongOffline(state, opts)` helper at file bottom: total-ticks calc, OfflineAudioContext setup, master gain, walk songSteps × repeats × events, schedule via `scheduleSongEvent`.
+  - Added `scheduleSongEvent` helper: per-voice graph (source → filter → envelopeGain → channelGain → pan → destination), envelope ramps, LOOP setup, source start/stop.
+  - Imported `encodeAudioBufferToWav` from `../disk/wavCodec`.
+- `src/screens/SongScreen.tsx`:
+  - Added `useState` for `exportOpen`, `exportName`, `exportStatus`, `exportMessage`.
+  - Added `handleExport` async wrapper around the store action.
+  - Right panel gains a full-width amber `WAV` button below UP / DOWN.
+  - Outer flex container gets `relative` for absolute-positioned dialog.
+  - New dialog overlay (`absolute inset-0 z-30 grid place-items-center`) with filename input, format hint, status line, DO IT + CANCEL buttons.
+  - F-keys unchanged.
+
+---
+
+## Session 22.O — 2026-05-21 — Sequencer recording: real noteOff duration (AS PLAYED)
+
+### What was attempted
+
+Marek reported that triggering NOTE ON pads during REC produced "wydmuszka" events with duration 0 / infinite — sample played but sequence never captured the held duration, and on playback the NOTE ON gate-off had no `duration` to schedule against so notes ran forever. Particularly bad with 16 LEVELS + LOOP: held bass note kept looping after release because the recorded event had no duration to bound it.
+
+Per MPC "AS PLAYED" canonical: `StepEvent.duration` = real held tick count (release_tick − press_tick). Implement that.
+
+### What worked
+
+**Diagnosis** of the existing pipeline:
+
+- `triggerPad` had two recording branches (default at line ~1660, 16 LEVELS at ~1573). Both created a `StepEvent` IMMEDIATELY on press and added it to `state.stepEvents`. Both explicitly passed `duration: 0, length: 0` to `createStepEventAtPosition`, which overrode the helper's gate-based default and committed duration 0.
+- `releasePad` did NOT update any recorded event — it only stopped the NOTE ON voice via `samplerEngine.stopVoiceGroup`. So the recording stage never saw the noteOff timestamp.
+- `playStepEventFromState` (line 5935) already computes `sustainMs = (duration / 96) * (60000 / bpm)` when `eventDuration > 0`. So the playback side IS already wired to gate-off via duration — the missing piece was the recording side capturing real duration.
+
+**Architectural fix** — defer event creation to release time:
+
+New module state:
+```ts
+type ActiveRecordingNote = { startTickAbsolute, startStepIndex, startTickOffset,
+                              velocity, bank, pad, sourcePad, programId, trackId,
+                              trackName, sourceAssignment,
+                              appliedParameter, appliedValue, parameterValue,
+                              appliedFilterType, appliedFilterResonance };
+const activeRecordingNotes = new Map<string, ActiveRecordingNote>();
+```
+
+Helper `captureAbsoluteTick(state)` computes the current absolute tick position from `state.currentStepIndex * 24 + tickOffset` where `tickOffset` is derived from `performance.now() - sequenceStepStartedAt` (mirrors existing `getRecordedEventPosition`).
+
+**`triggerPad` default branch** (now line ~1660):
+- Removed the immediate `createRecordedPadEvent` + `state.stepEvents` append.
+- When recording is active, store an `ActiveRecordingNote` in the map keyed by `${physicalBank}:${physicalPad}`.
+- `lastAction` shows `REC HOLD …` / `OVERDUB HOLD …` while held (commit message changes to `REC ADD` / `OVERDUB ADD` on release).
+- Audio side (`playPadFromState` / `playSixteenLevelsVariation`) continues to fire immediately so the user still hears the sample.
+
+**`triggerPad` 16 LEVELS branch** (line ~1573):
+- Same pattern. Active note captures both the physical press location (key) and the source pad (`active.bank` / `active.pad` = source for event creation; `active.sourcePad` = source pad id), plus all 16 LEVELS overlays (`appliedParameter`, `appliedValue`, etc.).
+
+**`releasePad`**:
+- Existing NOTE ON voice-stop logic preserved (looks up source assignment when in UTILITY_16_LEVELS).
+- New: look up `activeRecordingNotes.get(${state.padBank}:${pad})`. If found and recording is still active, compute:
+  ```
+  endAbsTick = captureAbsoluteTick(state).absTick
+  rawDuration = endAbsTick >= startTickAbsolute
+                  ? endAbsTick - startTickAbsolute
+                  : seqTotalTicks - startTickAbsolute   // wrap → truncate
+  duration = clamp(rawDuration, 1, seqTotalTicks - startTickAbsolute)
+  ```
+- Build the `StepEvent` via `createStepEventAtPosition(active.startStepIndex, active.startTickOffset, active.pad, active.velocity, 100, { ...overlays, duration, length: duration, variation: "REC" })`, sort + commit to `state.stepEvents` and `state.sequences`.
+- If the user releases AFTER recording stops (active map was cleared at stop), the lookup yields nothing and the release falls through to the existing tail (`markPadTriggered → false`).
+
+**Clear active map on stop**:
+- `togglePlay` (stop branch): `activeRecordingNotes.clear()`.
+- `stopPlayback`: same.
+- `toggleSequenceRecording` (stop branch, when not overdubbing): same.
+
+**Audio playback gate-off** — already wired via existing `playStepEventFromState` → `samplerEngine.play({ sustainMs })`. With real durations being recorded now, NOTE ON samples are gated off at `duration` end on playback. LOOP voices receive `sustainMs` too — softStop fires after sustainMs and stops the looping voice (samplerEngine sustainMs logic from earlier sessions).
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies (this is the most important one).
+- **The "active note overwrite if retrigger same pad while held" edge case** is handled implicitly by `Map.set` — second press silently overwrites the first active note, the first never commits. Acceptable for MVP; MPC behavior differs (some MPCs commit the previous note before starting new). If Marek wants strict "commit-on-retrigger", add `if (activeRecordingNotes.has(key)) finalizeFromCurrentState(...)` before the new set.
+- **Mouse vs keyboard release** — both pad triggers route through `triggerPad` / `releasePad` in the existing keyboard + mouse handlers. The recording finalization works the same way. But: if a pad is triggered via `samplerEngine` preview path that bypasses `triggerPad` (e.g., CHOP preview, sample-edit preview), no recording happens. That's correct — recording only fires through the user's intended pad-press path.
+- **Held across `stopPlayback`** — recording stops, active map clears, the audio voice keeps going (NOTE ON sample is being held by the user). Release then sees no active note → no event committed. Audio still gates off properly via the existing NOTE ON release path. Behaviour matches MPC.
+- **`getSequenceTotalTicks` wraps correctly for non-4/4 time signatures** — the helper already accounts for per-bar time-signature changes, so the duration truncation logic works for variable-meter sequences too.
+- **`createRecordedPadEvent` and `createStepEventFromIndex` are now unused** in `triggerPad`'s recording branches. Top-level functions, TypeScript doesn't warn about them. Left in place because they may be referenced from other paths (e.g. manual event creation via `+ ADD EVENT` button in STEP screen). Verified `createStepEventFromIndex` is still called at one other site; `createRecordedPadEvent` is now dead code but kept to avoid touching adjacent edits.
+- **`lastAction` text change**: was `REC REPLACE`/`OVERDUB ADD` on press; now `REC HOLD`/`OVERDUB HOLD` on press + `REC ADD`/`OVERDUB ADD` on release. If anything in the app keys off the exact `lastAction` string, it could break — quick grep shows only the LCD HUD displays it, so cosmetic only.
+- **Audio gate-off at duration end for ONE SHOT pads** — `sustainMs` is set regardless of mode in `playStepEventFromState`. For ONE SHOT samples this softStops the voice at duration end, which is MPC-faithful (event duration affects the gate, mode controls whether the sample naturally plays through). If you want ONE SHOT to ignore duration on playback, that's a follow-up.
+- **Did NOT test runtime myself** — particularly the cross-sequence-loop hold case (press at bar 4 step 14, release after sequence wraps to bar 1). The code truncates duration to `seqTotalTicks - startTickAbsolute` per MPC's "Truncate Duration: To Sequence Length" default.
+
+### Decisions made
+
+- Defer-on-release approach (vs press-create-with-placeholder-then-update) — simpler to reason about, no risk of leaving zombie events if release never happens.
+- Active note keyed by physical press location (`${state.padBank}:${selectedPad}`), so 16 LEVELS variation pads commit to the right source pad even when bank or mode changes mid-hold.
+- Duration cap = `seqTotalTicks - startTickAbsolute` (MPC "Truncate To Sequence Length" default). Wrap-around (release after seq loop) → same cap. No alternative "Multiply" or "Truncate To Next Event" handling — MVP scope.
+- Release with no recording in progress (or after stop) falls back to existing markPadTriggered logic — no spurious event.
+- `lastAction` HUD shows `REC HOLD …` while pad is held during record. Visual feedback that the press was captured.
+
+### Open issues / followups
+
+- Marek runtime test (per spec):
+  - PROGRAM: P01 NOTE ON, REC+PLAY, hold 1/4 → STEP shows event with duration 24 ticks; playback gates off at 1/4.
+  - Same with LOOP=ON: held loops; playback respects duration.
+  - 16 LEVELS+LOOP+NOTE ON: held variation pad 1/8 → event duration 12 ticks; playback loops 1/8 then stops.
+  - One Shot mode: event recorded, duration captured, sample plays full on playback (or gates per current sustainMs behavior — see pitfall above).
+  - Edge case: hold across sequence loop boundary → duration truncated to end of sequence.
+  - Edge case: RECORD stops while still holding → no event committed; release after stop is silent.
+- Retrigger-while-held: if MPC parity is wanted (commit previous on second press), add the explicit finalize step.
+- `createRecordedPadEvent` is now dead code; remove in cleanup pass.
+- ONE SHOT duration gate-off: decide whether to honor `sustainMs` on ONE SHOT voices or ignore it (currently honors).
+
+### Files modified
+
+- `src/store/useAppStore.ts`:
+  - Added `ActiveRecordingNote` type, `activeRecordingNotes` Map, `activeNoteKey` + `captureAbsoluteTick` helpers (module top).
+  - `triggerPad` default branch (post-PERFORMANCE block): now stores `ActiveRecordingNote` instead of creating `StepEvent` immediately; `lastAction` shows `REC HOLD …`.
+  - `triggerPad` 16 LEVELS branch: same pattern with source pad + applied-parameter overlays.
+  - `releasePad`: after voice-stop logic, look up active note → compute duration → commit `StepEvent` via `createStepEventAtPosition`.
+  - `togglePlay` stop branch: `activeRecordingNotes.clear()`.
+  - `stopPlayback`: same.
+  - `toggleSequenceRecording` stop branch (non-overdub): same.
+
+---
+
+## Session 22.N — 2026-05-21 — DISK / STEP / SONG real overflow fix: minmax(0, 1fr) + min-h-0 on every section
+
+### What was attempted
+
+Session 22.M (flex column outer + flex-none softkey row) was supposed to fix the DISK overflow but didn't — Marek's screenshot showed samples list AND PROJECT I/O still extending under the F-keys bar. This session diagnoses root cause properly (before touching code, at Marek's request) and applies the real fix.
+
+### What worked
+
+**Diagnosis** (offered to Marek before code change):
+
+The flex column outer in 22.M correctly bounded the content row to `flex-1 min-h-0` (= ~384px after subtracting softkey row + gap). But inside the content row, the GRID had `grid-cols-[…]` with **no `grid-template-rows`** — so the implicit single row was `auto`-sized, which in CSS Grid means "as tall as the tallest child's intrinsic size". The secondary sections (PROJECT I/O in DISK, the two side panels in STEP and SONG) had no `min-h-0` and no overflow, so their intrinsic min-content equalled the full natural height of 5–7 stacked tall buttons + Info rows = 600–800px. The auto-row took that 800px, samples-list section (which shared the row) inherited that height for its scroll container — and since 12 sample rows × 40px = 480px < 800px, the scroll never triggered. Meanwhile the outer flex item with `overflow-hidden` clipped at 384px. Net: bottom of samples list (and PROJECT I/O) painted into the clip-zone above the softkey row but past the visible viewport.
+
+Marek confirmed diagnosis and approved "Option A + B" combination.
+
+**Fix applied to DISK / STEP / SONG identically:**
+
+- **Option A** — on the content row grid, add explicit `style={{ gridTemplateRows: "minmax(0, 1fr)" }}`. This forces the implicit single row to be exactly 1fr of available container height (i.e. 384px), regardless of children's intrinsic size. The `minmax(0, …)` floor of 0 lets the row shrink properly.
+- **Option B** — on every secondary section (PROJECT I/O in DISK; SELECTED EVENT panel + BAR/TC/SWING panel in STEP; TOTAL BARS/SONG POS panel + SELECTED STEP panel in SONG), add `min-h-0 overflow-y-auto`. So if a panel's content does exceed the bounded row, it scrolls within its own column rather than overflowing.
+
+Combined effect: every column in the content row is now hard-bounded to ~384px tall. Each column scrolls independently if its content doesn't fit. The softkey bar can no longer be visually overlapped because no child can exceed the row's enforced 1fr height.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **22.M alone was insufficient.** The flex outer was a necessary step but not sufficient — CSS Grid's auto-row sizing inside the flex item was the actual culprit. I reported "22.M fix applied, build clean" without verifying runtime; Marek's screenshot caught it. Lesson: when a layout bug is hard to reason about, run the actual runtime before claiming fix.
+- **No runtime test by me** for this session either — Marek physically verifies.
+- **`overflow-y-auto` on PROJECT I/O / SELECTED EVENT / etc. sections** may cause a scroll bar to appear when the panel content is large. Per global LCD scrollbar styling in `index.css`, the bar is thin phosphor green and matches the rest. Acceptable.
+- **`grid-template-rows: minmax(0, 1fr)` inline style** rather than a Tailwind utility because Tailwind doesn't generate the exact `minmax(0, 1fr)` pattern by default. Could add a custom utility class later but inline is the minimum diff.
+- **Other screens with the old `gridTemplateRows: ${lcdContentHeight} ${lcdSoftkeyHeight}px` pattern** (MIX, PROGRAM, RECORD, etc.) weren't touched. They don't have growing lists so the overlap symptom doesn't manifest, but they share the same architectural weakness. If a similar overflow appears in any of them, the same Option A+B fix applies.
+
+### Decisions made
+
+- Option A+B combo applied to DISK, STEP, SONG — per Marek's explicit approval after diagnosis.
+- F4 CLEAN action unchanged (preserves groups; from 22.H).
+- No new utility class for `minmax(0, 1fr)`; inline style only.
+- Diagnostic-before-code workflow worked well here — root cause was non-obvious from the symptom and the wrong fix would have been to add yet another `overflow-hidden` somewhere.
+
+### Open issues / followups
+
+- Marek physical test (per spec):
+  - DISK with > 15 samples → sample list scrolls, F-keys not overlapping, PROJECT I/O visible (or scrolls in own column if buttons don't fit).
+  - STEP → events list scrolls, SELECTED EVENT panel visible, BAR/TC/SWING panel visible, F-keys clear.
+  - SONG → steps list scrolls, TOTAL BARS/SONG POS panel visible, SELECTED STEP panel visible, F-keys clear.
+  - Resize between 1920×1080 and 1280×720 — layout holds proportions, F-keys always visible.
+- If other screens (MIX / PROGRAM / RECORD / SETTINGS) ever show the same overlap, port Option A+B to them too.
+
+### Files modified
+
+- `src/screens/DiskScreen.tsx` — content row grid gets `gridTemplateRows: "minmax(0, 1fr)"`; PROJECT I/O section gets `min-h-0 overflow-y-auto`.
+- `src/screens/StepScreen.tsx` — content row grid gets `gridTemplateRows: "minmax(0, 1fr)"`; both side panel sections get `min-h-0 overflow-y-auto`.
+- `src/screens/SongScreen.tsx` — content row grid gets `gridTemplateRows: "minmax(0, 1fr)"`; both side panel sections get `min-h-0 overflow-y-auto`.
+
+---
+
+## Session 22.M — 2026-05-21 — DISK / STEP / SONG layout: flex column so softkeys can't overlap lists
+
+### What was attempted
+
+DISK samples list was extending under the F-keys bar in Marek's runtime — the bottom rows of a long list were hidden behind the softkey row, unselectable. Fix the layout root cause across DISK + STEP + SONG (all three screens with growing lists and a softkey bar).
+
+### What worked
+
+The shared pattern across screens was:
+
+```tsx
+<div
+  className="grid h-full gap-[12px]"
+  style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
+>
+  <div ...content row 1fr-ish... />
+  <div ...softkey row 44px... />
+</div>
+```
+
+With `lcdContentHeight = "calc(100% - 56px)"` (where 56 = 44 softkey + 12 gap). The math is correct on paper — `(100% - 56) + 12 + 44 = 100%` — but the `calc(100% - …)` track size resolves against the grid container's intrinsic height. When the inner samples list `1fr` cell expanded to fit its content, the parent grid was supposed to clip — but in practice the soft-key row got visually overlapped by the list's bottom rows. Likely cause: when a grid item is itself a grid with `min-h-0` and contains a scrollable region, the calc-track resolution can be deferred past the layout pass, letting content paint over the softkey track during the same frame.
+
+The fix is to stop using calc-based grid tracks for the outer container and use flex column instead. Flex with `flex-1 min-h-0` on the content row and `flex-none` + fixed `height` on the softkey row gives a CSS-spec-mandated layout: softkey row is always its declared height, content row is everything else.
+
+Applied to three screens identically:
+
+```tsx
+<div className="flex h-full min-h-0 flex-col gap-[12px]">
+  <div className="grid min-h-0 flex-1 grid-cols-[…] gap-[2.3%] overflow-hidden">
+    {/* content (lists, panels) — scrolls inside */}
+  </div>
+  <div
+    className="grid flex-none grid-cols-6 gap-[1.4%]"
+    style={{ height: lcdSoftkeyHeight }}
+  >
+    {/* F1–F6 buttons */}
+  </div>
+</div>
+```
+
+Modified screens:
+
+- `src/screens/DiskScreen.tsx`
+- `src/screens/StepScreen.tsx`
+- `src/screens/SongScreen.tsx`
+
+In each: removed the `gridTemplateRows: ${lcdContentHeight}…` inline style, switched outer to `flex h-full min-h-0 flex-col`. Content row gains `flex-1 min-h-0`. Softkey row gains `flex-none style={{ height: lcdSoftkeyHeight }}`. Unused `lcdContentHeight` import removed in all three.
+
+The existing inner scroll containers (samples list / events list / steps list — all `grid content-start min-h-0 overflow-y-auto` from Session 22.L) now reliably scroll within the bounded flex-1 row. The softkey bar is guaranteed to be visible at the bottom regardless of list length.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies with > 15 samples in DISK.
+- **Other screens still use the old `gridTemplateRows: ${lcdContentHeight} ${lcdSoftkeyHeight}px` pattern** — MIX, CHOP, PROGRAM, RECORD, SETTINGS, PadPlay, Performance, UtilityScreens. These don't have growing lists (MIX = fixed 16 strips, PROGRAM = fixed 16 pads, RECORD = static panel, etc.) so the overlap symptom doesn't manifest. Left untouched — refactor noise without functional benefit. If Marek ever sees the same overlap in those screens, swap them to flex column too.
+- **Hidden file input inside the softkey grid row in DISK** stays where it was (between the row container's opening tag and the `softButtons.map`). `display: none` excludes it from the grid layout so it doesn't shift the 6-column distribution.
+- **`lcdContentHeight` is now unused in three files** but still exported from `lcdLayout.ts` because the other screens still consume it. Not deleted from the helper module.
+- **`flex-none` is critical on the softkey row** — without it, the row could shrink when the parent runs out of space (e.g. very small viewport). The Tauri minSize (1280×720, Session 22.K) prevents this at the OS level for the .exe, but the browser build relies on `flex-none` to keep softkeys visible if the user resizes below the recommended viewport (ViewportWarning shows but doesn't block).
+- **`gap-[12px]` between flex children** matches the previous grid gap. The total visible footprint should look identical to the grid layout when the list isn't overflowing.
+- **CSS contain: layout / size** would be another defensive measure, but adding `contain-*` Tailwind utilities to every container would be over-engineering for a single overlap case. Flex column suffices.
+
+### Decisions made
+
+- Flex column for screens with growing lists, grid `gridTemplateRows: calc(…)` for screens with fixed-content layout. Pragmatic split — no full migration.
+- Softkey row uses inline `style={{ height: lcdSoftkeyHeight }}` (number-typed `44`) since Tailwind doesn't have a literal-value height for a JS-exported constant without a class generator. Keeps the value as source of truth in `lcdLayout.ts`.
+- Did NOT change `lcdLayout.ts` itself — kept the constants intact so the other screens keep working.
+- Did NOT touch button padding (`py-[7%]` on softkey buttons) — verified the buttons render comfortably within 44px row.
+
+### Open issues / followups
+
+- Marek physical test: > 15 samples in DISK, scroll to bottom row, verify F-keys visible and last sample clickable.
+- Same test for STEP (> visible event count) and SONG (> visible step count).
+- Window resize between 1920×1080 and 1280×720 to verify layout stays proportional and F-keys never disappear.
+- If the same overlap shows up in other screens later, port the flex-column pattern to them too.
+
+### Files modified
+
+- `src/screens/DiskScreen.tsx` — outer container switched from grid (calc rows) to flex column; softkey row gets `flex-none` + inline height; `lcdContentHeight` import dropped.
+- `src/screens/StepScreen.tsx` — same.
+- `src/screens/SongScreen.tsx` — same.
+
+---
+
+## Session 22.L — 2026-05-21 — Three quick fixes: list scrolling + LOOP per pad + 16 LEVELS Note On release
+
+### What was attempted
+
+Three independent fixes flagged by Marek:
+
+1. **FIX 1 — DISK samples list overflow.** Long sample list got clipped because the inner grid had no scroll container. Add `overflow-y-auto` + `min-h-0` so the list scrolls within its 1fr cell. Same gap inspected in STEP events list and SONG steps list; both also fixed.
+2. **FIX 2 — LOOP per pad.** Add `assignment.loop: boolean`, PROGRAM screen toggle, audio engine looping (native `AudioBufferSourceNode.loop`), persistence via existing `.lthief` manifest ensure-fields backfill.
+3. **FIX 3 — 16 LEVELS NOTE ON release.** Triggering a 16 LEVELS variation pad correctly inherited the source pad's mode on play, but releasing it tried to stop a voice group keyed to the variation pad — not the source — so NOTE ON samples never stopped on key release in 16 LEVELS mode. Fix: in `releasePad`, when in 16 LEVELS, look up mode + voice key on the source pad's assignment.
+
+### What worked
+
+**FIX 1 — list scrolling**
+
+Project-wide LCD scrollbar styling already exists in `src/styles/index.css` (phosphor green thumb, dark olive track, thin width) — applies via global `*` selectors to any element with `overflow-y-auto`. Three lists updated:
+
+- `DiskScreen.tsx` samples table inner div — `grid content-start min-h-0 overflow-y-auto`.
+- `StepScreen.tsx` events list — same pattern, replaced existing `overflow-hidden` (which was masking off-screen events).
+- `SongScreen.tsx` song steps list — same pattern.
+
+No new CSS class needed; `lcd-scroll` reference removed before commit.
+
+**FIX 2 — LOOP per pad**
+
+Store:
+
+- `PadAssignment` type gains `loop: boolean`.
+- `createBankAssignments` initializes `loop: false`.
+- `ensurePadAssignmentFxFields` (project hydration backfill) now also backfills `loop: false` for old saves that lack the field. Old `.lthief` projects load without breaking.
+- New action `toggleSelectedPadLoop()` next to existing `toggleSelectedPadMode` and `toggleSelectedPadVoiceMode`.
+- `playAssignedPadWithContext` context type gains `loopOverride?: boolean`; the `samplerEngine.play(...)` call passes `loop: context.loopOverride ?? assignment.loop`.
+
+Audio engine (`samplerEngine.ts`):
+
+- `PlayOptions` gains `loop?: boolean`.
+- In `playInternal`, when `options.loop` is true: set `source.loop = true`, `source.loopStart = offset`, `source.loopEnd = offset + duration`. Call `source.start(0, offset)` without the duration argument (duration would override loop).
+- Per MPC LOOP LOCK convention, loop start = sample start. REV / ALT loop modes not implemented (MVP per Marek spec).
+
+UI (`ProgramScreen.tsx`):
+
+- New `<Param label="LOOP">` in the PARAMS view next to MODE / VOICE. Click `<` or `>` toggles. Display "ON" / "OFF".
+
+The LOOP flag persists through `syncCurrentProgram` (the existing program ↔ padAssignments sync path) and serializes with the rest of the assignment when `.lthief` saves. Loading an old save without the field hydrates to `loop: false`.
+
+**FIX 3 — 16 LEVELS NOTE ON release**
+
+`releasePad` was looking up `state.padAssignments[state.padBank].find(p => p.pad === pad)` — for a released 16 LEVELS pad (e.g. `P05`), that's the wrong assignment (P05's mode, not the source pad's). Voice group key was also keyed to the released pad, not the source. Fix:
+
+- In `releasePad`, detect `state.activeScreen === "UTILITY_16_LEVELS"`, then derive `lookupBank` + `lookupPad` from `state.sixteenLevelsSourcePad`.
+- Use those to fetch the source assignment and to call `stopVoiceGroup(mixerChannelKey(lookupBank, lookupPad, programId))`.
+
+Trigger side was already correct because `playSixteenLevelsVariation` → `playAssignedPadWithContext` reads from the source assignment directly. Only release was broken.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies.
+- **LOOP only supports OFF / ON (FWD) per MVP scope.** REV (reverse loop) and ALT (alternating) — explicit out-of-scope per Marek's spec. Adding them later means swapping the Web Audio path to a custom ScriptProcessor/AudioWorklet for reverse playback; not trivial.
+- **Loop point = sample start (LOOP LOCK semantic).** No per-pad loop point field added. MPC has separate `loopStart` from `sampleStart` — could be added later.
+- **Loop stops on next trigger of the same voice group** (existing `mono`/`channelKey` behavior). For NOTE ON mode with loop, release stops the voice; for ONE SHOT mode with loop, the only way to stop is re-trigger (which restarts) or trigger the same `channelKey` (mono group steals previous voice). MPC convention: ONE SHOT + LOOP = play forever until something else stops it (track stop, choke group, transport stop). That's how this lands here.
+- **Loop + envelope interaction:** voices with attack > 0 will attack each loop iteration? No — the envelope is one-shot at voice start, the loop is at the audio buffer level. Attack/decay envelope runs once; loop just replays the buffer beneath the (already-decayed) envelope gain. If user wants a perpetually-attacking loop sound they'd need to disable the envelope (attack=0, decay=100); current behavior is MPC-faithful.
+- **Scroll containers use the global LCD scrollbar style** (already in `index.css`) — no per-screen scrollbar customization. If specific screens need different thumb colors / widths, we'd add scoped classes later.
+- **STEP events list previously had `overflow-hidden`** — this means events past the visible cell were not just unscrollable, they were INVISIBLE. Changing to `overflow-y-auto` not only fixes scroll but reveals events that were silently missing. Marek should verify this didn't expose hidden bad-data events.
+- **DISK list was rendering all rows in a `content-start` grid without explicit overflow** — relied on the parent `1fr` to clip, but the grid expanded beyond its row anyway because grid `content-start` doesn't constrain children to row height. The `min-h-0` is what makes the 1fr respected.
+- **No new `ensurePadAssignmentFxFields` test** — backfill is logic-only, no unit test infrastructure in the project. If an old save with `loop: undefined` loads, the spread defaults to `false`. Should be safe.
+
+### Decisions made
+
+- LOOP semantic: OFF / ON (FWD) only. Loop point = sample start. LOOP LOCK on.
+- LOOP toggle UI: between VOICE and LEVEL in PROGRAM PARAMS view (logical grouping with the other per-pad mode flags).
+- Scroll style: re-use existing global LCD scrollbar; no new utility class.
+- 16 LEVELS release looks up source pad on `state.sixteenLevelsSourcePad` — the same field the trigger side already used.
+- Ensure-fields backfill is the persistence migration story (no schema version bump).
+
+### Open issues / followups
+
+- Marek physical test of:
+  - DISK scroll when sample count > visible rows.
+  - STEP scroll after creating > visible event count.
+  - SONG scroll after inserting > visible step count.
+  - PROGRAM LOOP toggle ON → trigger → audible loop; OFF → one-shot.
+  - LOOP persists through `.lthief` save / load.
+  - 16 LEVELS source = NOTE ON pad → hold variation pad → release → voice stops.
+  - 16 LEVELS source = ONE SHOT pad → variation plays full length regardless of hold.
+- Reverse / alternating loop modes if/when MPC parity needed.
+- Per-pad loop point (vs LOOP LOCK) if MPC-precise looping needed.
+
+### Files modified
+
+- `src/screens/DiskScreen.tsx` — samples list `overflow-y-auto min-h-0`.
+- `src/screens/StepScreen.tsx` — events list `overflow-y-auto min-h-0` (was `overflow-hidden`).
+- `src/screens/SongScreen.tsx` — steps list `overflow-y-auto min-h-0`.
+- `src/store/useAppStore.ts`:
+  - `PadAssignment` + `createBankAssignments` gain `loop: boolean`.
+  - `ensurePadAssignmentFxFields` backfills `loop: false` for old `.lthief` saves.
+  - New action `toggleSelectedPadLoop`.
+  - `playAssignedPadWithContext` context accepts `loopOverride?: boolean`; passes `loop` to `samplerEngine.play`.
+  - `releasePad` looks up source pad's assignment when in `UTILITY_16_LEVELS` (NOTE ON release fix).
+- `src/audio/samplerEngine.ts` — `PlayOptions.loop`; `playInternal` configures `source.loop`/`loopStart`/`loopEnd` and skips the duration argument on `source.start` when looping.
+- `src/screens/ProgramScreen.tsx` — `toggleSelectedPadLoop` hook + new `<Param label="LOOP">` next to MODE / VOICE.
+
+---
+
 ## Session 22.K — 2026-05-21 — Tauri EXE packaging config + window minSize + ViewportWarning gate
 
 ### What was attempted

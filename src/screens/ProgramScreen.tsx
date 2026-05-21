@@ -23,6 +23,7 @@ export function ProgramScreen() {
   const setSelectedPadParam = useAppStore((state) => state.setSelectedPadParam);
   const toggleSelectedPadMode = useAppStore((state) => state.toggleSelectedPadMode);
   const toggleSelectedPadVoiceMode = useAppStore((state) => state.toggleSelectedPadVoiceMode);
+  const toggleSelectedPadLoop = useAppStore((state) => state.toggleSelectedPadLoop);
   const setProgramView = useAppStore((state) => state.setProgramView);
   const cycleMuteTargetMode = useAppStore((state) => state.cycleMuteTargetMode);
   const toggleMuteTargetForSelectedPad = useAppStore((state) => state.toggleMuteTargetForSelectedPad);
@@ -129,6 +130,7 @@ export function ProgramScreen() {
               )}
               <Param label="MODE" value={selectedAssignment.mode} onMinus={toggleSelectedPadMode} onPlus={toggleSelectedPadMode} />
               <Param label="VOICE" value={selectedAssignment.voiceMode} onMinus={toggleSelectedPadVoiceMode} onPlus={toggleSelectedPadVoiceMode} />
+              <Param label="LOOP" value={selectedAssignment.loop ? "ON" : "OFF"} onMinus={toggleSelectedPadLoop} onPlus={toggleSelectedPadLoop} />
               <Param
                 label="LEVEL"
                 value={selectedAssignment.level}

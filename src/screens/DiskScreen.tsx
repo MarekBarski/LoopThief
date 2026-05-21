@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
-import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { lcdSoftkeyHeight } from "./lcdLayout";
 
 const softButtons = ["F1 IMPORT", "F2 PREVIEW", "F3 RENAME", "F4 DELETE", "F5 EXPORT", "F6 EXIT"];
 
@@ -33,11 +33,11 @@ export function DiskScreen() {
 
   return (
     <ScreenFrame title="DISK" subtitle="Project utility">
-      <div
-        className="grid h-full gap-[12px]"
-        style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
-      >
-        <div className="grid min-h-0 grid-cols-[1.4fr_0.95fr] gap-[2.3%] overflow-hidden">
+      <div className="flex h-full min-h-0 flex-col gap-[12px]">
+        <div
+          className="grid min-h-0 flex-1 grid-cols-[1.4fr_0.95fr] gap-[2.3%] overflow-hidden"
+          style={{ gridTemplateRows: "minmax(0, 1fr)" }}
+        >
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
             <div className="grid grid-cols-[1fr_0.58fr_0.72fr_0.72fr_0.7fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
               <span>NAME</span>
@@ -46,7 +46,7 @@ export function DiskScreen() {
               <span>RATE</span>
               <span>PAD</span>
             </div>
-            <div className="grid content-start">
+            <div className="grid content-start min-h-0 overflow-y-auto">
               {memoryRows.length === 0 ? (
                 <div className="px-[3%] py-[5%] text-[clamp(9px,0.7vw,11px)] tracking-[0.14em] text-[#91a477]">
                   IMPORT WAV FILES TO MEMORY
@@ -72,7 +72,7 @@ export function DiskScreen() {
             </div>
           </section>
 
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
             <p className="text-[#91a477]">PROJECT I/O</p>
             <input
               type="text"
@@ -133,7 +133,10 @@ export function DiskScreen() {
           </section>
         </div>
 
-        <div className="grid grid-cols-6 gap-[1.4%]">
+        <div
+          className="grid flex-none grid-cols-6 gap-[1.4%]"
+          style={{ height: lcdSoftkeyHeight }}
+        >
           <input
             ref={fileInputRef}
             type="file"

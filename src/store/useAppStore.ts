@@ -31,6 +31,7 @@ import {
   serializeSeq,
   writeProjectZip,
 } from "../disk";
+import { encodeAudioBufferToWav } from "../disk/wavCodec";
 import type { GlobalSettings, LoadedBundle, LoadedSample } from "../disk";
 import {
   noteOn as midiNoteOn,
@@ -444,6 +445,7 @@ type AppState = {
   ) => void;
   toggleSelectedPadMode: () => void;
   toggleSelectedPadVoiceMode: () => void;
+  toggleSelectedPadLoop: () => void;
   cycleSelectedPadFilterType: (delta: number) => void;
   setProgramView: (view: AppState["programView"]) => void;
   cycleMuteTargetMode: () => void;
@@ -504,6 +506,7 @@ type AppState = {
   renameSelectedMemorySample: (name: string) => void;
   deleteSelectedMemorySample: () => void;
   exportSelectedMemorySample: () => void;
+  exportSongToWav: (filename: string) => Promise<{ ok: true; filename: string } | { ok: false; reason: string }>;
   setActiveSettingsCategory: (id: string) => void;
   selectSetting: (index: number) => void;
   adjustSelectedSetting: (delta: number) => void;
@@ -582,6 +585,7 @@ type PadAssignment = {
   chokeGroup: number;
   muteTargetMode: "OFF" | "PAIR" | "GROUP";
   muteTargets: string[];
+  loop: boolean;
 };
 
 // ============================================================================
@@ -812,6 +816,43 @@ let lastStopAt = 0;
 let firstTickPending = false;
 const noteRepeatIntervals = new Map<string, number>();
 
+// In-progress notes during sequence recording. NoteOn stores press position;
+// NoteOff (releasePad) finalizes the StepEvent with real duration = release
+// tick − press tick. Keyed by `${physicalBank}:${physicalPad}` so 16 LEVELS
+// variations resolve correctly (key = location of the physical press).
+type ActiveRecordingNote = {
+  startTickAbsolute: number;
+  startStepIndex: number;
+  startTickOffset: number;
+  velocity: number;
+  bank: PadBank;
+  pad: string;
+  sourcePad: string;
+  programId?: string;
+  trackId: string;
+  trackName?: string;
+  sourceAssignment?: string;
+  appliedParameter?: AppState["sixteenLevelsParameter"];
+  appliedValue?: number;
+  parameterValue?: number;
+  appliedFilterType?: PadAssignment["filterType"];
+  appliedFilterResonance?: number;
+};
+
+const activeRecordingNotes = new Map<string, ActiveRecordingNote>();
+
+function activeNoteKey(bank: PadBank, pad: string): string {
+  return `${bank}:${pad}`;
+}
+
+function captureAbsoluteTick(state: AppState): { absTick: number; stepIndex: number; tickOffset: number } {
+  const ppqMs = 60_000 / state.bpm / 96;
+  const elapsedTicks = ppqMs > 0 ? Math.round((performance.now() - sequenceStepStartedAt) / ppqMs) : 0;
+  const tickOffset = clamp(elapsedTicks, 0, 23);
+  const absTick = Math.max(0, state.currentStepIndex) * 24 + tickOffset;
+  return { absTick, stepIndex: state.currentStepIndex, tickOffset };
+}
+
 const initialStepEvents: StepEvent[] = [];
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -1004,6 +1045,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     if (state.isPlaying) {
       emitMidiTransportFromStore("STOP");
+      activeRecordingNotes.clear();
       set({
         isPlaying: false,
         transportPhase: "IDLE",
@@ -1025,6 +1067,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       samplerEngine.stopAllVoices();
     }
     emitMidiTransportFromStore("STOP");
+    activeRecordingNotes.clear();
     set((state) => ({
       isPlaying: false,
       isSequenceRecording: false,
@@ -1042,6 +1085,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleSequenceRecording: () => {
     const state = get();
     if (state.isSequenceRecording) {
+      if (!state.overdubEnabled) activeRecordingNotes.clear();
       set({
         isSequenceRecording: false,
         transportPhase: "IDLE",
@@ -1568,42 +1612,34 @@ export const useAppStore = create<AppState>((set, get) => ({
           state.sixteenLevelsParameter === "FILTER"
             ? state.sixteenLevelsFilterResonance ?? sourceAssignment?.filterResonance
             : undefined;
-        const recordedEvent =
-          state.isPlaying && (state.isSequenceRecording || state.overdubEnabled) && sourceAssigned
-            ? createStepEventFromIndex(
-                state.currentStepIndex,
-                sourcePadId,
-                eventVelocity,
-                100,
-                0,
-                {
-                  sequence: getCurrentSequence(state),
-                  physicalPad: selectedPad,
-                  sourcePad: state.sixteenLevelsSourcePad,
-                  trackId: state.currentTrackId,
-                  trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
-                  padBank: sourceBank,
-                  programId: state.currentProgramId,
-                  appliedParameter: state.sixteenLevelsParameter,
-                  appliedValue,
-                  parameterValue: appliedValue,
-                  appliedFilterType: sandboxFilterTypeForRecord,
-                  appliedFilterResonance: sandboxFilterResonanceForRecord,
-                  duration: 0,
-                  length: 0,
-                },
-              )
-            : null;
-        const events = recordedEvent
-          ? [...state.stepEvents, recordedEvent].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step))
-          : state.stepEvents;
+        const recording16Active =
+          state.isPlaying && (state.isSequenceRecording || state.overdubEnabled) && sourceAssigned;
+        if (recording16Active) {
+          const { absTick, stepIndex: pressStep, tickOffset: pressTick } = captureAbsoluteTick(state);
+          activeRecordingNotes.set(activeNoteKey(state.padBank, selectedPad), {
+            startTickAbsolute: absTick,
+            startStepIndex: pressStep,
+            startTickOffset: pressTick,
+            velocity: eventVelocity,
+            bank: sourceBank,
+            pad: sourcePadId,
+            sourcePad: state.sixteenLevelsSourcePad,
+            programId: state.currentProgramId,
+            trackId: state.currentTrackId,
+            trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
+            sourceAssignment: sourceAssignment?.assignment === "---" ? undefined : sourceAssignment?.assignment,
+            appliedParameter: state.sixteenLevelsParameter,
+            appliedValue,
+            parameterValue: appliedValue,
+            appliedFilterType: sandboxFilterTypeForRecord,
+            appliedFilterResonance: sandboxFilterResonanceForRecord,
+          });
+        }
         return {
           selectedPad,
           lastTriggeredPad: selectedPad,
           lastPadVelocity: state.fullLevelEnabled ? 127 : eventVelocity,
           lastSixteenLevelsValue: appliedValue,
-          stepEvents: events,
-          sequences: recordedEvent ? updateCurrentSequenceEvents(state, events) : state.sequences,
           lastAudioMessage:
             !sourceAssigned && state.isPlaying && (state.isSequenceRecording || state.overdubEnabled)
               ? "16LV: SOURCE UNASSIGNED"
@@ -1619,21 +1655,30 @@ export const useAppStore = create<AppState>((set, get) => ({
         padNumber <= state.chopMarkers.length;
       const velocity = 127;
       const recordingActive = state.isPlaying && (state.isSequenceRecording || state.overdubEnabled);
-      const recordedEvent = recordingActive
-        ? createRecordedPadEvent(state, selectedPad, velocity)
-        : null;
-      const events = recordedEvent
-        ? [...state.stepEvents, recordedEvent].sort((a, b) => eventStepIndex(a.step) - eventStepIndex(b.step))
-        : state.stepEvents;
+      if (recordingActive) {
+        const padAssignmentRec = state.padAssignments[state.padBank].find((p) => p.pad === selectedPad);
+        const { absTick, stepIndex: pressStep, tickOffset: pressTick } = captureAbsoluteTick(state);
+        activeRecordingNotes.set(activeNoteKey(state.padBank, selectedPad), {
+          startTickAbsolute: absTick,
+          startStepIndex: pressStep,
+          startTickOffset: pressTick,
+          velocity,
+          bank: state.padBank,
+          pad: selectedPad,
+          sourcePad: selectedPad,
+          programId: state.currentProgramId,
+          trackId: state.currentTrackId,
+          trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
+          sourceAssignment: padAssignmentRec?.assignment === "---" ? undefined : padAssignmentRec?.assignment,
+        });
+      }
 
       return {
         selectedPad,
         lastTriggeredPad: selectedPad,
         lastPadVelocity: velocity,
-        stepEvents: events,
-        sequences: recordedEvent ? updateCurrentSequenceEvents(state, events) : state.sequences,
-        lastAction: recordedEvent
-          ? (state.isSequenceRecording ? `REC REPLACE ${selectedPad}` : `OVERDUB ADD ${selectedPad}`)
+        lastAction: recordingActive
+          ? (state.isSequenceRecording ? `REC HOLD ${selectedPad}` : `OVERDUB HOLD ${selectedPad}`)
           : state.lastAction,
         selectedSlice: canSelectSlice ? padNumber : state.selectedSlice,
         chopCursor: canSelectSlice ? state.chopMarkers[padNumber - 1] : state.chopCursor,
@@ -1659,13 +1704,83 @@ export const useAppStore = create<AppState>((set, get) => ({
     stopNoteRepeatLoop(pad);
     emitMidiPadNoteOff(get(), pad);
     const state = get();
-    const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
+    // In 16 LEVELS the released variation pad isn't what played the voice —
+    // every variation routes through the SOURCE pad's voice group. Look up
+    // mode and voice key from the source assignment so NOTE ON release stops
+    // the right voices.
+    let lookupBank = state.padBank;
+    let lookupPad = pad;
+    if (state.activeScreen === "UTILITY_16_LEVELS") {
+      lookupBank = state.sixteenLevelsSourcePad.slice(0, 1) as PadBank;
+      const srcNumber = Number(state.sixteenLevelsSourcePad.slice(1)) || 1;
+      lookupPad = `P${String(srcNumber).padStart(2, "0")}`;
+    }
+    const assignment = state.padAssignments[lookupBank].find((item) => item.pad === lookupPad);
     if (assignment?.mode === "NOTE ON") {
       const releaseMs = assignment.decay >= 100 ? 0 : programValueToMs(assignment.decay);
       samplerEngine.stopVoiceGroup(
-        mixerChannelKey(state.padBank, pad, state.currentProgramId),
+        mixerChannelKey(lookupBank, lookupPad, state.currentProgramId),
         releaseMs > 0 ? { releaseMs } : undefined,
       );
+    }
+    // Finalize the recording event for this physical press if one is active.
+    // Duration = release tick − press tick (capped at sequence length from the
+    // press point so a hold across the loop boundary truncates instead of
+    // wrapping back over itself).
+    const noteKey = activeNoteKey(state.padBank, pad);
+    const active = activeRecordingNotes.get(noteKey);
+    if (active) {
+      activeRecordingNotes.delete(noteKey);
+      const recordingStillActive =
+        state.isPlaying && (state.isSequenceRecording || state.overdubEnabled);
+      if (recordingStillActive) {
+        const sequence = getCurrentSequence(state);
+        const seqTotalTicks = getSequenceTotalTicks(sequence);
+        const { absTick: endAbsTick } = captureAbsoluteTick(state);
+        let duration =
+          endAbsTick >= active.startTickAbsolute
+            ? endAbsTick - active.startTickAbsolute
+            : seqTotalTicks - active.startTickAbsolute;
+        duration = Math.max(1, Math.min(duration, Math.max(1, seqTotalTicks - active.startTickAbsolute)));
+        const event = createStepEventAtPosition(
+          active.startStepIndex,
+          active.startTickOffset,
+          active.pad,
+          active.velocity,
+          100,
+          {
+            sequence,
+            trackId: active.trackId,
+            trackName: active.trackName,
+            sourcePad: active.sourcePad,
+            sourceAssignment: active.sourceAssignment,
+            padBank: active.bank,
+            programId: active.programId,
+            variation: "REC",
+            duration,
+            length: duration,
+            appliedParameter: active.appliedParameter,
+            appliedValue: active.appliedValue,
+            parameterValue: active.parameterValue,
+            appliedFilterType: active.appliedFilterType,
+            appliedFilterResonance: active.appliedFilterResonance,
+          },
+        );
+        set((current) => {
+          const events = [...current.stepEvents, event].sort(
+            (a, b) => eventStepIndex(a.step) - eventStepIndex(b.step),
+          );
+          return {
+            stepEvents: events,
+            sequences: updateCurrentSequenceEvents(current, events),
+            triggeredPads: markPadTriggered(current.triggeredPads, current.padBank, pad, false),
+            lastAction: current.isSequenceRecording
+              ? `REC ADD ${active.pad}`
+              : `OVERDUB ADD ${active.pad}`,
+          };
+        });
+        return;
+      }
     }
     set((current) => ({
       triggeredPads: markPadTriggered(current.triggeredPads, current.padBank, pad, false),
@@ -3009,6 +3124,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, `VOICE MODE ${state.selectedPad}`, `voice-mode:${state.selectedPad}:${Date.now()}`),
       };
     }),
+  toggleSelectedPadLoop: () =>
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
+          pad.pad === state.selectedPad ? { ...pad, loop: !pad.loop } : pad,
+        );
+      return {
+        padAssignments,
+        programs: syncCurrentProgram(state, { padAssignments }),
+        ...recordUndo(state, `LOOP ${state.selectedPad}`, `loop:${state.selectedPad}:${Date.now()}`),
+      };
+    }),
   cycleSelectedPadFilterType: (delta) =>
     set((state) => {
       const filterTypes: PadAssignment["filterType"][] = ["OFF", "LOWPASS", "HIGHPASS", "BANDPASS"];
@@ -4309,6 +4435,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     const wav = encodeWavRegion(audioRef, region.start, region.end);
     downloadBytes(`${sample.name}.wav`, wav, "audio/wav");
     set({ importStatus: "READY", importMessage: `EXPORTED ${sample.name}` });
+  },
+  exportSongToWav: async (filename: string) => {
+    const state = get();
+    if (state.songSteps.length === 0) {
+      return { ok: false as const, reason: "Song is empty — add steps with sequences first" };
+    }
+    try {
+      const buffer = await renderSongOffline(state, { sampleRate: 48000, tailSeconds: 3 });
+      if (buffer.length === 0) {
+        return { ok: false as const, reason: "Rendered an empty buffer — check sequence content" };
+      }
+      const bytes = encodeAudioBufferToWav(buffer);
+      const safeName = (filename || "song_export").replace(/[^A-Za-z0-9._-]/g, "_");
+      downloadBytes(`${safeName}.wav`, bytes, "audio/wav");
+      return { ok: true as const, filename: `${safeName}.wav` };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown render error";
+      return { ok: false as const, reason };
+    }
   },
   setActiveSettingsCategory: (activeSettingsCategoryId) =>
     set({ activeSettingsCategoryId, selectedSettingIndex: 0 }),
@@ -5667,6 +5812,7 @@ function playAssignedPadWithContext(
     attackOverride?: number;
     decayOverride?: number;
     sustainMs?: number;
+    loopOverride?: boolean;
   },
 ) {
   const program = getProgramForPlayback(state, context.programId);
@@ -5726,6 +5872,7 @@ function playAssignedPadWithContext(
     envelope,
     sustainMs: context.sustainMs,
     fxRouting,
+    loop: context.loopOverride ?? assignment.loop,
   });
 }
 
@@ -6407,6 +6554,7 @@ function createBankAssignments(): PadAssignment[] {
     chokeGroup: 0,
     muteTargetMode: "OFF" as const,
     muteTargets: [],
+    loop: false,
   }));
 }
 
@@ -6431,11 +6579,15 @@ function createDefaultMasterFx(): MasterFX {
 }
 
 function ensurePadAssignmentFxFields(pa: PadAssignment): PadAssignment {
-  if (typeof (pa as PadAssignment & { fxBus?: number }).fxBus === "number" &&
-      typeof (pa as PadAssignment & { fxSendLevel?: number }).fxSendLevel === "number") {
-    return pa;
+  let next = pa;
+  if (typeof (next as PadAssignment & { fxBus?: number }).fxBus !== "number" ||
+      typeof (next as PadAssignment & { fxSendLevel?: number }).fxSendLevel !== "number") {
+    next = { ...next, fxBus: 0 as const, fxSendLevel: typeof next.fxSend === "number" ? next.fxSend : 0 };
   }
-  return { ...pa, fxBus: 0 as const, fxSendLevel: typeof pa.fxSend === "number" ? pa.fxSend : 0 };
+  if (typeof (next as PadAssignment & { loop?: boolean }).loop !== "boolean") {
+    next = { ...next, loop: false };
+  }
+  return next;
 }
 
 function ensureProgramFxFields(program: Program): Program {
@@ -7482,4 +7634,327 @@ function createSettingsCategories(): SettingsCategory[] {
       settings: [],
     },
   ];
+}
+
+// ============================================================================
+// Song WAV export — offline render of the current song into a single buffer.
+//
+// MVP scope (per Marek's spec):
+//   - Walks state.songSteps, expands repeats, schedules every StepEvent at the
+//     correct offset from song start.
+//   - Each event is voiced via a simple OfflineAudioContext graph that mirrors
+//     samplerEngine.playInternal: BufferSource → envelope gain → channel gain
+//     → pan → (optional) filter → master gain → destination.
+//   - Respects per-pad level (mixer), pan, tune (semitones + cents → playback
+//     rate), filter (type / cutoff / resonance), envelope (attack/decay),
+//     LOOP flag (source.loop + loopStart/loopEnd + gain ramp-off at duration
+//     end), event velocity, 16 LEVELS appliedParameter overrides.
+//   - Master volume applied at the end of the chain.
+//   - Adds `tailSeconds` of silence at the end so envelope decays / loop
+//     fade-outs aren't cut.
+//
+// Not in MVP scope:
+//   - FX bus rendering — fxEngine is tied to a concrete `AudioContext`. A
+//     proper offline path needs fxEngine to accept `BaseAudioContext`. Punted.
+//   - Mixed time-signature sequences: ticks-per-sequence is computed as
+//     lengthBars * 384 (assuming 4/4). Variable-meter sequences will drift.
+//   - Probability gating uses Math.random() at render time, so each export is
+//     a different "take" for probability < 100 events. Acceptable.
+// ============================================================================
+
+type RenderSongOptions = { sampleRate?: number; tailSeconds?: number };
+
+type RenderDiagSample = {
+  event: string;
+  pad: string;
+  bank: PadBank;
+  velocity: number;
+  gainFromVelocity: number;
+  mixLevel: number;
+  mixPan: number;
+  channelGain: number;
+  sourceSampleRate: number;
+  sourceChannels: number;
+  sourcePeak: number;
+};
+
+async function renderSongOffline(state: AppState, opts: RenderSongOptions = {}): Promise<AudioBuffer> {
+  const sampleRate = opts.sampleRate ?? 48000;
+  const tailSeconds = opts.tailSeconds ?? 3;
+  const ticksPerSecond = 96 * state.bpm / 60;
+  const diagSamples: RenderDiagSample[] = [];
+
+  // Total song length in ticks (sum of every step's sequence length × repeats).
+  let totalTicks = 0;
+  for (const step of state.songSteps) {
+    const seq = state.sequences.find((s) => s.id === step.sequenceId);
+    if (!seq) continue;
+    totalTicks += seq.lengthBars * 384 * Math.max(1, step.repeats);
+  }
+  if (totalTicks <= 0) {
+    throw new Error("Empty song — add steps with sequences first");
+  }
+  const songSec = totalTicks / ticksPerSecond + tailSeconds;
+  const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(sampleRate * songSec)), sampleRate);
+
+  const master = ctx.createGain();
+  master.gain.value = (state.settingsValues.masterVolume ?? 100) / 100;
+  master.connect(ctx.destination);
+
+  // Cache the original-context AudioBuffers into the offline ctx where possible.
+  // AudioBuffer is spec'd to be context-independent at use time, so we can reuse
+  // the existing buffers directly — the browser handles sample-rate mismatch on
+  // the BufferSource.
+  let cursorTicks = 0;
+  let eventsScheduled = 0;
+  let eventsSkipped = 0;
+  for (const step of state.songSteps) {
+    const seq = state.sequences.find((s) => s.id === step.sequenceId);
+    if (!seq) continue;
+    const seqTicks = seq.lengthBars * 384;
+    const repeats = Math.max(1, step.repeats);
+    for (let r = 0; r < repeats; r += 1) {
+      const baseTicks = cursorTicks;
+      for (const event of seq.events) {
+        if (event.muted) {
+          eventsSkipped += 1;
+          continue;
+        }
+        if (event.probability < 100 && Math.random() * 100 >= event.probability) {
+          eventsSkipped += 1;
+          continue;
+        }
+        const captured = scheduleSongEvent(ctx, master, state, event, baseTicks, ticksPerSecond);
+        if (captured) {
+          eventsScheduled += 1;
+          if (diagSamples.length < 5) diagSamples.push(captured);
+        } else {
+          eventsSkipped += 1;
+        }
+      }
+      cursorTicks += seqTicks;
+    }
+  }
+
+  const buffer = await ctx.startRendering();
+
+  // Diagnostic dump — Marek can inspect browser console to see per-stage gain
+  // for the first 5 events and the final buffer peak. Helps localize any
+  // "render is quieter than expected" issue.
+  try {
+    let peak = 0;
+    for (let c = 0; c < buffer.numberOfChannels; c += 1) {
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < data.length; i += 1) {
+        const v = Math.abs(data[i]);
+        if (v > peak) peak = v;
+      }
+    }
+    const peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+    console.groupCollapsed(
+      `[WAV export] buffer ${buffer.numberOfChannels}ch × ${buffer.length} frames @ ${buffer.sampleRate}Hz`,
+    );
+    console.log("scheduled events:", eventsScheduled);
+    console.log("skipped events:", eventsSkipped);
+    console.log("buffer peak (Float32 max |x|):", peak.toFixed(4), `(${peakDb.toFixed(2)} dBFS)`);
+    console.log("master gain value:", master.gain.value);
+    console.log("offline ctx sampleRate:", ctx.sampleRate);
+    diagSamples.forEach((d, i) => {
+      console.log(`event #${i + 1}`, d);
+    });
+    console.groupEnd();
+  } catch {
+    /* console may be unavailable in some environments */
+  }
+
+  return buffer;
+}
+
+function scheduleSongEvent(
+  ctx: OfflineAudioContext,
+  destination: AudioNode,
+  state: AppState,
+  event: StepEvent,
+  baseTicks: number,
+  ticksPerSecond: number,
+  fxBusInputs?: Map<number, GainNode>,
+): RenderDiagSample | null {
+  const eventTicks = baseTicks + eventStepToTicks(event.step) + (event.timingOffset ?? 0);
+  const eventTimeSec = Math.max(0, eventTicks / ticksPerSecond);
+
+  // Resolve the source assignment exactly like live playback does
+  // (playStepEventFromState → padFromEvent). For 16 LEVELS-recorded events the
+  // legacy `event.sourcePad` field is in "A04" bank+number format, NOT the
+  // "P04" id format used by padAssignments, so we cannot use it as a lookup
+  // key. `padFromEvent` derives "P{padNumber}" from event.padNumber which is
+  // always the source pad id.
+  const lookupPad = padFromEvent(event);
+  const lookupBank = (event.padBank ?? "A") as PadBank;
+  const program = getProgramForPlayback(state, event.programId);
+  const padAssignments = program?.padAssignments ?? state.padAssignments;
+  const padMixer = program?.padMixer ?? state.padMixer;
+  const assignment = padAssignments[lookupBank]?.find((p) => p.pad === lookupPad);
+  const mix = padMixer[lookupBank]?.find((p) => p.pad === lookupPad);
+  if (!assignment || assignment.assignment === "---" || !mix) return null;
+
+  const resolved = resolveAssignedSample(state, assignment.assignment);
+  if (!resolved) return null;
+  const buffer = getSampleBuffer(resolved.audioBufferId);
+  if (!buffer) return null;
+
+  // 16 LEVELS parameter overrides on the event take precedence over assignment defaults.
+  const tuneOverride = event.appliedParameter === "TUNE" ? event.parameterValue ?? event.appliedValue : undefined;
+  const filterCutoffOverride = event.appliedParameter === "FILTER" ? event.parameterValue ?? event.appliedValue : undefined;
+  const filterTypeOverride = event.appliedParameter === "FILTER" ? event.appliedFilterType : undefined;
+  const filterResonanceOverride = event.appliedParameter === "FILTER" ? event.appliedFilterResonance : undefined;
+  const attackOverride = event.appliedParameter === "ATTACK" ? event.parameterValue ?? event.appliedValue : undefined;
+  const decayOverride = event.appliedParameter === "DECAY" ? event.parameterValue ?? event.appliedValue : undefined;
+  const gainFromVelocity = clamp(event.velocity ?? 100, 0, 127) / 127;
+
+  // Compute playback rate from semitones + cents.
+  const tuneSemis = tuneOverride ?? assignment.tune;
+  const fineCents = assignment.fineTune;
+  const playbackRate = Math.pow(2, (tuneSemis + fineCents / 100) / 12);
+
+  // Sample region [start, end] as fractions of the source buffer.
+  const startFrac = clamp(resolved.sampleStart, 0, 1);
+  const endFrac = clamp(resolved.sampleEnd, startFrac + 0.0001, 1);
+  const offset = startFrac * buffer.duration;
+  const duration = Math.max(0.001, (endFrac - startFrac) * buffer.duration);
+
+  // Envelope timings (attack/decay are 0..100 program units; programValueToMs cubic curve).
+  const attackMs = programValueToMs(attackOverride ?? assignment.attack);
+  const decayMs = programValueToMs(decayOverride ?? assignment.decay);
+
+  // Event-side gate-off (NOTE ON gate, or recorded duration for any mode).
+  const eventDurationTicks = event.duration ?? 0;
+  const sustainSec = eventDurationTicks > 0 ? eventDurationTicks / ticksPerSecond : undefined;
+
+  // Build the per-voice graph.
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.playbackRate.value = playbackRate;
+  if (assignment.loop) {
+    source.loop = true;
+    source.loopStart = offset;
+    source.loopEnd = offset + duration;
+  }
+
+  const envelopeGain = ctx.createGain();
+  const channelGain = ctx.createGain();
+  const pan = ctx.createStereoPanner();
+  channelGain.gain.value = gainFromVelocity * (mix.level / 100);
+  pan.pan.value = clamp(mix.pan / 64, -1, 1);
+
+  const filterType = filterTypeOverride ?? assignment.filterType;
+  let filter: BiquadFilterNode | null = null;
+  // Choose the per-voice tail destination: dry → master OR voice → FX bus per
+  // assignment.fxBus + .fxSendLevel. Mirrors fxEngine.routeVoice() semantics:
+  //   • SEND mode (bus.direct): voice → master (dry) AND voice → sendGain → bus.input
+  //   • INSERT mode (!bus.direct): voice → bus.input only (no dry)
+  //   • bus 0 / OFF: voice → master directly
+  const fxBusId = (assignment.fxBus ?? 0) as 0 | BusId;
+  const fxBus = fxBusId !== 0 ? state.fxBuses.find((b) => b.id === fxBusId) : undefined;
+  const fxSendLevel = clamp(assignment.fxSendLevel ?? 0, 0, 100) / 100;
+  const dryTarget = destination;
+
+  // Build the dry path: source → [filter?] → envelopeGain → channelGain → pan → dryTarget
+  if (filterType !== "OFF") {
+    const cutoff01 = clamp((filterCutoffOverride ?? assignment.filterCutoff) / 100, 0, 1);
+    const resonance01 = clamp((filterResonanceOverride ?? assignment.filterResonance) / 100, 0, 1);
+    filter = ctx.createBiquadFilter();
+    filter.type =
+      filterType === "LOWPASS" ? "lowpass" : filterType === "HIGHPASS" ? "highpass" : "bandpass";
+    filter.frequency.value = 60 + cutoff01 * (ctx.sampleRate / 2 - 60);
+    filter.Q.value = 0.0001 + resonance01 * 18;
+    source.connect(filter).connect(envelopeGain).connect(channelGain).connect(pan);
+  } else {
+    source.connect(envelopeGain).connect(channelGain).connect(pan);
+  }
+
+  // Route the post-pan signal to dry destination and/or FX bus.
+  if (fxBus && fxBusInputs && fxBusInputs.has(fxBusId as number)) {
+    const busInput = fxBusInputs.get(fxBusId as number)!;
+    if (fxBus.direct) {
+      // SEND mode: dry to master + send to bus at sendLevel.
+      pan.connect(dryTarget);
+      const sendGain = ctx.createGain();
+      sendGain.gain.value = fxSendLevel;
+      pan.connect(sendGain);
+      sendGain.connect(busInput);
+    } else {
+      // INSERT mode: all signal through bus, no dry.
+      pan.connect(busInput);
+    }
+  } else {
+    pan.connect(dryTarget);
+  }
+
+  // Apply envelope. Two distinct shapes mirroring samplerEngine.applyEnvelope:
+  //   • NOTE ON: attack ramp 0→1; HOLD at 1 until release event (no auto-decay).
+  //   • ONE SHOT (default): attack ramp 0→1; immediate decay ramp 1→0.
+  // Recorded event.duration > 0 schedules an additional gate-off at duration end
+  // (mirrors real-time softStopVoice: gain ramp 1→0 over decayMs + source.stop).
+  const startTime = eventTimeSec;
+  const attackSec = Math.max(0.001, attackMs / 1000);
+  const decaySec = Math.max(0.005, decayMs / 1000);
+  envelopeGain.gain.setValueAtTime(0, startTime);
+  envelopeGain.gain.linearRampToValueAtTime(1, startTime + attackSec);
+
+  let scheduledStopTime: number | null = null;
+  if (sustainSec !== undefined) {
+    // Event has a recorded duration → gate off at duration end.
+    const releaseStart = startTime + Math.max(attackSec, sustainSec);
+    envelopeGain.gain.setValueAtTime(1, releaseStart);
+    envelopeGain.gain.linearRampToValueAtTime(0, releaseStart + decaySec);
+    scheduledStopTime = releaseStart + decaySec + 0.02;
+  } else if (assignment.mode === "ONE SHOT") {
+    // ONE SHOT without recorded duration: standard AD envelope (real-time engine
+    // ramps 1→0 right after attack when holdMode !== NOTE ON and decayMs > 0).
+    if (decayMs > 0) {
+      envelopeGain.gain.linearRampToValueAtTime(0, startTime + attackSec + decaySec);
+    }
+  }
+  // NOTE ON without recorded duration: hold at 1 indefinitely (sample runs to end).
+
+  // Source start/stop. Looping voices must omit the duration arg on start()
+  // (otherwise the loop would self-terminate before its envelope gate-off);
+  // non-loop voices that have a gate-off (recorded duration) also omit
+  // duration so source.stop() controls when they end — mirrors real-time
+  // softStopVoice which calls source.stop(now + ramp).
+  if (assignment.loop) {
+    source.start(startTime, offset);
+    if (scheduledStopTime !== null) source.stop(scheduledStopTime);
+  } else if (scheduledStopTime !== null) {
+    source.start(startTime, offset);
+    source.stop(scheduledStopTime);
+  } else {
+    source.start(startTime, offset, duration);
+  }
+
+  // Diagnostic snapshot for the caller. Source-buffer peak is computed only on
+  // first encounter per buffer; subsequent identical samples may show a cached
+  // value (or recompute — cheap enough for small buffers).
+  let sourcePeak = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c += 1) {
+    const data = buffer.getChannelData(c);
+    const step = Math.max(1, Math.floor(data.length / 1024)); // sparse scan for speed
+    for (let i = 0; i < data.length; i += step) {
+      const v = Math.abs(data[i]);
+      if (v > sourcePeak) sourcePeak = v;
+    }
+  }
+  return {
+    event: event.step,
+    pad: lookupPad,
+    bank: lookupBank,
+    velocity: event.velocity,
+    gainFromVelocity,
+    mixLevel: mix.level,
+    mixPan: mix.pan,
+    channelGain: channelGain.gain.value,
+    sourceSampleRate: buffer.sampleRate,
+    sourceChannels: buffer.numberOfChannels,
+    sourcePeak,
+  };
 }
