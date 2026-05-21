@@ -7894,28 +7894,47 @@ function scheduleSongEvent(
   //   • NOTE ON: attack ramp 0→1; HOLD at 1 until release event (no auto-decay).
   //   • ONE SHOT (default): attack ramp 0→1; immediate decay ramp 1→0.
   // Recorded event.duration > 0 schedules an additional gate-off at duration end
-  // (mirrors real-time softStopVoice: gain ramp 1→0 over decayMs + source.stop).
+  // (mirrors real-time softStopVoice: gain ramp 1→0 over releaseRamp + source.stop).
+  //
+  // Critical asymmetry with real-time, mirrored here: when attack=0 AND decay≥100
+  // (the engine's "no envelope / play through" sentinel), real-time `playAssignedPadWithContext`
+  // sets `envelope: undefined`, which makes `voice.envelopeDecayMs = 0` in samplerEngine.
+  // The sustainMs softStop then falls back to a 4 ms release ramp (MIN_RAMP_MS × 4)
+  // because the OR fallback `envelopeDecayMs > 0 ? envelopeDecayMs : MIN_RAMP_MS * 4`
+  // picks the 4 ms path. Without this branch, the offline render would interpret
+  // decay=100 as a 5-second linear release (programValueToMs cubic curve), making
+  // bass NOTE ON events appear to "play full sample length ignoring duration."
   const startTime = eventTimeSec;
-  const attackSec = Math.max(0.001, attackMs / 1000);
+  const effectiveAttack = attackOverride ?? assignment.attack;
+  const effectiveDecay = decayOverride ?? assignment.decay;
+  const skipEnvelope = effectiveAttack === 0 && effectiveDecay >= 100;
+  const attackSec = skipEnvelope ? 0 : Math.max(0.001, attackMs / 1000);
   const decaySec = Math.max(0.005, decayMs / 1000);
-  envelopeGain.gain.setValueAtTime(0, startTime);
-  envelopeGain.gain.linearRampToValueAtTime(1, startTime + attackSec);
+  const releaseRampSec = skipEnvelope ? 0.004 : decaySec;
+
+  if (skipEnvelope) {
+    envelopeGain.gain.setValueAtTime(1, startTime);
+  } else {
+    envelopeGain.gain.setValueAtTime(0, startTime);
+    envelopeGain.gain.linearRampToValueAtTime(1, startTime + attackSec);
+  }
 
   let scheduledStopTime: number | null = null;
   if (sustainSec !== undefined) {
-    // Event has a recorded duration → gate off at duration end.
+    // Event has a recorded duration → gate off at duration end. Release ramp
+    // length matches real-time samplerEngine softStop semantics.
     const releaseStart = startTime + Math.max(attackSec, sustainSec);
     envelopeGain.gain.setValueAtTime(1, releaseStart);
-    envelopeGain.gain.linearRampToValueAtTime(0, releaseStart + decaySec);
-    scheduledStopTime = releaseStart + decaySec + 0.02;
-  } else if (assignment.mode === "ONE SHOT") {
+    envelopeGain.gain.linearRampToValueAtTime(0, releaseStart + releaseRampSec);
+    scheduledStopTime = releaseStart + releaseRampSec + 0.005;
+  } else if (!skipEnvelope && assignment.mode === "ONE SHOT") {
     // ONE SHOT without recorded duration: standard AD envelope (real-time engine
     // ramps 1→0 right after attack when holdMode !== NOTE ON and decayMs > 0).
     if (decayMs > 0) {
       envelopeGain.gain.linearRampToValueAtTime(0, startTime + attackSec + decaySec);
     }
   }
-  // NOTE ON without recorded duration: hold at 1 indefinitely (sample runs to end).
+  // NOTE ON or skipEnvelope without recorded duration: hold at 1 indefinitely (sample runs to end).
 
   // Source start/stop. Looping voices must omit the duration arg on start()
   // (otherwise the loop would self-terminate before its envelope gate-off);

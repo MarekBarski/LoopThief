@@ -99,6 +99,84 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.S — 2026-05-21 — WAV export: NOTE ON gate-off envelope-skip mirror (bass tail fix)
+
+### What was attempted
+
+Marek reported that 22.R's NOTE ON gate-off didn't actually gate — bass events with `event.duration = 70 ticks` still played the full sample length in WAV, while real-time playback of the same sequence DID gate cleanly. Diagnosed the asymmetry between real-time and offline, then applied a single targeted fix.
+
+### What worked
+
+**Root-cause diagnosis** (no code change until confirmed with Marek):
+
+For a bass voice with default `attack = 0 AND decay >= 100` (very common pad config — `decay = 100` is the engine's "play through" sentinel, not "5-second release"):
+
+- **Real-time** `playAssignedPadWithContext`:
+  ```ts
+  const envelope = effectiveAttack === 0 && effectiveDecay >= 100
+    ? undefined                              // ← envelope SKIPPED
+    : { attackMs, decayMs, holdMode: assignment.mode };
+  ```
+  When `envelope: undefined` is passed to `samplerEngine.play`, `voice.envelopeDecayMs = 0`. The sustainMs softStop path then picks the fallback:
+  ```ts
+  const releaseMs = voice.envelopeDecayMs > 0 ? voice.envelopeDecayMs : MIN_RAMP_MS * 4;  // = 4 ms
+  ```
+  Result: bass gates within ~5 ms of event.duration end. Effectively a tight cut.
+
+- **My offline (22.R)** ALWAYS built the envelope, interpreting `decay = 100` as `programValueToMs(100) = 5000 ms = 5 s`. Release ramp scheduled 1→0 over 5 seconds, `source.stop` at duration + 5 s + 20 ms. Sample plays full with a linear fade — audibly indistinguishable from "ignoring duration".
+
+The semantic of `decay >= 100` in this engine is "no automatic release / let sustainMs handle gating", NOT "5-second linear release". My offline missed that sentinel.
+
+**Fix** in `scheduleSongEvent`:
+
+Added `skipEnvelope = effectiveAttack === 0 && effectiveDecay >= 100`. When true:
+- `attackSec = 0` (no attack ramp; gain jumps to 1 at startTime)
+- `releaseRampSec = 0.004` (4 ms — matches real-time `MIN_RAMP_MS * 4`)
+- `envelopeGain.gain.setValueAtTime(1, startTime)` instead of building the 0→1 attack ramp
+
+When false (normal envelope):
+- attackSec from `programValueToMs(attack) / 1000` (clamped ≥ 1 ms)
+- releaseRampSec = decaySec from `programValueToMs(decay) / 1000`
+- normal attack ramp 0→1
+
+sustainSec-driven gate-off path uses `releaseRampSec` (either 4 ms or decaySec). `scheduledStopTime = releaseStart + releaseRampSec + 5 ms` (5 ms grace instead of 20 ms; tighter to match real-time).
+
+ONE SHOT auto-decay branch only fires when `!skipEnvelope && assignment.mode === "ONE SHOT"` — so the "play through" sentinel isn't accidentally cut short by the AD ramp.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **22.R session log claimed "NOTE ON gate-off FIXED"** but it wasn't, because the envelope-skip asymmetry was missed in that round's audit. Marek caught it on his next test. The diagnostic logging from 22.R should have surfaced this if I'd inspected per-event channelGain values + the matching envelope ramp times — but I didn't have Marek's diagnostic output yet, and the audit relied on math not runtime. Lesson: when mirroring real-time behavior in offline, cross-reference EVERY conditional branch in the real-time path, not just the "happy path".
+- **`decay >= 100` semantic is engine-implicit, not documented**. The cubic curve `programValueToMs(x) = (x/100)^3 * 5000` plus the `attack === 0 && decay >= 100` shortcut means decay is dual-purpose: literal release time for 0–99, and "no envelope at all" for ≥100. Someone reading the code without context would assume decay=100 means 5-second release. Worth a comment in `programValueToMs` itself, but out of scope here.
+- **Real-time sequence playback** for events with attack > 0 OR decay < 100 has the SAME 5-second tail as my old offline did (no envelope-skip in those cases). Marek's bass tests work because his pads happen to be in the skip range. If Marek configures a long-decay pad (decay=80 → 2.56 sec release), the tail will be audibly long in BOTH real-time and offline — that's the engine's intended behavior.
+- **No runtime test by me.** Marek runs export to verify the bass gates within ~5 ms of duration end.
+- **No fix to the 12 dB gain mystery** yet — still pending Marek's diagnostic console output from a 22.R-instrumented export.
+- **FX rendering** still deferred to 22.T+.
+
+### Decisions made
+
+- Mirror real-time exactly via `skipEnvelope` flag. Matches the sentinel semantic.
+- `releaseRampSec = 0.004` for skipped envelope, mirroring `MIN_RAMP_MS * 4` from samplerEngine.
+- `scheduledStopTime` grace shortened from 20 ms to 5 ms for tighter gate.
+- ONE SHOT auto-decay branch gated behind `!skipEnvelope` so the sentinel always takes priority.
+
+### Open issues / followups
+
+- Marek runtime test:
+  - Bass NOTE ON with duration=70 ticks at BPM=120 → audibly gates within ~5 ms of `(70/96) × (60/120) ≈ 365 ms` after note start.
+  - Long-decay pad (e.g. snare with decay=50) — release still 625 ms (programValueToMs(50)) — should match real-time.
+- 12 dB gain mystery — waiting on diagnostic console output from Marek.
+- FX bus rendering — 22.T.
+- Choke groups in offline — 22.U or later.
+- Swing in offline — 22.U or later.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — `scheduleSongEvent` envelope/gate-off block: added `skipEnvelope` flag, conditional attack ramp, `releaseRampSec` selection, gated the ONE SHOT auto-decay branch on `!skipEnvelope`.
+
+---
+
 ## Session 22.R — 2026-05-21 — WAV export: diagnostic gain logging + NOTE ON gate-off + ONE SHOT envelope shape + FX SEND routing scaffold
 
 ### What was attempted
