@@ -99,6 +99,72 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 21 — 2026-05-21 — UI scaling investigation (3 reverted attempts) + bg_v3 swap + flex shrink-0 fix
+
+### What was attempted
+
+Marek reported that LoopThief looks correct only on his 4K dev monitor (3840×2160). On QHD (2560×1440) the layout "rozjeżdża się" — pads in columns C–D not visible, BAR > softkey beyond viewport, LCD overflowing its bg cutout. 1080p similarly broken. Goal: make the app work consistently 1280×720 and up without touching the existing CSS / layout.json content.
+
+What landed in code = a different fix than expected. Three structural rewrites of `AppShell` were attempted and reverted; the actual root cause was found by Marek's empirical observation ("bg slims when I resize WIDTH but not HEIGHT") and turned out to be a one-Tailwind-class change (`shrink-0`) plus an unrelated bg artwork swap.
+
+### What worked
+
+**Final landed change in `AppShell.tsx` (cumulative, staged not yet committed):**
+
+1. Background image swap: `main_panel_bg_1920_v2.png` → `main_panel_bg_1920_v3.png`. Marek produced a new bg at 2527×1610 (aspect ≈ 1.569) that matches the layout content area + margin. The v2 file was 1672×941 stretched to 2859×1610 via `objectFit: fill`, which misaligned the artwork cutouts vs the button positions in `layout.json`.
+2. `CANVAS_WIDTH = 2859 → 2527`. Now matches the new bg's native width. `CANVAS_HEIGHT` stays 1610. Element coordinates in `layout.json` go up to x ≈ 2419 — still well inside 2527 with ~108px right margin.
+3. `<img>` no longer uses `objectFit: fill` or hardcoded `w-[2859px] h-[1610px]`. Now uses `h-full w-full` — fits the section's actual width/height, which is now 1:1 with the bg's native dimensions, so no stretch.
+4. **The actual scaling fix**: added `shrink-0` (Tailwind for `flex-shrink: 0`) to the `<section>` className. Without it, the section is a flex item of `<main className="flex">` with default `flex-shrink: 1`. Inline `style.width = 2527px` is treated as flex basis, not min-width — when viewport gets narrower than 2527, flex shrinks the section's horizontal layout dimension. The bg img (`h-full w-full`) follows the shrunk box → aspect ratio breaks (img gets "slimmer" on width-resize but stays correct on height-resize). With `shrink-0`, section's layout footprint is locked to 2527×1610 regardless of viewport width; transform scale handles all visual sizing.
+5. Scale formula and `transform-origin: center center` left UNTOUCHED (Marek's "NIE TYKAĆ" rule after the failed restructures).
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+**Three failed scaling attempts, each reverted before commit:**
+
+**Attempt 1** — wrapped the existing AppShell in a new `AppScaleWrapper` component at 3840×2160 "natural design space" with `transform: scale(min(vw/3840, vh/2160))`. The 2859×1610 canvas sat centered inside this 3840×2160 wrapper. Result: tiny canvas with ~490px black margin BETWEEN canvas and wrapper, plus letterbox between wrapper and viewport. Visual was a small LoopThief in mass of black framing on every resolution. Marek: "Twój 'fix' rozjebał LoopThief na obu monitorach". Full revert.
+
+**Attempt 2** — second AppScaleWrapper, this time with inner box at canvas-native 2859×1610 (no artificial design space). Uncapped scale formula. AppShell's internal scale logic disabled. Marek didn't test — said "no commit + revert" preemptively. Full revert. (In retrospect this WAS structurally closer to correct, but the assumption that a wrapper was needed was itself wrong — the real bug was inside AppShell.)
+
+**Attempt 3** — kept AppShell's internal scaling, but wrapped its scaled `<section>` in an outer `<div>` with `width: CANVAS_WIDTH * scale, height: CANVAS_HEIGHT * scale` (physical paint dimensions). Changed `transform-origin: center center → top left`. Removed the 1.0 scale cap. Theory: flex centering would now see the actual painted footprint instead of the layout-2859×1610 footprint. Marek tested → "no commit revert". Full revert.
+
+**Root-cause learning from the failures**: I kept assuming the problem was that flex was centering a layout-sized box that overflowed the viewport, leading to clipping. The math actually didn't support that for the QHD case (2527 layout width < 2536 effective flex container width; should fit). What I was missing: flex was SHRINKING the section's layout width when the viewport got narrower than the declared width — `flex-shrink: 1` default. The visual was clipped not because of bounding-box overflow but because the section's INTERNAL width was being compressed by flex, then the bg img stretched into the smaller width while the height stayed unchanged. Marek diagnosed this from "slims on width, not on height" — a clear flex-shrink signature I should have probed for from the start.
+
+**Specific pitfalls worth flagging for next time:**
+- **`transform: scale()` does NOT change layout-box dimensions** — Marek pointed this out in attempt 3 spec. I cited it back but kept building wrappers around it instead of asking the simpler question: why is the section's layout width different from what I'm declaring?
+- **Flex items with explicit `width: Npx` still shrink** under flex-shrink: 1. Inline `width` is a flex basis, not a hard floor. Need `min-width: Npx` or `flex-shrink: 0` to lock.
+- **I wrote a session log entry preemptively in attempt 1** before Marek's visual verdict, even though I'd flagged "no live verification by me". Pure overreach. From now on for visual work: no session log writes until Marek confirms.
+- **Reverting via `git checkout HEAD --` worked but needed two passes** once (first for tracked changes, then for staged-but-now-untracked additions). Future revert: a single `git checkout HEAD -- .` + `git clean -df` would reset cleanly in one shot.
+- **No screenshots / visual access from my end** — accepted limitation, reinforced this session: when I can't see what Marek sees, prioritize testable code-level diagnostic questions ("does scrollWidth exceed innerWidth?", "is section.style.width what we declare?") over speculative restructuring.
+
+### Decisions made
+
+- **`CANVAS_WIDTH` changed to 2527** to match the new bg artwork's native dimensions. Existing element coordinates in `layout.json` UNTOUCHED — they fit within 2527 with ~108px right margin.
+- **`shrink-0` on the canvas section** is the load-bearing fix — flex-shrink semantics were the actual bug. Single Tailwind class.
+- **Old bg_v2.png kept on disk** as backup per Marek's spec. Not removed from git; v2 stays alongside v3 (same as `main_panel_bg.png` original was kept when v2 was added).
+- **Scale formula and cap UNTOUCHED** — `Math.min(.../CANVAS_WIDTH, .../CANVAS_HEIGHT, 1)` stays. Marek explicitly said don't touch.
+- **`transform-origin: center center` UNTOUCHED**. The earlier attempt to change it to `top left` (paired with an outer wrapper) was reverted; centered origin is fine when combined with `shrink-0`.
+- **No `AppScaleWrapper` / `ViewportWarning` components** in the final delivery — both abandoned with their respective attempts.
+
+### Open issues / followups
+
+- **Visual verification on both monitors** by Marek before commit:
+  - 4K dev monitor: behavior should be identical to "looks good" reference (cap 1.0 means scale stays at 1.0 → no change vs before, except for the bg artwork swap).
+  - QHD 2560×1440: previously cropped on the right. After `shrink-0`, section keeps full 2527 layout width, scale ≈ 0.879 → visual ≈ 2222×1416 fits in 2560×1440 with margin.
+  - Width-resize live: bg should keep its native 2527:1610 aspect at all viewport widths. No more "slimming" effect.
+- **F2 layout editor smoke test** under new canvas width — Marek's old positions still valid (layout.json untouched), but worth confirming pointer-to-canvas mapping still works.
+- **Tauri `window.minSize`** still pending (Phase B). Browser doesn't enforce a min; user resizing to small viewport will work, just at small scale.
+- **Removing 1.0 scale cap** to let 4K view scale up to fill more of the screen — one-line change (drop `, 1` from Math.min) if Marek decides that later.
+- **`ViewportWarning` banner** idea is shelved — not needed for now.
+
+### Files modified
+
+- `src/components/layout/AppShell.tsx` — bg import path v2→v3; `CANVAS_WIDTH 2859→2527`; `shrink-0` added to section className; img tag uses `h-full w-full` instead of hardcoded `w-[2859px] h-[1610px]` + `objectFit: fill`.
+- `assets/ui/panels/main_panel_bg_1920_v3.png` — new artwork at 2527×1610 matching layout content area (Marek-produced).
+
+---
+
 ## Session 20.1 — 2026-05-21 — Sample Edit: post-KEEP / post-OVERWRITE navigation jumps to CHOP/TRIM
 
 ### What was attempted

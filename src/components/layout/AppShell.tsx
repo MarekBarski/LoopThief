@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import mainPanelBg from "../../../assets/ui/panels/main_panel_bg_1920_v2.png";
+import mainPanelBg from "../../../assets/ui/panels/main_panel_bg_1920_v3.png";
 import { useLayoutStore } from "../../store/useLayoutStore";
 import { LayoutEditorOverlay } from "./LayoutEditorOverlay";
 import { LayoutElements } from "./LayoutElements";
 
-export const CANVAS_WIDTH = 2859;
+export const CANVAS_WIDTH = 2527;
 export const CANVAS_HEIGHT = 1610;
 
 export function AppShell() {
@@ -49,14 +49,13 @@ export function AppShell() {
     <main className="flex min-h-screen items-center justify-center overflow-hidden bg-[#050505] p-3 text-zinc-100">
       <section
         ref={canvasRef}
-        className="relative overflow-hidden"
+        className="relative shrink-0 overflow-hidden"
         style={shellStyle}
       >
         <img
           src={mainPanelBg}
           alt=""
-          className="pointer-events-none absolute left-0 top-0 h-[1610px] w-[2859px] select-none"
-          style={{ objectFit: "fill" }}
+          className="pointer-events-none absolute left-0 top-0 h-full w-full select-none"
         />
         <LayoutElements />
         <LayoutEditorOverlay canvasRef={canvasRef} />
