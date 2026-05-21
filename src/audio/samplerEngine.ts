@@ -1,4 +1,5 @@
 import { getSampleBuffer } from "./sampleLibrary";
+import { fxEngine, type VoiceFxRouting } from "./fxEngine";
 
 export type PlayableSample = {
   id?: string;
@@ -47,6 +48,7 @@ type PlayOptions = {
   };
   envelope?: Envelope;
   sustainMs?: number;
+  fxRouting?: VoiceFxRouting;
 };
 
 type StopOptions = { releaseMs?: number };
@@ -62,6 +64,7 @@ class SamplerEngine {
   private readonly maxVoices = 32;
   private status: "IDLE" | "READY" | "ERROR" = "IDLE";
   private statusListener: ((status: "IDLE" | "READY" | "ERROR") => void) | null = null;
+  private fxBridged = false;
 
   onStatusChange(listener: (status: "IDLE" | "READY" | "ERROR") => void) {
     this.statusListener = listener;
@@ -75,6 +78,8 @@ class SamplerEngine {
     try {
       this.context ??= new AudioContext();
       this.ensureMasterGain();
+      // Initialize FX graph downstream of master gain on first use.
+      fxEngine.ensureReady(this.context);
       if (this.context.state === "suspended") await this.context.resume();
       this.setStatus("READY");
       return true;
@@ -82,6 +87,11 @@ class SamplerEngine {
       this.setStatus("ERROR");
       return false;
     }
+  }
+
+  /** Returns the shared AudioContext for FX engine wiring. */
+  getContext(): AudioContext | null {
+    return this.context;
   }
 
   async decodeAudioData(data: ArrayBuffer) {
@@ -158,13 +168,22 @@ class SamplerEngine {
     source.playbackRate.value = sample.playbackRate ?? 1;
     channelGain.gain.value = clamp(options.gain, 0, 2);
     pan.pan.value = clamp(options.pan, -1, 1);
+    // Build source → [filter?] → envelopeGain → channelGain → pan
     if (filter && filterOptions) {
       filter.type = filterOptions.type;
       filter.frequency.value = clamp(filterOptions.frequency, 20, this.context.sampleRate / 2);
       filter.Q.value = clamp(filterOptions.q, 0.0001, 30);
-      source.connect(filter).connect(envelopeGain).connect(channelGain).connect(pan).connect(this.ensureMasterGain());
+      source.connect(filter).connect(envelopeGain).connect(channelGain).connect(pan);
     } else {
-      source.connect(envelopeGain).connect(channelGain).connect(pan).connect(this.ensureMasterGain());
+      source.connect(envelopeGain).connect(channelGain).connect(pan);
+    }
+    // Route pan into FX graph (bus + dry) per voice routing config.
+    // routeVoice returns { dryConnected: true } when INSERT mode consumed the entire signal
+    // (no dry-to-master needed). Otherwise we wire dry path explicitly.
+    const masterInput = this.ensureFxMasterEntry();
+    const routed = fxEngine.routeVoice(pan, options.fxRouting);
+    if (!routed.dryConnected) {
+      pan.connect(masterInput);
     }
 
     const hasEnvelope = !!options.envelope;
@@ -249,6 +268,24 @@ class SamplerEngine {
     }
     this.applyMasterVolume();
     return this.masterGain;
+  }
+
+  /**
+   * Ensures the FX master chain is wired to masterGain → destination, and returns the
+   * entry node where voices should connect their dry signal. Idempotent.
+   */
+  private ensureFxMasterEntry(): GainNode {
+    if (!this.context) throw new Error("Audio context not ready");
+    fxEngine.ensureReady(this.context);
+    const fxOut = fxEngine.getMasterOutput();
+    const fxIn = fxEngine.getMasterInput();
+    if (!fxIn || !fxOut) throw new Error("FX master chain not initialized");
+    const masterGain = this.ensureMasterGain();
+    if (!this.fxBridged) {
+      fxOut.connect(masterGain);
+      this.fxBridged = true;
+    }
+    return fxIn;
   }
 
   private applyMasterVolume() {

@@ -15,6 +15,8 @@ import {
   BarEditorScreen,
   CountInUtilityScreen,
   EraseUtilityScreen,
+  FxScreen,
+  FxSendWindowScreen,
   GoToUtilityScreen,
   NextSeqUtilityScreen,
   NoteRepeatUtilityScreen,
@@ -52,4 +54,6 @@ export const screensById: Record<ScreenId, ComponentType> = {
   TIMING_CORRECT: TimingCorrectUtilityScreen,
   TIME_SIG_WINDOW: TimeSigWindowScreen,
   BAR_EDITOR: BarEditorScreen,
+  FX: FxScreen,
+  FX_SEND_WINDOW: FxSendWindowScreen,
 };

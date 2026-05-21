@@ -23,6 +23,8 @@ export type ProjectSerializationInput = {
   sequences: unknown[];
   songs: unknown[];
   globalSettings: GlobalSettings;
+  fxBuses?: unknown[];
+  masterFx?: unknown;
   resolveAudioBuffer: (audioBufferId: string) => AudioBuffer | null;
 };
 
@@ -69,6 +71,8 @@ export function serializeProject(input: ProjectSerializationInput): SerializedPr
     sequences: input.sequences,
     songs: input.songs,
     globalSettings: input.globalSettings,
+    fxBuses: input.fxBuses,
+    masterFx: input.masterFx,
   };
 
   return { manifest, sampleEntries };

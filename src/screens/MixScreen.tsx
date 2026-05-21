@@ -9,8 +9,10 @@ export function MixScreen() {
   const padBank = useAppStore((state) => state.padBank);
   const selectedPad = useAppStore((state) => state.selectedPad);
   const channels = useAppStore((state) => state.padMixer[padBank]);
+  const assignments = useAppStore((state) => state.padAssignments[padBank]);
   const triggeredPads = useAppStore((state) => state.triggeredPads);
   const selectedChannel = channels.find((channel) => channel.pad === selectedPad) ?? channels[0];
+  const selectedAssignment = assignments.find((a) => a.pad === selectedPad) ?? assignments[0];
   const selectMixerPad = useAppStore((state) => state.selectMixerPad);
   const setMixerChannelValue = useAppStore((state) => state.setMixerChannelValue);
   const toggleSelectedMixerMute = useAppStore((state) => state.toggleSelectedMixerMute);
@@ -18,18 +20,23 @@ export function MixScreen() {
   const toggleMixerChannelMute = useAppStore((state) => state.toggleMixerChannelMute);
   const toggleMixerChannelSolo = useAppStore((state) => state.toggleMixerChannelSolo);
   const cycleSelectedMixerOutput = useAppStore((state) => state.cycleSelectedMixerOutput);
+  const setPadFxBus = useAppStore((state) => state.setPadFxBus);
+  const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
   const anySolo = channels.some((channel) => channel.solo);
+  const padBus = selectedAssignment?.fxBus ?? 0;
+  const padSendLevel = selectedAssignment?.fxSendLevel ?? 0;
 
   return (
     <ScreenFrame title="MIX" subtitle={`Pad mixer / bank ${padBank}`}>
       <div className="grid h-full gap-[12px]" style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}>
         <div className="grid min-h-0 grid-rows-[auto_1fr] gap-[8px] overflow-hidden">
-          <section className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] items-center gap-[10px] border border-[#46533b] bg-black/20 px-[2.2%] py-[1.4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em]">
+          <section className="grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] items-center gap-[10px] border border-[#46533b] bg-black/20 px-[2.2%] py-[1.4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em]">
             <span className="text-[#91a477]">BANK {padBank} / 16 PAD CHANNELS</span>
             <span>{selectedChannel.pad}</span>
             <span>VOL {selectedChannel.level}</span>
             <span>PAN {formatPan(selectedChannel.pan)}</span>
-            <span>SEND {selectedChannel.fxSend}</span>
+            <span>FX {padBus === 0 ? "—" : `B${padBus}`}</span>
+            <span>SND {padBus === 0 ? "—" : padSendLevel}</span>
             <span className={selectedChannel.solo ? "text-amber-100" : selectedChannel.muted ? "text-[#91a477]" : ""}>
               {selectedChannel.solo ? "SOLO" : selectedChannel.muted ? "MUTE" : selectedChannel.output}
             </span>
@@ -38,6 +45,9 @@ export function MixScreen() {
           <section className="grid min-h-0 grid-cols-16 gap-[0.6%] border border-[#46533b] bg-black/20 p-[1.2%]">
             {channels.map((channel) => {
               const audible = !channel.muted && (!anySolo || channel.solo);
+              const assignment = assignments.find((a) => a.pad === channel.pad);
+              const bus = assignment?.fxBus ?? 0;
+              const sendLevel = assignment?.fxSendLevel ?? 0;
               return (
                 <ChannelStrip
                   key={channel.pad}
@@ -46,10 +56,12 @@ export function MixScreen() {
                   audible={audible}
                   meterActive={audible && isPadVisuallyTriggered(triggeredPads, padBank, channel.pad)}
                   meterLevel={audible ? channel.level / 127 : 0}
+                  fxBus={bus}
+                  fxSendLevel={sendLevel}
                   onSelect={() => selectMixerPad(channel.pad)}
                   onLevel={(value) => setMixerChannelValue(channel.pad, "level", value)}
                   onPan={(value) => setMixerChannelValue(channel.pad, "pan", value)}
-                  onFxSend={(value) => setMixerChannelValue(channel.pad, "fxSend", value)}
+                  onFxBusCycle={() => setPadFxBus(channel.pad, ((bus + 1) % 5) as 0 | 1 | 2 | 3 | 4)}
                   onMute={() => toggleMixerChannelMute(channel.pad)}
                   onSolo={() => toggleMixerChannelSolo(channel.pad)}
                 />
@@ -66,6 +78,7 @@ export function MixScreen() {
               onClick={() => {
                 if (button === "F3 MUTE") toggleSelectedMixerMute();
                 if (button === "F4 SOLO") toggleSelectedMixerSolo();
+                if (button === "F5 FX SEND") openFxSendWindow();
                 if (button === "F6 OUTPUT") cycleSelectedMixerOutput();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
@@ -94,10 +107,12 @@ function ChannelStrip({
   audible,
   meterActive,
   meterLevel,
+  fxBus,
+  fxSendLevel,
   onSelect,
   onLevel,
   onPan,
-  onFxSend,
+  onFxBusCycle,
   onMute,
   onSolo,
 }: {
@@ -106,10 +121,12 @@ function ChannelStrip({
   audible: boolean;
   meterActive: boolean;
   meterLevel: number;
+  fxBus: 0 | 1 | 2 | 3 | 4;
+  fxSendLevel: number;
   onSelect: () => void;
   onLevel: (value: number) => void;
   onPan: (value: number) => void;
-  onFxSend: (value: number) => void;
+  onFxBusCycle: () => void;
   onMute: () => void;
   onSolo: () => void;
 }) {
@@ -123,7 +140,15 @@ function ChannelStrip({
       <span>{channel.pad.slice(1)}</span>
       <PanKnob value={channel.pan} onChange={onPan} />
       <Fader value={channel.level} onChange={onLevel} />
-      <FxSend value={channel.fxSend} onChange={onFxSend} />
+      <button
+        type="button"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={onFxBusCycle}
+        title="Click to cycle FX bus (OF/1/2/3/4)"
+        className="border border-[#46533b] bg-black/20 px-[1px]"
+      >
+        {fxBus === 0 ? "OF" : `B${fxBus}:${fxSendLevel}`}
+      </button>
       <Meter active={meterActive} level={meterLevel} />
       <div className="grid grid-cols-2 gap-[2px]">
         <button
@@ -176,18 +201,6 @@ function PanKnob({ value, onChange }: { value: number; onChange: (value: number)
       </div>
       <span>{formatPan(value)}</span>
     </div>
-  );
-}
-
-function FxSend({ value, onChange }: { value: number; onChange: (value: number) => void }) {
-  return (
-    <button
-      type="button"
-      onPointerDown={(event) => beginHorizontalDrag(event, value, onChange, 0, 100)}
-      className="cursor-ew-resize border border-[#46533b] bg-black/20 px-[1px]"
-    >
-      {value}
-    </button>
   );
 }
 

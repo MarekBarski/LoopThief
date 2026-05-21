@@ -171,7 +171,7 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
   const active =
     element.type === "mode"
       ? (element.label === "FX"
-          ? activeScreen === "PERFORMANCE"
+          ? activeScreen === "FX"
           : element.label === activeScreen)
       : element.type === "padMode"
         ? (element.label === "PLAY" && currentPadMode === "PAD_PLAY") ||
@@ -223,9 +223,10 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
       }}
       onClick={() => {
         if (element.type === "mode" && element.label) {
-          // "FX" label is a display alias for PERFORMANCE screen (label rename without screen-id refactor).
-          const target = element.label === "FX" ? "PERFORMANCE" : element.label;
-          setActiveScreen(target as Parameters<typeof setActiveScreen>[0]);
+          // Phase A FX system: "FX" hardware button opens the dedicated FX screen
+          // (4 buses + master EQ/Comp). Old PERFORMANCE screen is no longer reachable
+          // from the hardware shell; left in code as legacy.
+          setActiveScreen(element.label as Parameters<typeof setActiveScreen>[0]);
         }
 
         if (element.type === "padMode" && element.label) {

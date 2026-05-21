@@ -27,6 +27,10 @@ export function ProgramScreen() {
   const previousProgram = useAppStore((state) => state.previousProgram);
   const nextProgram = useAppStore((state) => state.nextProgram);
   const createProgram = useAppStore((state) => state.createProgram);
+  const fxBuses = useAppStore((state) => state.fxBuses);
+  const setPadFxBus = useAppStore((state) => state.setPadFxBus);
+  const adjustPadFxSendLevel = useAppStore((state) => state.adjustPadFxSendLevel);
+  const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
   const [assignOpen, setAssignOpen] = useState(false);
   const [sourceType, setSourceType] = useState<"SAMPLES" | "SLICES" | "PROGRAM POOL">("SAMPLES");
   const [sourceIndex, setSourceIndex] = useState(0);
@@ -177,20 +181,38 @@ export function ProgramScreen() {
                 />
               </div>
             ) : programView === "FX" ? (
-              <div className="grid min-h-0 content-start gap-[10px]">
-                <div className="grid grid-cols-2 gap-[8px]">
-                  <Info label="SELECTED PAD" value={`${padBank}${selectedAssignment.pad.slice(1)}`} />
-                  <Info label="FX SEND" value={String(selectedAssignment.fxSend)} />
-                  <Info label="AUDIO FX" value="NOT ROUTED" />
-                  <Info label="STATUS" value="VISUAL ONLY" />
-                </div>
-                <Param
-                  label="FX SEND"
-                  value={selectedAssignment.fxSend}
-                  onMinus={() => updateSelectedPadParam("fxSend", -1)}
-                  onPlus={() => updateSelectedPadParam("fxSend", 1)}
-                />
-              </div>
+              (() => {
+                const padBus = selectedAssignment.fxBus ?? 0;
+                const padSend = selectedAssignment.fxSendLevel ?? 0;
+                const targetBus = padBus === 0 ? null : fxBuses.find((b) => b.id === padBus);
+                const sendDisabled = !targetBus || !targetBus.direct;
+                const cycleBus = (dir: 1 | -1) => {
+                  const next = ((padBus + dir + 5) % 5) as 0 | 1 | 2 | 3 | 4;
+                  setPadFxBus(selectedAssignment.pad, next);
+                };
+                return (
+                  <div className="grid min-h-0 content-start gap-[10px]">
+                    <div className="grid grid-cols-2 gap-[8px]">
+                      <Info label="SELECTED PAD" value={`${padBank}${selectedAssignment.pad.slice(1)}`} />
+                      <Info label="FX BUS" value={padBus === 0 ? "OFF" : `FX${padBus}${targetBus?.effect ? ` (${targetBus.effect})` : ""}`} />
+                      <Info label="MODE" value={targetBus ? (targetBus.direct ? "SEND" : "INSERT") : "---"} />
+                      <Info label="SEND LEVEL" value={sendDisabled ? "---" : String(padSend)} />
+                    </div>
+                    <Param
+                      label="FX BUS"
+                      value={padBus === 0 ? "OFF" : `FX${padBus}`}
+                      onMinus={() => cycleBus(-1)}
+                      onPlus={() => cycleBus(1)}
+                    />
+                    <Param
+                      label="SEND"
+                      value={sendDisabled ? "---" : padSend}
+                      onMinus={() => !sendDisabled && adjustPadFxSendLevel(selectedAssignment.pad, -1)}
+                      onPlus={() => !sendDisabled && adjustPadFxSendLevel(selectedAssignment.pad, 1)}
+                    />
+                  </div>
+                );
+              })()
             ) : (
               <div className="grid min-h-0 content-start gap-[10px]">
                 <div className="grid grid-cols-2 gap-[8px]">
@@ -291,7 +313,12 @@ export function ProgramScreen() {
                 if (button === "F2 PARAMS") setProgramView("PARAMS");
                 if (button === "F3 CHOKE") setProgramView("CHOKE");
                 if (button === "F4 FILTER") setProgramView("FILTER");
-                if (button === "F5 FX SEND") setProgramView("FX");
+                if (button === "F5 FX SEND") {
+                  // Single source of truth: same popup as MIX screen edits pad.fxBus + fxSendLevel.
+                  // Also switch program view to FX so user lands on the FX panel after closing the popup.
+                  setProgramView("FX");
+                  openFxSendWindow();
+                }
                 if (button === "F6 SAVE PGM") createProgram();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"

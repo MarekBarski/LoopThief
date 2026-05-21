@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 1 as const;
+export const CURRENT_SCHEMA_VERSION = 2 as const;
 
 export type ManifestType = "project" | "all" | "seq";
 
@@ -51,6 +51,8 @@ export type ProjectManifest = BaseManifest & {
   sequences: unknown[];
   songs: unknown[];
   globalSettings: GlobalSettings;
+  fxBuses?: unknown[];   // Phase A FX system; absent in v1 projects (migration fills defaults).
+  masterFx?: unknown;    // Phase A master EQ + Compressor.
 };
 
 export type AllManifest = BaseManifest & {

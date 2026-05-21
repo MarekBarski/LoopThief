@@ -80,6 +80,8 @@ export function App() {
               metronomeCountInBars: state.metronomeCountInBars,
               metronomeVolume: state.metronomeVolume,
             },
+            fxBuses: state.fxBuses,
+            masterFx: state.masterFx,
             resolveAudioBuffer: (id) => getSampleBuffer(id),
           });
           return writeProjectZip(manifest, sampleEntries);

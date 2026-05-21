@@ -1046,6 +1046,361 @@ export function BarEditorScreen() {
   );
 }
 
+// ============================================================================
+// FX SCREEN — 4 FX buses + master EQ/Comp (MPC5000 routing model)
+// ============================================================================
+
+const FX_EFFECT_CYCLE: Array<null | "REVERB" | "DELAY" | "EQ" | "FLANGER" | "CHORUS" | "BITCRUSHER" | "COMPRESSOR"> = [
+  null, "REVERB", "DELAY", "EQ", "FLANGER", "CHORUS", "BITCRUSHER", "COMPRESSOR",
+];
+
+const FX_EFFECT_LABEL: Record<string, string> = {
+  REVERB: "REVERB",
+  DELAY: "DELAY",
+  EQ: "EQ",
+  FLANGER: "FLANGER",
+  CHORUS: "CHORUS",
+  BITCRUSHER: "BITCRUSH",
+  COMPRESSOR: "COMP",
+};
+
+// Per-effect parameter keys (display order) + UI step size.
+const EFFECT_PARAM_KEYS: Record<string, Array<{ key: string; label: string; step: number; format?: (v: number) => string }>> = {
+  REVERB: [
+    { key: "size", label: "SIZE", step: 1 },
+    { key: "damping", label: "DAMP", step: 1 },
+    { key: "wetDry", label: "WET/DRY", step: 1 },
+    { key: "preDelay", label: "PREDELAY", step: 1, format: (v) => `${v}ms` },
+    { key: "hpCut", label: "HP CUT", step: 50, format: (v) => `${v}Hz` },
+    { key: "lpCut", label: "LP CUT", step: 100, format: (v) => `${v}Hz` },
+  ],
+  DELAY: [
+    { key: "timeMs", label: "TIME", step: 10, format: (v) => `${v}ms` },
+    { key: "feedback", label: "FEEDBACK", step: 1 },
+    { key: "wetDry", label: "WET/DRY", step: 1 },
+    { key: "hpCut", label: "HP CUT", step: 50, format: (v) => `${v}Hz` },
+    { key: "lpCut", label: "LP CUT", step: 100, format: (v) => `${v}Hz` },
+  ],
+  EQ: [
+    { key: "lowGain", label: "LOW GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "lowFreq", label: "LOW FREQ", step: 10, format: (v) => `${v}Hz` },
+    { key: "lowMidGain", label: "LMID GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "lowMidFreq", label: "LMID FREQ", step: 50, format: (v) => `${v}Hz` },
+    { key: "highMidGain", label: "HMID GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "highMidFreq", label: "HMID FREQ", step: 100, format: (v) => `${v}Hz` },
+    { key: "highGain", label: "HIGH GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "highFreq", label: "HIGH FREQ", step: 200, format: (v) => `${v}Hz` },
+  ],
+  FLANGER: [
+    { key: "rate", label: "RATE", step: 0.1, format: (v) => `${v.toFixed(1)}Hz` },
+    { key: "depth", label: "DEPTH", step: 1 },
+    { key: "feedback", label: "FEEDBACK", step: 1 },
+    { key: "wetDry", label: "WET/DRY", step: 1 },
+  ],
+  CHORUS: [
+    { key: "rate", label: "RATE", step: 0.1, format: (v) => `${v.toFixed(1)}Hz` },
+    { key: "depth", label: "DEPTH", step: 1 },
+    { key: "mix", label: "MIX", step: 1 },
+  ],
+  BITCRUSHER: [
+    { key: "bits", label: "BITS", step: 1 },
+    { key: "sampleRateReduction", label: "SR REDUCE", step: 1, format: (v) => `1/${v}` },
+    { key: "wetDry", label: "WET/DRY", step: 1 },
+  ],
+  COMPRESSOR: [
+    { key: "threshold", label: "THRESHOLD", step: 1, format: (v) => `${v}dB` },
+    { key: "ratio", label: "RATIO", step: 0.5, format: (v) => `${v.toFixed(1)}:1` },
+    { key: "attack", label: "ATTACK", step: 1, format: (v) => `${v}ms` },
+    { key: "release", label: "RELEASE", step: 5, format: (v) => `${v}ms` },
+    { key: "makeupGain", label: "MAKEUP", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
+  ],
+};
+
+const MASTER_EQ_PARAMS = [
+  { key: "lowGain", label: "LOW GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "lowFreq", label: "LOW FREQ", step: 10, format: (v: number) => `${v}Hz` },
+  { key: "lowMidGain", label: "LMID GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "lowMidFreq", label: "LMID FREQ", step: 50, format: (v: number) => `${v}Hz` },
+  { key: "highMidGain", label: "HMID GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "highMidFreq", label: "HMID FREQ", step: 100, format: (v: number) => `${v}Hz` },
+  { key: "highGain", label: "HIGH GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "highFreq", label: "HIGH FREQ", step: 200, format: (v: number) => `${v}Hz` },
+];
+
+const MASTER_COMP_PARAMS = [
+  { key: "threshold", label: "THRESHOLD", step: 1, format: (v: number) => `${v}dB` },
+  { key: "ratio", label: "RATIO", step: 0.5, format: (v: number) => `${v.toFixed(1)}:1` },
+  { key: "attack", label: "ATTACK", step: 1, format: (v: number) => `${v}ms` },
+  { key: "release", label: "RELEASE", step: 5, format: (v: number) => `${v}ms` },
+  { key: "makeupGain", label: "MAKEUP", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
+];
+
+type FxSelection =
+  | { kind: "bus"; busId: 1 | 2 | 3 | 4 }
+  | { kind: "master-eq" }
+  | { kind: "master-comp" };
+
+export function FxScreen() {
+  const fxBuses = useAppStore((s) => s.fxBuses);
+  const masterFx = useAppStore((s) => s.masterFx);
+  const setFxBusEffect = useAppStore((s) => s.setFxBusEffect);
+  const toggleFxBusDirect = useAppStore((s) => s.toggleFxBusDirect);
+  const toggleFxBusBypass = useAppStore((s) => s.toggleFxBusBypass);
+  const adjustFxBusParam = useAppStore((s) => s.adjustFxBusParam);
+  const toggleMasterEqBypass = useAppStore((s) => s.toggleMasterEqBypass);
+  const toggleMasterCompBypass = useAppStore((s) => s.toggleMasterCompBypass);
+  const adjustMasterEqParam = useAppStore((s) => s.adjustMasterEqParam);
+  const adjustMasterCompParam = useAppStore((s) => s.adjustMasterCompParam);
+  const setActiveScreen = useAppStore((s) => s.setActiveScreen);
+
+  const [selection, setSelection] = useState<FxSelection>({ kind: "bus", busId: 1 });
+
+  const exit = () => setActiveScreen("MAIN");
+  const cycleEffect = (busId: 1 | 2 | 3 | 4, dir: 1 | -1) => {
+    const bus = fxBuses.find((b) => b.id === busId);
+    if (!bus) return;
+    const i = FX_EFFECT_CYCLE.indexOf(bus.effect ?? null);
+    const next = FX_EFFECT_CYCLE[(i + dir + FX_EFFECT_CYCLE.length) % FX_EFFECT_CYCLE.length];
+    setFxBusEffect(busId, next);
+  };
+
+  const selectedBus =
+    selection.kind === "bus" ? fxBuses.find((b) => b.id === selection.busId) : null;
+
+  return (
+    <ScreenFrame title="FX" subtitle="4 BUSES + MASTER (MPC5000 routing)">
+      {shell(
+        <div className="grid h-full grid-cols-[1fr_1.2fr_1.6fr] gap-[1.6%]">
+          {/* PANEL 1 — Bus list + Master entries */}
+          <section className="grid content-start gap-[6px] border border-[#46533b] bg-black/20 p-[3%] text-[clamp(9px,0.78vw,12px)] tracking-[0.12em]">
+            <p className="text-[#91a477]">BUSES</p>
+            {fxBuses.map((bus) => {
+              const isSelected = selection.kind === "bus" && selection.busId === bus.id;
+              const label = bus.effect ? FX_EFFECT_LABEL[bus.effect] : "OFF";
+              const mode = bus.effect ? (bus.direct ? "SEND" : "INSERT") : "---";
+              return (
+                <button
+                  key={bus.id}
+                  type="button"
+                  onClick={() => setSelection({ kind: "bus", busId: bus.id as 1 | 2 | 3 | 4 })}
+                  className={`grid grid-cols-[auto_1fr_auto] items-center gap-[6px] border px-[6px] py-[4px] text-left ${
+                    isSelected ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
+                  } ${bus.bypass ? "opacity-50" : ""}`}
+                >
+                  <span>{isSelected ? ">" : " "}</span>
+                  <span>FX{bus.id} {label}</span>
+                  <span className="text-[#91a477] text-[clamp(7px,0.6vw,10px)]">{mode}</span>
+                </button>
+              );
+            })}
+            <p className="mt-[6%] text-[#91a477]">MASTER</p>
+            <button
+              type="button"
+              onClick={() => setSelection({ kind: "master-eq" })}
+              className={`grid grid-cols-[auto_1fr_auto] items-center gap-[6px] border px-[6px] py-[4px] text-left ${
+                selection.kind === "master-eq" ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
+              } ${masterFx.eq.bypass ? "opacity-50" : ""}`}
+            >
+              <span>{selection.kind === "master-eq" ? ">" : " "}</span>
+              <span>EQ</span>
+              <span className="text-[#91a477] text-[clamp(7px,0.6vw,10px)]">{masterFx.eq.bypass ? "BYP" : "ON"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelection({ kind: "master-comp" })}
+              className={`grid grid-cols-[auto_1fr_auto] items-center gap-[6px] border px-[6px] py-[4px] text-left ${
+                selection.kind === "master-comp" ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
+              } ${masterFx.compressor.bypass ? "opacity-50" : ""}`}
+            >
+              <span>{selection.kind === "master-comp" ? ">" : " "}</span>
+              <span>COMP</span>
+              <span className="text-[#91a477] text-[clamp(7px,0.6vw,10px)]">{masterFx.compressor.bypass ? "BYP" : "ON"}</span>
+            </button>
+          </section>
+
+          {/* PANEL 2 — Selected details + actions */}
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.85vw,13px)] tracking-[0.12em]">
+            {selection.kind === "bus" && selectedBus ? (
+              <>
+                <p className="text-[#91a477]">SELECTED BUS</p>
+                <div className="grid grid-cols-[1fr_auto]"><span>BUS</span><span className="text-[#eef6d8]">FX{selectedBus.id}</span></div>
+                <div className="grid grid-cols-[1fr_auto]"><span>EFFECT</span><span className="text-[#eef6d8]">{selectedBus.effect ? FX_EFFECT_LABEL[selectedBus.effect] : "OFF"}</span></div>
+                <div className="grid grid-cols-[1fr_auto]"><span>MODE</span><span className="text-[#eef6d8]">{selectedBus.direct ? "SEND" : "INSERT"}</span></div>
+                <div className="grid grid-cols-[1fr_auto]"><span>BYPASS</span><span className="text-[#eef6d8]">{selectedBus.bypass ? "ON" : "OFF"}</span></div>
+                <p className="mt-[6%] text-[#91a477]">ACTIONS</p>
+                <ArrowRow label="EFFECT" value={selectedBus.effect ? FX_EFFECT_LABEL[selectedBus.effect] : "OFF"}
+                  onPrev={() => cycleEffect(selectedBus.id, -1)} onNext={() => cycleEffect(selectedBus.id, 1)} />
+                <button type="button" onClick={() => toggleFxBusDirect(selectedBus.id)} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
+                  DIRECT: {selectedBus.direct ? "ON (SEND)" : "OFF (INSERT)"}
+                </button>
+                <button type="button" onClick={() => toggleFxBusBypass(selectedBus.id)} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
+                  BYPASS: {selectedBus.bypass ? "ON" : "OFF"}
+                </button>
+              </>
+            ) : selection.kind === "master-eq" ? (
+              <>
+                <p className="text-[#91a477]">MASTER EQ</p>
+                <p>4-band parametric, last in chain.</p>
+                <button type="button" onClick={toggleMasterEqBypass} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
+                  BYPASS: {masterFx.eq.bypass ? "ON" : "OFF"}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-[#91a477]">MASTER COMP</p>
+                <p>Dynamics, last in chain.</p>
+                <button type="button" onClick={toggleMasterCompBypass} className="border border-[#46533b] bg-black/30 px-[6px] py-[4px] text-[#d8e3b7]">
+                  BYPASS: {masterFx.compressor.bypass ? "ON" : "OFF"}
+                </button>
+              </>
+            )}
+          </section>
+
+          {/* PANEL 3 — Effect parameters */}
+          <section className="grid min-h-0 content-start gap-[6px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.78vw,12px)] tracking-[0.12em]">
+            <p className="text-[#91a477]">PARAMETERS</p>
+            {selection.kind === "bus" && selectedBus ? (
+              selectedBus.effect ? (
+                EFFECT_PARAM_KEYS[selectedBus.effect].map(({ key, label, step, format }) => {
+                  const value = selectedBus.params[key] ?? 0;
+                  return (
+                    <ArrowRow
+                      key={key}
+                      label={label}
+                      value={format ? format(value) : String(value)}
+                      onPrev={() => adjustFxBusParam(selectedBus.id, key, -step)}
+                      onNext={() => adjustFxBusParam(selectedBus.id, key, step)}
+                    />
+                  );
+                })
+              ) : (
+                <p className="text-[#91a477]">No effect assigned. Use EFFECT &lt; &gt; in middle panel.</p>
+              )
+            ) : selection.kind === "master-eq" ? (
+              MASTER_EQ_PARAMS.map(({ key, label, step, format }) => {
+                const value = masterFx.eq.params[key] ?? 0;
+                return (
+                  <ArrowRow
+                    key={key}
+                    label={label}
+                    value={format ? format(value) : String(value)}
+                    onPrev={() => adjustMasterEqParam(key, -step)}
+                    onNext={() => adjustMasterEqParam(key, step)}
+                  />
+                );
+              })
+            ) : (
+              MASTER_COMP_PARAMS.map(({ key, label, step, format }) => {
+                const value = masterFx.compressor.params[key] ?? 0;
+                return (
+                  <ArrowRow
+                    key={key}
+                    label={label}
+                    value={format ? format(value) : String(value)}
+                    onPrev={() => adjustMasterCompParam(key, -step)}
+                    onNext={() => adjustMasterCompParam(key, step)}
+                  />
+                );
+              })
+            )}
+          </section>
+        </div>,
+        [
+          {
+            label: "F1 EFFECT",
+            onClick: selection.kind === "bus" ? () => cycleEffect(selection.busId, 1) : undefined,
+          },
+          {
+            label: "F2 DIRECT",
+            onClick: selection.kind === "bus" ? () => toggleFxBusDirect(selection.busId) : undefined,
+          },
+          {
+            label: "F3 BYPASS",
+            onClick:
+              selection.kind === "bus" ? () => toggleFxBusBypass(selection.busId)
+              : selection.kind === "master-eq" ? toggleMasterEqBypass
+              : toggleMasterCompBypass,
+          },
+          "F4 —",
+          "F5 —",
+          { label: "F6 EXIT", onClick: exit },
+        ],
+        exit,
+      )}
+    </ScreenFrame>
+  );
+}
+
+export function FxSendWindowScreen() {
+  const padBank = useAppStore((s) => s.padBank);
+  const selectedPad = useAppStore((s) => s.selectedPad);
+  const padAssignments = useAppStore((s) => s.padAssignments);
+  const fxBuses = useAppStore((s) => s.fxBuses);
+  const setPadFxBus = useAppStore((s) => s.setPadFxBus);
+  const adjustPadFxSendLevel = useAppStore((s) => s.adjustPadFxSendLevel);
+  const closeFxSendWindow = useAppStore((s) => s.closeFxSendWindow);
+
+  const assignment = padAssignments[padBank].find((a) => a.pad === selectedPad);
+  const busId = assignment?.fxBus ?? 0;
+  const sendLevel = assignment?.fxSendLevel ?? 0;
+  const targetBus = busId === 0 ? null : fxBuses.find((b) => b.id === busId);
+  const sendDisabled = !targetBus || !targetBus.direct;
+  const padLabel = `${padBank}${selectedPad.slice(1)}`;
+
+  const cycleBus = (dir: 1 | -1) => {
+    const cur = busId;
+    const next = ((cur + dir + 5) % 5) as 0 | 1 | 2 | 3 | 4;
+    setPadFxBus(selectedPad, next);
+  };
+  const adjustSend = (delta: number) => {
+    if (sendDisabled) return;
+    adjustPadFxSendLevel(selectedPad, delta);
+  };
+
+  return (
+    <ScreenFrame title="FX SEND" subtitle={`Pad ${padLabel}`}>
+      {shell(
+        <div className="grid h-full grid-cols-[1fr_1fr] gap-[2.3%]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(11px,0.9vw,14px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">ROUTING</p>
+            <ArrowRow
+              label="FX BUS"
+              value={busId === 0 ? "OFF" : `FX${busId}${targetBus?.effect ? ` (${FX_EFFECT_LABEL[targetBus.effect]})` : ""}`}
+              onPrev={() => cycleBus(-1)}
+              onNext={() => cycleBus(1)}
+            />
+            <ArrowRow
+              label="SEND LEVEL"
+              value={sendDisabled ? "---" : `${sendLevel}`}
+              onPrev={() => adjustSend(-1)}
+              onNext={() => adjustSend(1)}
+            />
+            {sendDisabled && busId !== 0 ? (
+              <p className="text-[#91a477] text-[clamp(9px,0.7vw,11px)]">Bus is INSERT mode — send disabled.</p>
+            ) : null}
+          </section>
+          <section className="grid content-start gap-[6px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">CONTEXT</p>
+            <div className="grid grid-cols-[1fr_auto]"><span>PAD</span><span className="text-[#eef6d8]">{padLabel}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span>BUS</span><span className="text-[#eef6d8]">{busId === 0 ? "OFF" : `FX${busId}`}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span>MODE</span><span className="text-[#eef6d8]">{targetBus ? (targetBus.direct ? "SEND" : "INSERT") : "---"}</span></div>
+            <div className="grid grid-cols-[1fr_auto]"><span>EFFECT</span><span className="text-[#eef6d8]">{targetBus?.effect ?? "---"}</span></div>
+          </section>
+        </div>,
+        [
+          "F1 —",
+          "F2 —",
+          "F3 —",
+          "F4 —",
+          "F5 —",
+          { label: "F6 EXIT", onClick: closeFxSendWindow },
+        ],
+        closeFxSendWindow,
+      )}
+    </ScreenFrame>
+  );
+}
+
 export function TimeSigWindowScreen() {
   const sequences = useAppStore((s) => s.sequences);
   const currentSequence = useAppStore((s) => s.currentSequence);

@@ -8,8 +8,32 @@ export type Migration = {
 };
 
 const MIGRATIONS: Migration[] = [
-  // Future migrations registered here in order:
-  //   { from: 1, to: 2, apply: (m) => ({ ...m, schemaVersion: 2, /* transform */ }) },
+  // v1 → v2: Phase A FX system. PROJECT manifests gain `fxBuses` + `masterFx` defaults
+  // (4 empty buses + flat-bypassed master EQ/Comp). ALL/SEQ manifests just bump version
+  // (no FX payload — FX state is project-level only).
+  {
+    from: 1,
+    to: 2,
+    apply: (m) => {
+      if (m.type === "project") {
+        return {
+          ...m,
+          schemaVersion: 2,
+          fxBuses: [
+            { id: 1, effect: null, direct: true, bypass: false, params: {} },
+            { id: 2, effect: null, direct: true, bypass: false, params: {} },
+            { id: 3, effect: null, direct: true, bypass: false, params: {} },
+            { id: 4, effect: null, direct: true, bypass: false, params: {} },
+          ],
+          masterFx: {
+            eq: { bypass: true, params: {} },
+            compressor: { bypass: true, params: {} },
+          },
+        };
+      }
+      return { ...m, schemaVersion: 2 };
+    },
+  },
 ];
 
 export function applyMigrations(input: AnyManifest): AnyManifest {

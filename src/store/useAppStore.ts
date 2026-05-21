@@ -2,6 +2,15 @@ import { create } from "zustand";
 import type { ScreenId } from "../types/navigation";
 import { startRecordingCapture, type ActiveRecordingCapture, type RecordingInputSource } from "../audio/recordingCapture";
 import { samplerEngine } from "../audio/samplerEngine";
+import {
+  EFFECT_DEFAULTS,
+  fxEngine,
+  MASTER_COMP_DEFAULTS,
+  MASTER_EQ_DEFAULTS,
+  type BusId,
+  type EffectParamMap,
+  type EffectType,
+} from "../audio/fxEngine";
 import { createSampleId, createWaveformCache, encodeWavRegion, getSampleAudioRef, getSampleBuffer, registerSampleAudio } from "../audio/sampleLibrary";
 import metronomeSampleUrl from "../../assets/Samples/Metronome.wav?url";
 import {
@@ -63,6 +72,8 @@ type UndoSnapshot = {
   currentEvent: number;
   selectedEventIndex: number;
   selectedEventId: string | null;
+  fxBuses: FXBus[];
+  masterFx: MasterFX;
 };
 
 type UndoEntry = {
@@ -209,6 +220,8 @@ type AppState = {
   queuedSequence: string | null;
   queuedSequenceBarsRemaining: number;
   performancePulse: number;
+  fxBuses: FXBus[];
+  masterFx: MasterFX;
   diskFolders: DiskFolder[];
   activeDiskFolderId: string;
   selectedDiskItemIndex: number;
@@ -428,6 +441,23 @@ type AppState = {
   selectSetting: (index: number) => void;
   adjustSelectedSetting: (delta: number) => void;
   toggleSelectedSetting: () => void;
+  // ---- FX system (Phase A) ----
+  setFxBusEffect: (busId: BusId, effect: EffectType | null) => void;
+  toggleFxBusDirect: (busId: BusId) => void;
+  toggleFxBusBypass: (busId: BusId) => void;
+  adjustFxBusParam: (busId: BusId, key: string, delta: number) => void;
+  setFxBusParam: (busId: BusId, key: string, value: number) => void;
+  toggleMasterEqBypass: () => void;
+  toggleMasterCompBypass: () => void;
+  adjustMasterEqParam: (key: string, delta: number) => void;
+  setMasterEqParam: (key: string, value: number) => void;
+  adjustMasterCompParam: (key: string, delta: number) => void;
+  setMasterCompParam: (key: string, value: number) => void;
+  setPadFxBus: (pad: string, busId: 0 | BusId) => void;
+  adjustPadFxSendLevel: (pad: string, delta: number) => void;
+  setPadFxSendLevel: (pad: string, level: number) => void;
+  openFxSendWindow: () => void;
+  closeFxSendWindow: () => void;
   createProjectSnapshot: () => ProjectSnapshot;
   saveProjectFile: (name: string) => Promise<void>;
   saveAllFile: (name: string) => Promise<void>;
@@ -451,10 +481,34 @@ type PadAssignment = {
   filterType: "OFF" | "LOWPASS" | "HIGHPASS" | "BANDPASS";
   filterCutoff: number;
   filterResonance: number;
-  fxSend: number;
+  fxSend: number;          // Legacy display field; kept for back-compat with old saved projects.
+  fxBus: 0 | BusId;        // Phase-A FX routing — 0 = no bus.
+  fxSendLevel: number;     // Phase-A FX send level 0..100. Ignored when bus is in INSERT mode.
   chokeGroup: number;
   muteTargetMode: "OFF" | "PAIR" | "GROUP";
   muteTargets: string[];
+};
+
+// ============================================================================
+// FX system state types (Phase A — MPC5000 routing model)
+// ============================================================================
+type FXBus = {
+  id: BusId;
+  effect: EffectType | null;   // null = empty bus (passthrough)
+  direct: boolean;             // true = SEND mode (dry+wet), false = INSERT mode (wet only)
+  bypass: boolean;
+  params: EffectParamMap;      // shape depends on effect type; switching effect resets to defaults
+};
+
+type MasterFX = {
+  eq: {
+    bypass: boolean;
+    params: EffectParamMap;    // lowFreq/lowGain/lowQ, lowMidFreq/..., highMidFreq/..., highFreq/...
+  };
+  compressor: {
+    bypass: boolean;
+    params: EffectParamMap;    // threshold/ratio/attack/release/makeupGain
+  };
 };
 
 type StepEvent = {
@@ -775,6 +829,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   queuedSequence: null,
   queuedSequenceBarsRemaining: 0,
   performancePulse: 0,
+  fxBuses: createDefaultFxBuses(),
+  masterFx: createDefaultMasterFx(),
   diskFolders: createDiskFolders(),
   activeDiskFolderId: "memory",
   selectedDiskItemIndex: 0,
@@ -3071,6 +3127,197 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, `MIX ${field.toUpperCase()} ${pad}`, `mix-${field}:${pad}`),
       };
     }),
+  // ============================================================
+  // FX system actions (Phase A)
+  // ============================================================
+  setFxBusEffect: (busId, effect) =>
+    set((state) => {
+      const params: EffectParamMap = effect ? { ...EFFECT_DEFAULTS[effect] } : {};
+      const fxBuses = state.fxBuses.map((b) =>
+        b.id === busId ? { ...b, effect, params } : b,
+      );
+      fxEngine.setBusEffect(busId, effect, params);
+      return {
+        fxBuses,
+        lastAudioMessage: effect ? `FX${busId} ${effect}` : `FX${busId} OFF`,
+        ...recordUndo(state, `FX BUS ${busId} EFFECT`, `fx-effect:${busId}:${Date.now()}`),
+      };
+    }),
+  toggleFxBusDirect: (busId) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) =>
+        b.id === busId ? { ...b, direct: !b.direct } : b,
+      );
+      const bus = fxBuses.find((b) => b.id === busId);
+      return {
+        fxBuses,
+        lastAudioMessage: `FX${busId} ${bus?.direct ? "SEND" : "INSERT"}`,
+        ...recordUndo(state, `FX BUS ${busId} DIRECT`, `fx-direct:${busId}:${Date.now()}`),
+      };
+    }),
+  toggleFxBusBypass: (busId) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) =>
+        b.id === busId ? { ...b, bypass: !b.bypass } : b,
+      );
+      const bus = fxBuses.find((b) => b.id === busId)!;
+      fxEngine.setBusBypass(busId, bus.bypass);
+      fxEngine.setBusEffect(busId, bus.bypass ? null : bus.effect, bus.params);
+      return {
+        fxBuses,
+        lastAudioMessage: `FX${busId} BYPASS ${bus.bypass ? "ON" : "OFF"}`,
+        ...recordUndo(state, `FX BUS ${busId} BYPASS`, `fx-bypass:${busId}:${Date.now()}`),
+      };
+    }),
+  adjustFxBusParam: (busId, key, delta) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) => {
+        if (b.id !== busId) return b;
+        const cur = b.params[key] ?? 0;
+        return { ...b, params: { ...b.params, [key]: cur + delta } };
+      });
+      const bus = fxBuses.find((b) => b.id === busId)!;
+      fxEngine.setBusParam(busId, key, bus.params[key]);
+      return {
+        fxBuses,
+        ...recordUndo(state, `FX ${key.toUpperCase()}`, `fx-param:${busId}:${key}`),
+      };
+    }),
+  setFxBusParam: (busId, key, value) =>
+    set((state) => {
+      const fxBuses = state.fxBuses.map((b) =>
+        b.id === busId ? { ...b, params: { ...b.params, [key]: value } } : b,
+      );
+      fxEngine.setBusParam(busId, key, value);
+      return {
+        fxBuses,
+        ...recordUndo(state, `FX ${key.toUpperCase()}`, `fx-param:${busId}:${key}`),
+      };
+    }),
+  toggleMasterEqBypass: () =>
+    set((state) => {
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        eq: { ...state.masterFx.eq, bypass: !state.masterFx.eq.bypass },
+      };
+      fxEngine.setMasterEqBypass(masterFx.eq.bypass);
+      return {
+        masterFx,
+        lastAudioMessage: `MASTER EQ ${masterFx.eq.bypass ? "OFF" : "ON"}`,
+        ...recordUndo(state, "MASTER EQ BYPASS", `master-eq-bypass:${Date.now()}`),
+      };
+    }),
+  toggleMasterCompBypass: () =>
+    set((state) => {
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        compressor: { ...state.masterFx.compressor, bypass: !state.masterFx.compressor.bypass },
+      };
+      fxEngine.setMasterCompBypass(masterFx.compressor.bypass);
+      return {
+        masterFx,
+        lastAudioMessage: `MASTER COMP ${masterFx.compressor.bypass ? "OFF" : "ON"}`,
+        ...recordUndo(state, "MASTER COMP BYPASS", `master-comp-bypass:${Date.now()}`),
+      };
+    }),
+  adjustMasterEqParam: (key, delta) =>
+    set((state) => {
+      const cur = state.masterFx.eq.params[key] ?? 0;
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        eq: { ...state.masterFx.eq, params: { ...state.masterFx.eq.params, [key]: cur + delta } },
+      };
+      applyMasterEqParamToEngine(masterFx.eq.params, key);
+      return {
+        masterFx,
+        ...recordUndo(state, `MASTER EQ ${key.toUpperCase()}`, `master-eq:${key}`),
+      };
+    }),
+  setMasterEqParam: (key, value) =>
+    set((state) => {
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        eq: { ...state.masterFx.eq, params: { ...state.masterFx.eq.params, [key]: value } },
+      };
+      applyMasterEqParamToEngine(masterFx.eq.params, key);
+      return {
+        masterFx,
+        ...recordUndo(state, `MASTER EQ ${key.toUpperCase()}`, `master-eq:${key}`),
+      };
+    }),
+  adjustMasterCompParam: (key, delta) =>
+    set((state) => {
+      const cur = state.masterFx.compressor.params[key] ?? 0;
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        compressor: { ...state.masterFx.compressor, params: { ...state.masterFx.compressor.params, [key]: cur + delta } },
+      };
+      fxEngine.setMasterCompParam(key, masterFx.compressor.params[key]);
+      return {
+        masterFx,
+        ...recordUndo(state, `MASTER COMP ${key.toUpperCase()}`, `master-comp:${key}`),
+      };
+    }),
+  setMasterCompParam: (key, value) =>
+    set((state) => {
+      const masterFx: MasterFX = {
+        ...state.masterFx,
+        compressor: { ...state.masterFx.compressor, params: { ...state.masterFx.compressor.params, [key]: value } },
+      };
+      fxEngine.setMasterCompParam(key, value);
+      return {
+        masterFx,
+        ...recordUndo(state, `MASTER COMP ${key.toUpperCase()}`, `master-comp:${key}`),
+      };
+    }),
+  setPadFxBus: (pad, busId) =>
+    set((state) => {
+      const assignments = state.padAssignments[state.padBank].map((a) =>
+        a.pad === pad ? { ...a, fxBus: busId } : a,
+      );
+      const padAssignments = { ...state.padAssignments, [state.padBank]: assignments };
+      return {
+        padAssignments,
+        programs: syncCurrentProgram(state, { padAssignments }),
+        lastAudioMessage: `PAD ${pad} → ${busId === 0 ? "OFF" : `FX${busId}`}`,
+        ...recordUndo(state, `PAD ${pad} FX BUS`, `pad-fx-bus:${pad}:${Date.now()}`),
+      };
+    }),
+  adjustPadFxSendLevel: (pad, delta) =>
+    set((state) => {
+      const assignments = state.padAssignments[state.padBank].map((a) => {
+        if (a.pad !== pad) return a;
+        const next = clamp(a.fxSendLevel + delta, 0, 100);
+        return { ...a, fxSendLevel: next };
+      });
+      const padAssignments = { ...state.padAssignments, [state.padBank]: assignments };
+      return {
+        padAssignments,
+        programs: syncCurrentProgram(state, { padAssignments }),
+        ...recordUndo(state, `PAD ${pad} FX SEND`, `pad-fx-send:${pad}`),
+      };
+    }),
+  setPadFxSendLevel: (pad, level) =>
+    set((state) => {
+      const assignments = state.padAssignments[state.padBank].map((a) =>
+        a.pad === pad ? { ...a, fxSendLevel: clamp(level, 0, 100) } : a,
+      );
+      const padAssignments = { ...state.padAssignments, [state.padBank]: assignments };
+      return {
+        padAssignments,
+        programs: syncCurrentProgram(state, { padAssignments }),
+        ...recordUndo(state, `PAD ${pad} FX SEND`, `pad-fx-send:${pad}`),
+      };
+    }),
+  openFxSendWindow: () =>
+    set((state) => ({
+      activeScreen: "FX_SEND_WINDOW",
+      utilityReturnScreen: isUtilityScreen(state.activeScreen) ? state.utilityReturnScreen : state.activeScreen,
+    })),
+  closeFxSendWindow: () =>
+    set((state) => ({
+      activeScreen: state.utilityReturnScreen,
+    })),
   selectMixerPad: (selectedPad) => set({ selectedPad }),
   toggleSelectedMixerMute: () =>
     set((state) => {
@@ -3458,6 +3705,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       sequences: state.sequences,
       songs: state.songSteps,
       globalSettings: collectGlobalSettings(state),
+      fxBuses: state.fxBuses,
+      masterFx: state.masterFx,
       resolveAudioBuffer: (id) => getSampleBuffer(id),
     });
     const blob = await writeProjectZip(manifest, sampleEntries);
@@ -3517,6 +3766,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const blank = createBlankProjectState();
     set(blank);
+    if (blank.fxBuses && blank.masterFx) syncFxEngine(blank.fxBuses, blank.masterFx);
     const { clearAutosave } = await import("../disk");
     await clearAutosave().catch(() => {});
   },
@@ -3569,6 +3819,8 @@ function createBlankProjectState(): Partial<AppState> {
     songSteps: [],
     currentSongStepIndex: 0,
     selectedSongStepIndex: 0,
+    fxBuses: createDefaultFxBuses(),
+    masterFx: createDefaultMasterFx(),
     undoHistory: [],
     redoHistory: [],
     pendingRecTake: null,
@@ -3651,12 +3903,15 @@ function hydrateProjectBundle(
   set: (partial: Partial<AppState>) => void,
 ) {
   const samples = hydrateSamples(bundle.samples);
-  const programs = bundle.manifest.programs as Program[];
+  const programs = (bundle.manifest.programs as Program[]).map(ensureProgramFxFields);
   const sequences = (bundle.manifest.sequences as Sequence[]).map(ensureTimeSignatureChanges);
   const songSteps = bundle.manifest.songs as SongStep[];
   const firstProgram = programs[0];
   const firstSequence = sequences[0];
   const firstTrackId = firstSequence?.tracks[0]?.id ?? "TRACK01";
+  const manifestExt = bundle.manifest as unknown as { fxBuses?: unknown; masterFx?: unknown };
+  const fxBuses = ensureFxBusesFromManifest(manifestExt.fxBuses);
+  const masterFx = ensureMasterFxFromManifest(manifestExt.masterFx);
   set({
     recordedSamples: samples,
     programs,
@@ -3677,9 +3932,12 @@ function hydrateProjectBundle(
     songSteps,
     currentSongStepIndex: 0,
     selectedSongStepIndex: 0,
+    fxBuses,
+    masterFx,
     ...applyGlobalSettings(bundle.manifest.globalSettings),
     lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief`,
   });
+  syncFxEngine(fxBuses, masterFx);
 }
 
 function hydrateAllBundle(
@@ -3896,12 +4154,20 @@ function captureSnapshot(state: AppState): UndoSnapshot {
     currentEvent: state.currentEvent,
     selectedEventIndex: state.selectedEventIndex,
     selectedEventId: state.selectedEventId,
+    fxBuses: structuredClone(state.fxBuses),
+    masterFx: structuredClone(state.masterFx),
   };
 }
 
 function restoreSnapshot(snapshot: UndoSnapshot): Partial<AppState> {
   // activeScreen intentionally NOT restored — undo/redo stay in current screen.
   // snapshot.activeScreen is captured for possible future "jump to edit site" feature.
+  const fxBuses = structuredClone(snapshot.fxBuses ?? createDefaultFxBuses());
+  const masterFx = structuredClone(snapshot.masterFx ?? createDefaultMasterFx());
+  // Push restored FX state into the audio engine; restoreSnapshot is consumed by undo/redo
+  // which calls set() with this partial. Side effect is acceptable here — audio nodes
+  // must reflect the restored state.
+  syncFxEngine(fxBuses, masterFx);
   return {
     stepEvents: structuredClone(snapshot.stepEvents),
     sequences: structuredClone(snapshot.sequences),
@@ -3925,6 +4191,8 @@ function restoreSnapshot(snapshot: UndoSnapshot): Partial<AppState> {
     currentEvent: snapshot.currentEvent,
     selectedEventIndex: snapshot.selectedEventIndex,
     selectedEventId: snapshot.selectedEventId,
+    fxBuses,
+    masterFx,
   };
 }
 
@@ -4587,6 +4855,13 @@ function playAssignedPadWithContext(
   }, Math.max(80, Math.min(240, assignment.decay * 2)));
   const voiceGroup = mixerChannelKey(context.bank, context.pad, program?.id);
   samplerEngine.stopVoiceGroups(getMuteStopGroups(state, assignment, context.pad, context.bank, padAssignments, program?.id));
+  const fxRouting = (() => {
+    const busId = (assignment.fxBus ?? 0) as 0 | BusId;
+    if (busId === 0) return undefined;
+    const bus = state.fxBuses.find((b) => b.id === busId);
+    if (!bus) return undefined;
+    return { busId, sendLevel: assignment.fxSendLevel ?? 0, direct: bus.direct };
+  })();
   const playbackRate = tuneToPlaybackRate(
     context.tuneOverride ?? assignment.tune,
     context.fineTuneOverride ?? assignment.fineTune,
@@ -4614,6 +4889,7 @@ function playAssignedPadWithContext(
     }),
     envelope,
     sustainMs: context.sustainMs,
+    fxRouting,
   });
 }
 
@@ -5248,7 +5524,7 @@ function stopAllNoteRepeatLoops() {
 
 // Legacy export retained for any callers; new behaviour uses startNoteRepeatLoop.
 
-function createBankAssignments() {
+function createBankAssignments(): PadAssignment[] {
   return Array.from({ length: 16 }, (_, index) => ({
     pad: `P${String(index + 1).padStart(2, "0")}`,
     assignment: "---",
@@ -5264,10 +5540,128 @@ function createBankAssignments() {
     filterCutoff: 50,
     filterResonance: 0,
     fxSend: 0,
+    fxBus: 0 as const,
+    fxSendLevel: 0,
     chokeGroup: 0,
     muteTargetMode: "OFF" as const,
     muteTargets: [],
   }));
+}
+
+function createDefaultFxBuses(): FXBus[] {
+  return ([1, 2, 3, 4] as BusId[]).map((id) => ({
+    id,
+    effect: null,
+    direct: true,
+    bypass: false,
+    params: {},
+  }));
+}
+
+function createDefaultMasterFx(): MasterFX {
+  return {
+    eq: { bypass: true, params: { ...MASTER_EQ_DEFAULTS } },
+    compressor: { bypass: true, params: { ...MASTER_COMP_DEFAULTS } },
+  };
+}
+
+function ensurePadAssignmentFxFields(pa: PadAssignment): PadAssignment {
+  if (typeof (pa as PadAssignment & { fxBus?: number }).fxBus === "number" &&
+      typeof (pa as PadAssignment & { fxSendLevel?: number }).fxSendLevel === "number") {
+    return pa;
+  }
+  return { ...pa, fxBus: 0 as const, fxSendLevel: typeof pa.fxSend === "number" ? pa.fxSend : 0 };
+}
+
+function ensureProgramFxFields(program: Program): Program {
+  const banks: PadBank[] = ["A", "B", "C", "D"];
+  const padAssignments = { ...program.padAssignments } as Record<PadBank, PadAssignment[]>;
+  for (const bank of banks) {
+    const list = padAssignments[bank] ?? [];
+    padAssignments[bank] = list.map(ensurePadAssignmentFxFields);
+  }
+  return { ...program, padAssignments };
+}
+
+function ensureFxBusesFromManifest(input: unknown): FXBus[] {
+  if (!Array.isArray(input) || input.length === 0) return createDefaultFxBuses();
+  const ids: BusId[] = [1, 2, 3, 4];
+  const result: FXBus[] = ids.map((id) => {
+    const found = (input as Array<Record<string, unknown>>).find((b) => b && b.id === id);
+    if (!found) return { id, effect: null, direct: true, bypass: false, params: {} };
+    const effectRaw = found.effect;
+    const effect: EffectType | null =
+      effectRaw === "REVERB" || effectRaw === "DELAY" || effectRaw === "EQ" || effectRaw === "FLANGER"
+        || effectRaw === "CHORUS" || effectRaw === "BITCRUSHER" || effectRaw === "COMPRESSOR"
+        ? effectRaw
+        : null;
+    return {
+      id,
+      effect,
+      direct: typeof found.direct === "boolean" ? found.direct : true,
+      bypass: typeof found.bypass === "boolean" ? found.bypass : false,
+      params: (found.params && typeof found.params === "object")
+        ? { ...(found.params as EffectParamMap) }
+        : (effect ? { ...EFFECT_DEFAULTS[effect] } : {}),
+    };
+  });
+  return result;
+}
+
+function ensureMasterFxFromManifest(input: unknown): MasterFX {
+  if (!input || typeof input !== "object") return createDefaultMasterFx();
+  const m = input as { eq?: { bypass?: unknown; params?: unknown }; compressor?: { bypass?: unknown; params?: unknown } };
+  return {
+    eq: {
+      bypass: typeof m.eq?.bypass === "boolean" ? m.eq.bypass : true,
+      params: (m.eq?.params && typeof m.eq.params === "object")
+        ? { ...MASTER_EQ_DEFAULTS, ...(m.eq.params as EffectParamMap) }
+        : { ...MASTER_EQ_DEFAULTS },
+    },
+    compressor: {
+      bypass: typeof m.compressor?.bypass === "boolean" ? m.compressor.bypass : true,
+      params: (m.compressor?.params && typeof m.compressor.params === "object")
+        ? { ...MASTER_COMP_DEFAULTS, ...(m.compressor.params as EffectParamMap) }
+        : { ...MASTER_COMP_DEFAULTS },
+    },
+  };
+}
+
+/** Apply a single EQ band param to the engine. Key format e.g. "lowFreq" / "lowMidGain" / "highQ". */
+function applyMasterEqParamToEngine(eqParams: EffectParamMap, key: string) {
+  const map: Record<string, { idx: 0 | 1 | 2 | 3; kind: "freq" | "gain" | "q" }> = {
+    lowFreq: { idx: 0, kind: "freq" }, lowGain: { idx: 0, kind: "gain" }, lowQ: { idx: 0, kind: "q" },
+    lowMidFreq: { idx: 1, kind: "freq" }, lowMidGain: { idx: 1, kind: "gain" }, lowMidQ: { idx: 1, kind: "q" },
+    highMidFreq: { idx: 2, kind: "freq" }, highMidGain: { idx: 2, kind: "gain" }, highMidQ: { idx: 2, kind: "q" },
+    highFreq: { idx: 3, kind: "freq" }, highGain: { idx: 3, kind: "gain" }, highQ: { idx: 3, kind: "q" },
+  };
+  const target = map[key];
+  if (!target) return;
+  fxEngine.setMasterEqBand(target.idx, target.kind, eqParams[key]);
+}
+
+/** Pushes the FX state into the audio engine. Called after every FX state mutation. */
+function syncFxEngine(fxBuses: FXBus[], masterFx: MasterFX) {
+  for (const bus of fxBuses) {
+    fxEngine.setBusBypass(bus.id, bus.bypass);
+    fxEngine.setBusEffect(bus.id, bus.bypass ? null : bus.effect, bus.params);
+    for (const [key, value] of Object.entries(bus.params)) {
+      fxEngine.setBusParam(bus.id, key, value);
+    }
+  }
+  fxEngine.setMasterEqBypass(masterFx.eq.bypass);
+  const bandKeys: Array<[0 | 1 | 2 | 3, "low" | "lowMid" | "highMid" | "high"]> = [
+    [0, "low"], [1, "lowMid"], [2, "highMid"], [3, "high"],
+  ];
+  for (const [idx, prefix] of bandKeys) {
+    fxEngine.setMasterEqBand(idx, "freq", masterFx.eq.params[`${prefix}Freq`] ?? MASTER_EQ_DEFAULTS[`${prefix}Freq`]);
+    fxEngine.setMasterEqBand(idx, "gain", masterFx.eq.params[`${prefix}Gain`] ?? MASTER_EQ_DEFAULTS[`${prefix}Gain`]);
+    fxEngine.setMasterEqBand(idx, "q", masterFx.eq.params[`${prefix}Q`] ?? MASTER_EQ_DEFAULTS[`${prefix}Q`]);
+  }
+  fxEngine.setMasterCompBypass(masterFx.compressor.bypass);
+  for (const [key, value] of Object.entries(masterFx.compressor.params)) {
+    fxEngine.setMasterCompParam(key, value);
+  }
 }
 
 function getParamLimits(
@@ -5836,7 +6230,7 @@ function createDiskItem(
 }
 
 function isUtilityScreen(screen: ScreenId) {
-  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW" || screen === "BAR_EDITOR";
+  return screen.startsWith("UTILITY_") || screen === "COUNT_IN" || screen === "GO_TO" || screen === "ERASE" || screen === "UNDO" || screen === "SEQUENCE_EDIT" || screen === "SONG" || screen === "TIMING_CORRECT" || screen === "TIME_SIG_WINDOW" || screen === "BAR_EDITOR" || screen === "FX_SEND_WINDOW";
 }
 
 function countInModeToBeats(mode: "OFF" | "1 BAR" | "2 BAR" | "4 BAR") {

@@ -99,6 +99,212 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 18.1 HOTFIX — 2026-05-21 — Wire Master Comp makeupGain into audio path
+
+### What was attempted
+
+Live test of Session 18's FX Phase 1 MVP passed on all 4 buses (assign/route/SEND/INSERT), all 7 effects (Reverb, Delay, EQ, Flanger, Chorus, Bit Crusher, Compressor), Master EQ (4 bands + bypass), and Master Compressor body (threshold/ratio/attack/release + bypass). ONE remaining flaw flagged in Session 18 as known followup: Master Comp **makeupGain** was state-only — the UI slider existed and saved, but no audio path applied the gain. Fake UI Policy violation. Marek's directive: fix before commit.
+
+### What worked
+
+**Inserted `masterMakeupGain: GainNode` between `masterCompNode` and `masterCompOutput`** (`fxEngine.ts`):
+
+- Field declared next to `masterCompNode`. Initialized in `buildMasterChain` with `gain.value = pow(10, defaultDb / 20)` (dB → linear). Default `makeupGain: 0` dB → unity gain (1.0).
+- `setMasterCompParam("makeupGain", value)` now clamps 0..+24 dB and sets `masterMakeupGain.gain.value = pow(10, db / 20)`. Same dB-to-linear formula as the bus Compressor's post-makeup stage.
+- `rewireMasterComp` now wires `masterCompInput → masterCompNode → masterMakeupGain → masterCompOutput` when bypass is off. Includes `masterMakeupGain.disconnect()` at the start to clean up before rewiring.
+- Bypass semantics decided: **bypass disables the entire master Comp section** (compression AND makeup gain). When bypass is on, signal goes `masterCompInput → masterCompOutput` (skips both nodes). Matches user expectation that "bypass" returns the signal unchanged to its pre-section level. Bypassing the comp but keeping makeup gain alive would be surprising.
+- `syncFxEngine` already iterates `Object.entries(masterFx.compressor.params)` and calls `setMasterCompParam` for each — so load + undo restoration automatically apply the new makeupGain handling without further changes.
+
+Range chosen: **0..+24 dB (positive-only)**. Standard makeup gain in MPC/SP and most DAWs is positive-only — its purpose is to compensate for the level reduction from compression. Negative makeup would just attenuate, which is what the master volume already does. UI step is 0.5 dB (already in `MASTER_COMP_PARAMS`).
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No live audio test by me** — Marek must verify the 4 test scenarios (compression audible, +6dB makeup audible boost, 0dB = unity, bypass disables both).
+- **`MASTER_COMP_PARAMS` UI step for makeupGain is 0.5 dB** — to go from 0 to +6 requires 12 clicks. Possibly clunky for users wanting bigger swings, but consistent with the rest of master Comp's gain-style controls. No change here.
+- **Old saved projects** (post-Session 18 but pre-18.1) have `masterFx.compressor.params.makeupGain = 0` from MASTER_COMP_DEFAULTS — they load cleanly and apply unity gain. No migration needed; the new audio path just respects existing state.
+
+### Decisions made
+
+- **Bypass disables both compression AND makeup gain** (single bypass for the whole section). Discrete makeup-only bypass would require a separate state field + UI; YAGNI. If someone wants compression off but signal boost, they can use the dry signal — that's not what bypass means here.
+- **makeupGain range 0..+24 dB**, positive-only. Negative makeup is redundant with master volume.
+- **GainNode lives in the master chain permanently** (created once in `buildMasterChain`, never recreated). Same lifecycle pattern as the compressor node itself.
+
+### Open issues / followups
+
+- Marek's 4 verification scenarios pending live test:
+  1. Master Comp threshold -20, ratio 4:1 → audible compression
+  2. makeupGain +6dB → output noticeably louder than 0dB
+  3. makeupGain 0dB → unity (no post-comp boost)
+  4. Bypass on → signal identical to dry (compressor + makeup both off)
+- No follow-up Phase 2 work surfaces from this hotfix.
+
+### Files modified
+
+- `src/audio/fxEngine.ts` — `masterMakeupGain` field, init in `buildMasterChain`, `setMasterCompParam` handles "makeupGain", `rewireMasterComp` chains `masterCompNode → masterMakeupGain → masterCompOutput` when un-bypassed.
+
+---
+
+## Session 18 — 2026-05-21 — FX system Phase 1 MVP (MPC5000 routing — 4 buses, master EQ/Comp, 7 effects, FX screen + popup, per-pad routing)
+
+### What was attempted
+
+Marek's specified Phase 1 MVP for the FX system: MPC5000 routing model with 4 FX buses (DIRECT ON = SEND, OFF = INSERT), dedicated Master EQ + Compressor (separate instances from the bus pool), 7 effects (Reverb, Delay, EQ, Flanger, Chorus, Bit Crusher, Compressor), per-pad routing fields with single source of truth on `PadAssignment`, new FX screen behind the "FX" hardware button, FX SEND popup shared between MIX and PROGRAM, save/load migration v1→v2, undo wiring. Spec also asked for sub-phase splitting if it didn't fit in one session — folded all sub-phases (1a–1e) into a single contiguous implementation since they were chained dependencies and Marek can't test anything without UI.
+
+### What worked
+
+**Phase 1a — state + audio graph + Reverb POC:**
+
+- New module `src/audio/fxEngine.ts` (~430 LOC). Owns the bus graph + master chain. Singleton `fxEngine` lifecycle keyed on AudioContext.
+- Graph topology:
+  ```
+  voice.pan ─┬─ dryGain ─→ fxEngine.masterInput → masterEQ → masterComp → samplerEngine.masterGain → destination
+             └─ sendGain ─→ bus[N].input → bus[N].effect → bus[N].output → fxEngine.masterInput  (SEND mode)
+                  (INSERT mode: dry path skipped, voice goes ONLY through bus[N])
+  ```
+- Master EQ/Comp wired bypass-by-default (passthrough). Per-bus same: empty effect = passthrough.
+- `fxEngine.routeVoice(voiceOutput, routing)` returns `{ dryConnected: boolean }` so caller knows whether to also wire dry-to-master (INSERT mode "consumes" the entire signal).
+- `samplerEngine.ts` refactored: `ensureFxMasterEntry()` bridges fxEngine output → samplerEngine.masterGain → destination once on first voice. Voice creation chains `source → [filter?] → envelopeGain → channelGain → pan`, then `pan` either:
+  - goes directly to fxEngine.masterInput (if no fxRouting), or
+  - sends through fxEngine.routeVoice(pan, routing) AND, if SEND mode, also connects pan → fxEngine.masterInput for dry path.
+- `PlayOptions.fxRouting = { busId: 1|2|3|4; sendLevel: number; direct: boolean }`. `direct` snapshotted from bus state at voice-create time — changing a bus's direct flag mid-playback does NOT retroactively affect held voices (matches MPC instinct).
+
+**Reverb implementation:**
+- Procedural impulse response synthesized at runtime: white noise × `pow(1-t, decayExp)`. `size` 0..100 → IR duration 0.1..3.5s. `damping` 0..100 → decay exponent 1..6 (higher damping = faster fade). Stereo IR (uncorrelated channels) for natural width.
+- Signal: `input → dryGain → output` parallel with `input → preDelay → HP → LP → Convolver → wetGain → output`. Wet/Dry internal mix lets the bus operate in INSERT mode with partial wetness.
+- `setParam` regenerates IR only for size/damping; other params (preDelay/HP/LP/WetDry) are realtime AudioParam updates.
+- IR regen on size change does briefly retrigger the convolver — acceptable; not on hot path.
+
+**Phase 1b — remaining 6 effects (all in fxEngine.ts):**
+
+| Effect | WebAudio mapping | Notes |
+|---|---|---|
+| Delay | DelayNode + HP/LP + feedback loop | Max 2.5s, feedback clamped 0..0.95, internal Wet/Dry. No tempo sync yet (Phase 2). |
+| EQ | 4× BiquadFilter (lowshelf/peaking/peaking/highshelf) | Same node layout as master EQ but separate instance. |
+| Flanger | DelayNode 5–10ms + OscillatorNode LFO modulating delayTime + feedback | LFO depth scaled 0..4.5ms. |
+| Chorus | 3 parallel DelayNodes (15/20/25ms base) + 3 detuned LFOs | Detune at +0.15Hz per voice for thickening. |
+| Bit Crusher | WaveShaperNode (curve quantizes to 2^bits steps) + ScriptProcessorNode (sample-rate reduction via sample-and-hold) | ScriptProcessor is deprecated but trivially functional in all major browsers; AudioWorklet upgrade in Phase 2 if browser support warrants the worklet-file ceremony. |
+| Compressor | DynamicsCompressorNode + post makeup-gain stage | dB-to-linear conversion for makeup gain. |
+
+All effects implement the same `EffectChain` shape: `{ input, output, setParam(key, value), dispose() }`. Switching effect type tears down old chain and builds new with `EFFECT_DEFAULTS[type]`.
+
+**Phase 1c — Master section (folded into 1a):**
+
+- Master EQ = 4 BiquadFilters (lowshelf/peaking/peaking/highshelf) chained between `masterEqInput` and `masterEqOutput`. Toggle bypass = swap chain for direct passthrough connection. Live param updates via `setMasterEqBand(idx, key, value)`.
+- Master Comp = `DynamicsCompressorNode` between `masterCompInput` and `masterCompOutput`. Same bypass-swap pattern. `setMasterCompParam(key, value)` handles threshold/ratio/attack/release. Note: makeupGain param is stored in state but **not modeled as a separate gain stage in the master Comp** (Phase 1 simplification — DynamicsCompressorNode lacks native makeup; bus Compressor effect HAS the makeup stage). Phase 2 followup: add a master makeup GainNode after the compressor.
+- Default state: both sections **bypassed**, so a fresh project sounds identical to pre-FX (no audible change for users who never open the FX screen).
+
+**Phase 1d — UI:**
+
+- **New screen `FX` (full LCD)** — three panels:
+  1. Left: bus list (FX1–FX4) + Master EQ + Master Comp entries. Click selects. Dimmed when bypass=on.
+  2. Middle: selected bus/master details + ACTIONS (cycle effect, toggle DIRECT, toggle BYPASS).
+  3. Right: live parameter editor — renders per-effect param rows from `EFFECT_PARAM_KEYS` registry. Master EQ/Comp use dedicated `MASTER_EQ_PARAMS` / `MASTER_COMP_PARAMS` arrays.
+  - Softkeys: F1 EFFECT cycle, F2 DIRECT, F3 BYPASS, F4 / F5 dash, F6 EXIT (→ MAIN). All real actions.
+- **New popup `FX_SEND_WINDOW`** — utility screen, ScreenFrame-style. Shows the selected pad's current FX bus + send level. ArrowRow controls cycle bus (0/1/2/3/4) and adjust send level. Send level disabled and displayed "---" when bus is INSERT mode (bus.direct=false). Disabled also when bus=OFF. F6 EXIT returns to the screen that opened it (MIX or PROGRAM) via the existing `utilityReturnScreen` plumbing.
+- **MIX screen** rewired: legacy `FxSend` (drag-fader on `MixerChannel.fxSend`) **removed**. New compact strip widget shows "OF" or `B{n}:{level}` per pad — click cycles bus 0→1→2→3→4. Header row gains FX/SND columns showing selected pad's routing. F5 FX SEND opens `FxSendWindowScreen` for the selected pad.
+- **PROGRAM screen FX view rewritten**: dead "AUDIO FX: NOT ROUTED / STATUS: VISUAL ONLY" placeholders replaced with real FX BUS cycle Param + SEND LEVEL Param. Both read/write `PadAssignment.fxBus` + `fxSendLevel`. F5 FX SEND also opens the same `FxSendWindowScreen` (single source of truth confirmed — both edit the same fields via the same store actions).
+- **Hardware FX button rewired**: `LayoutElements.tsx` previously special-cased FX label to map to PERFORMANCE screen ID. Removed special case. FX button now sets `activeScreen = "FX"`. Old PERFORMANCE screen is no longer reachable from the hardware shell; left in code as dormant placeholder. The label-vs-screen-id alias from Session 17 is fully resolved by giving FX its own screen ID.
+
+**Phase 1e — Save/load + undo (folded into 1a):**
+
+- Schema bumped: `CURRENT_SCHEMA_VERSION = 2`. v1→v2 migration in `src/disk/migrations/index.ts` adds default `fxBuses` (4 empty) + `masterFx` (flat/bypassed) to PROJECT manifests; ALL/SEQ manifests just bump version.
+- `ProjectManifest` type extended with optional `fxBuses` + `masterFx` fields (manifest stays back-compatible — old projects load cleanly because migration fills defaults; new projects always include the fields).
+- Serializer + autosave (`App.tsx`) thread `state.fxBuses` + `state.masterFx` through.
+- Hydrate path (`hydrateProjectBundle`) calls `ensureProgramFxFields` on programs (adds missing per-pad `fxBus`/`fxSendLevel`) and `ensureFxBusesFromManifest` + `ensureMasterFxFromManifest` on the manifest extras. Then `syncFxEngine(fxBuses, masterFx)` pushes the loaded state into the audio engine immediately.
+- Undo: `UndoSnapshot` extended with `fxBuses` + `masterFx`. `captureSnapshot` clones them; `restoreSnapshot` clones back AND calls `syncFxEngine` so undoing an FX action restores both state AND audio graph wiring. Bucket-merge labels follow Marek's spec: `fx-effect:{busId}`, `fx-direct:{busId}`, `fx-bypass:{busId}`, `fx-param:{busId}:{key}` (per-param bucket so consecutive slider hits on the same param fold into one undo entry), `master-eq-bypass`, `master-eq:{key}`, `master-comp-bypass`, `master-comp:{key}`, `pad-fx-bus:{pad}`, `pad-fx-send:{pad}`.
+
+**Single source of truth — confirmed:**
+- `PadAssignment.fxBus` and `PadAssignment.fxSendLevel` are the canonical pad routing fields. MIX screen, PROGRAM screen, and FX SEND popup all read/write these via the same store actions (`setPadFxBus`, `adjustPadFxSendLevel`).
+- Legacy `PadAssignment.fxSend` (number) is preserved in the type for back-compat (old saved projects still load) but NO UI references it. Same with `MixerChannel.fxSend` — preserved in state shape but no longer surfaced.
+
+Build clean after every phase (`tsc && vite build` — Vite chunk warning >500KB, expected; bundle gained ~12KB for fxEngine).
+
+### What didn't work / pitfalls hit
+
+- **PDF reading still blocked** in this environment (`pdftoppm not found`). Could not consult the MPC5000 reference manual sections Marek cited (Effects pp. 148–160, "Buss vs Insert" p. 150, FX Q-Links addendum p. 24). Implementation followed Marek's detailed spec; param shapes are MPC-style 0–100 ranges where applicable, with substitutions documented for params that don't map cleanly to WebAudio (e.g., the master Comp has no makeup-gain stage — see followups).
+- **No live audio test by me** — Marek must verify the 13 test scenarios from the spec. Top suspects for issues:
+  1. **Reverb tail wrap on size change**: IR regen creates a new buffer mid-playback. Existing wet tail abruptly cuts — should be acceptable but may sound glitchy. Mitigation if reported: queueMicrotask the regen, fade out wetGain briefly across the swap.
+  2. **INSERT mode dry-mute**: when a voice is in INSERT mode, samplerEngine does NOT connect dry-to-master (we rely on `routed.dryConnected` flag). If the FX bus has `effect=null` AND `bypass=false`, the bus is a passthrough — but it's still in INSERT mode → voice routes through the bus passthrough. Sounds correct on paper. Worth verifying.
+  3. **Bit Crusher ScriptProcessor latency**: ScriptProcessor adds 512-sample latency (~11ms at 44.1kHz). Audible offset between dry signal (parallel path) and crushed signal. Phase 2 fix: implement on AudioWorklet.
+  4. **Chorus mono delays**: voices use StereoPanner upstream but the chorus DelayNodes are mono; stereo image collapses slightly through chorus. Acceptable for Phase 1.
+- **Master Comp makeup gain is state-only (not wired)** — the param is captured + serialized + present in UI, but does not affect audio. Logged in followups; ~4 LOC to fix in Phase 1.5.
+- **`MixerChannel.fxSend` and `PadAssignment.fxSend` are now dead fields**. Removed from all UI but left in state shape to avoid breaking saved-file deserialization. Safe to delete in a dedicated cleanup pass after Marek confirms no users rely on them.
+- **PERFORMANCE screen orphaned**: FX hardware button no longer maps to PERFORMANCE. The screen file + component still exist. Per Marek's earlier decision the PERFORMANCE screen will be reborn as something else later; left dormant. Removing it would simplify navigation.ts but Marek hasn't asked.
+- **PROGRAM F5 FX SEND** opens the FX SEND popup AND switches programView to "FX" so the user lands on the FX panel after closing the popup. Side effect of doing both: if the popup is canceled, programView is still FX (not whatever it was before). Cosmetic.
+- **No tempo-synced delay** — Marek's spec mentioned "Tempo-sync via BPM scaling" for Delay. Phase 1 has ms-only. Phase 2 followup.
+- **Bus chaining NOT implemented** (Phase 2). Each bus is independent; no FX1→FX2 routing.
+- **Per-track FX routing NOT implemented** per Marek's explicit scope (out of Phase 1).
+- **Convolver IR regen on size change is expensive** for very large size values. At size=100 (3.5s duration) we generate ~310K stereo samples synchronously. On the click handler thread. Estimated ~5–15ms one-off cost. Probably acceptable; profile if reported.
+- **fxEngine.setBusBypass calls setBusEffect** (rewires the bus) for graph cleanliness. Toggle bypass mid-playback briefly disconnects the bus output → silence on that bus for one audio frame. Acceptable.
+
+### Decisions made
+
+- **Phase 1a/b/c/d/e folded into one delivery.** Marek's spec said split into sub-phases IF >1 session, but folding made sense here because state shape, audio graph, and UI are mutually dependent — no sub-phase ships in isolation as something Marek could test. Each phase passed `npm run build` independently during development; the final delivery is one logical commit.
+- **PadAssignment is the home for per-pad FX routing** (single source of truth), not MixerChannel. Reasoning: MPC5000 conceptually attaches FX routing to the PROGRAM (which owns pads), not the mixer view. PROGRAM screen and MIX screen are different windows onto the same pad-owned data.
+- **Reverb = procedural IR + Convolver**, not algorithmic Schroeder reverb. Reasoning: ConvolverNode is a single native node with good sound quality at low CPU; Schroeder requires building 4 comb filters + 2 allpass nodes per bus. IR regen cost only on size/damping change, not on every voice.
+- **Bit Crusher = ScriptProcessorNode** (deprecated but functional) — AudioWorklet deferred to Phase 2. Adding a worklet requires a separate JS module file + `audioWorklet.addModule()` async setup + cross-thread param messaging. Out of Phase 1 scope.
+- **Master Comp omits makeup-gain stage in audio path** (param in state only). Phase 1 simplification; trivial to add later.
+- **FX button = full mode screen**, not utility. Reasoning: matches MAIN/RECORD/CHOP/PROGRAM/STEP/MIX/DISK/SETTINGS — all reached via dedicated mode buttons. The popup `FX_SEND_WINDOW` IS utility (return-to-previous behavior).
+- **FX_SEND_WINDOW shared between MIX and PROGRAM** — same component, same store actions. Confirmed single source of truth per Marek's rule.
+- **Old PERFORMANCE→FX label alias from Session 17 removed.** Now FX is its own screen ID. The label rename was a temporary scaffold; the real FX screen is the proper resolution.
+- **`PadAssignment.fxSend` (legacy) kept in type for back-compat**, no UI reference. Removal is a future cleanup pass.
+- **Schema bump v1→v2** with a real migration (not opaque passthrough). v1 PROJECT files load with default FX state; v1 ALL/SEQ files load with just a version bump.
+- **Effect change resets params to defaults** rather than preserving values across types. Per-effect param schemas differ widely (REVERB has size/damping, COMPRESSOR has threshold/ratio) — preserving would require per-type buckets in state. YAGNI.
+- **Voice routing snapshotted at voice-create time** — changing a bus's `direct` mode does NOT retroactively re-route playing voices. Future voices respect the new mode. Matches MPC instinct (changing routing mid-pad-hit shouldn't morph the playing sound).
+
+### Open issues / followups
+
+- **Marek's 13 test scenarios** from spec — all pending live audio verification:
+  1. Default state inaudible vs pre-FX
+  2. Reverb on FX1 SEND
+  3. Delay on FX2 INSERT
+  4. Master EQ low boost
+  5. Master Compressor
+  6. 3 buses simultaneously
+  7. Bus bypass preserves routing
+  8. Effect change preserves routing
+  9. F5 FX SEND popup single source of truth (PROGRAM ↔ MIX)
+  10. Save/load round-trip
+  11. Undo
+  12. Performance under load
+  13. Build clean ✓
+- **Master Comp makeup gain not wired** — add post-comp GainNode in fxEngine, `applyMakeupGain` on setMasterCompParam. ~5 LOC.
+- **AudioWorklet upgrade for Bit Crusher** — Phase 2. ScriptProcessor works but adds latency + is deprecated.
+- **Tempo-synced delay** — Phase 2. Spec mentioned BPM scaling; current Delay is ms-only. Add `tempoSync: boolean` + grid-based time when on.
+- **Bus chaining (FX1→FX2)** — Phase 2 per Marek's spec.
+- **Per-track FX routing** — Phase 2 per Marek's spec. LoopThief tracks trigger pads; per-pad routing covers the common case.
+- **Q-Links FX automation** — Phase 2/3. MPC5000 addendum.
+- **Remove dead `MixerChannel.fxSend` + `PadAssignment.fxSend` fields** once Marek confirms.
+- **Remove dormant PERFORMANCE screen** if it's not coming back.
+- **In-app modal for FX_SEND_WINDOW vs full LCD takeover**: current uses utility-screen pattern (full LCD takes over the screen). Spec showed a smaller popup mockup. Worth considering Phase 2 if visual feedback says full takeover is too heavy.
+- **Reverb IR cache** — currently regenerates on every size/damping change. Could cache by (size, damping, sampleRate) key to avoid recomputing for repeated identical values. Profile first.
+- **Undo for slider edits**: per-param bucket merges adjacent edits within 500ms (`UNDO_ACCUMULATE_MS`). User dragging continuously gets one undo step per drag. Multiple separate edits within 500ms also merge — acceptable for Phase 1.
+- **PROGRAM F5 side effect**: setting programView to "FX" alongside opening popup. Minor UX wart.
+- **PCM buffers + Convolver IRs runtime-only** — same as samples per the handoff doc. IRs regenerated on load from saved size/damping params. Acceptable.
+
+### Files modified
+
+**New:**
+- `src/audio/fxEngine.ts` — FX bus graph + master chain + 7 effect implementations (~430 LOC)
+
+**Modified:**
+- `src/audio/samplerEngine.ts` — fxEngine bridge on voice path, `getContext()` exposed, master chain reroute via `ensureFxMasterEntry()`
+- `src/store/useAppStore.ts` — FXBus/MasterFX types + `PadAssignment.fxBus/fxSendLevel` fields + AppState.fxBuses/masterFx + 14 FX actions + ensure helpers + syncFxEngine + hydrate FX state + UndoSnapshot extended with FX + createBlankProjectState includes FX defaults + isUtilityScreen includes FX_SEND_WINDOW + `playAssignedPadWithContext` threads `fxRouting` to samplerEngine
+- `src/disk/types.ts` — `CURRENT_SCHEMA_VERSION = 2`, `ProjectManifest` gains `fxBuses?` + `masterFx?`
+- `src/disk/migrations/index.ts` — v1→v2 migration filling FX defaults for PROJECT manifests
+- `src/disk/serializers/project.ts` — accepts + writes fxBuses + masterFx
+- `src/App.tsx` — autosave includes fxBuses + masterFx
+- `src/types/navigation.ts` — adds `"FX"` + `"FX_SEND_WINDOW"` screen IDs
+- `src/screens/index.ts` — registers `FxScreen` + `FxSendWindowScreen`
+- `src/screens/UtilityScreens.tsx` — `FxScreen` (3-panel layout per spec) + `FxSendWindowScreen` (2-panel popup, single source of truth on PadAssignment.fxBus/fxSendLevel)
+- `src/screens/MixScreen.tsx` — removed legacy `FxSend` drag-fader, added bus-cycle button + FX/SND header columns, F5 FX SEND opens popup
+- `src/screens/ProgramScreen.tsx` — replaced dead "VISUAL ONLY" FX view with real fxBus + fxSendLevel Params, F5 FX SEND opens shared popup
+- `src/components/layout/LayoutElements.tsx` — FX hardware button now maps to FX screen (removed PERFORMANCE alias)
+
+---
+
 ## Session 17 — 2026-05-20 — Pad button rewires + STEP INPUT feature + WAIT FOR PAD recording
 
 ### What was attempted

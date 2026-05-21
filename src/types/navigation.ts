@@ -23,6 +23,8 @@ export const screens = [
   "TIMING_CORRECT",
   "TIME_SIG_WINDOW",
   "BAR_EDITOR",
+  "FX",
+  "FX_SEND_WINDOW",
 ] as const;
 
 export type ScreenId = (typeof screens)[number];
