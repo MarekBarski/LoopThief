@@ -229,21 +229,138 @@ function AutosavePanel({
 }
 
 function MidiPlaceholder() {
+  const midiAvailable = useAppStore((s) => s.midiAvailable);
+  const midiInputs = useAppStore((s) => s.midiInputs);
+  const midiOutputs = useAppStore((s) => s.midiOutputs);
+  const settings = useAppStore((s) => s.settingsValues);
+  const setMidiInputDevice = useAppStore((s) => s.setMidiInputDevice);
+  const setMidiOutputDevice = useAppStore((s) => s.setMidiOutputDevice);
+  const setMidiPadMapping = useAppStore((s) => s.setMidiPadMapping);
+  const setMidiAutoBankSwitch = useAppStore((s) => s.setMidiAutoBankSwitch);
+  const setMidiSyncIn = useAppStore((s) => s.setMidiSyncIn);
+  const setMidiSyncOut = useAppStore((s) => s.setMidiSyncOut);
+  const setMidiPadOut = useAppStore((s) => s.setMidiPadOut);
+
+  if (!midiAvailable) {
+    return (
+      <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] text-[#aab691]">
+        <p className="text-amber-200">MIDI not available in this browser.</p>
+        <p className="text-[#d8e3b7]">Use Chrome, Edge, or Brave for MIDI support.</p>
+        <p className="mt-[6px] text-[#91a477] text-[10px]">
+          Or grant MIDI permission if you previously declined it. Browser must support Web MIDI API.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] text-[#aab691]">
-      <p className="text-[#eef6d8]">MIDI configuration — coming soon</p>
-      <p className="text-[#91a477]">Planned:</p>
-      <ul className="grid gap-[6px] pl-[18px] text-[#d8e3b7]">
-        <li className="list-disc">Input device selection</li>
-        <li className="list-disc">Output device selection</li>
-        <li className="list-disc">Per-channel routing</li>
-        <li className="list-disc">External clock sync (in / out)</li>
-        <li className="list-disc">MIDI thru</li>
-      </ul>
-      <p className="mt-[8px] text-[10px] text-[#91a477]">
-        Requires Tauri native MIDI APIs — scheduled for Phase B (native shell integration).
+    <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+      <MidiSelectRow
+        label="INPUT DEVICE"
+        value={settings.midiInputDeviceId ?? ""}
+        options={[{ id: "", name: "— none —" }, ...midiInputs]}
+        onChange={(id) => setMidiInputDevice(id || null)}
+      />
+      <MidiSelectRow
+        label="OUTPUT DEVICE"
+        value={settings.midiOutputDeviceId ?? ""}
+        options={[{ id: "", name: "— none —" }, ...midiOutputs]}
+        onChange={(id) => setMidiOutputDevice(id || null)}
+      />
+      <MidiSelectRow
+        label="PAD MAPPING"
+        value={settings.midiPadMapping}
+        options={[
+          { id: "MPC_NATIVE", name: "MPC native (36-99, 4 banks)" },
+          { id: "GM_36_51", name: "General MIDI 36-51 (bank A only)" },
+        ]}
+        onChange={(id) => setMidiPadMapping(id as "MPC_NATIVE" | "GM_36_51")}
+      />
+      <MidiToggleRow
+        label="AUTO BANK SWITCH"
+        value={settings.midiAutoBankSwitch}
+        onChange={setMidiAutoBankSwitch}
+      />
+      <MidiSelectRow
+        label="MIDI SYNC IN"
+        value={settings.midiSyncIn}
+        options={[
+          { id: "OFF", name: "Off (internal clock)" },
+          { id: "CLOCK", name: "MIDI Clock (slave)" },
+        ]}
+        onChange={(id) => setMidiSyncIn(id as "OFF" | "CLOCK")}
+      />
+      <MidiSelectRow
+        label="MIDI SYNC OUT"
+        value={settings.midiSyncOut}
+        options={[
+          { id: "OFF", name: "Off" },
+          { id: "CLOCK", name: "MIDI Clock (master)" },
+        ]}
+        onChange={(id) => setMidiSyncOut(id as "OFF" | "CLOCK")}
+      />
+      <MidiToggleRow
+        label="PAD MIDI OUT"
+        value={settings.midiPadOut}
+        onChange={setMidiPadOut}
+      />
+      <p className="mt-[6px] text-[10px] tracking-[0.14em] text-[#91a477]">
+        Channel 1, velocity 0-127. CC routing on selected pad: 7 LEVEL · 10 PAN · 71 RES · 74 CUTOFF · 91 FX SEND.
       </p>
     </div>
+  );
+}
+
+function MidiSelectRow({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ id: string; name: string }>;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <label className="grid grid-cols-[1fr_1.4fr] items-center gap-[14px] border border-[#46533b] bg-black/15 px-[3%] py-[3%]">
+      <span className="text-[#91a477]">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-w-0 border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+      >
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function MidiToggleRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!value)}
+      className="grid grid-cols-[1fr_auto] items-center gap-[14px] border border-[#46533b] bg-black/15 px-[3%] py-[3%] text-left"
+    >
+      <span className="text-[#91a477]">{label}</span>
+      <span className="flex items-center gap-[8px] text-[#eef6d8]">
+        <span className={`h-[10px] w-[18px] border border-[#46533b] ${value ? "bg-[#d8e3b7]" : "bg-black/30"}`} />
+        {value ? "ON" : "OFF"}
+      </span>
+    </button>
   );
 }
 

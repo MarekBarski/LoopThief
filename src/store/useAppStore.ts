@@ -32,6 +32,15 @@ import {
   writeProjectZip,
 } from "../disk";
 import type { GlobalSettings, LoadedBundle, LoadedSample } from "../disk";
+import {
+  noteOn as midiNoteOn,
+  noteOff as midiNoteOff,
+  sendClock as midiSendClock,
+  sendTransport as midiSendTransport,
+  subscribeToInput as midiSubscribeToInput,
+  type MidiMessage,
+} from "../midi";
+import { noteToPad, padToNote, padIdToIndex } from "../midi/mapping";
 
 export type PadBank = "A" | "B" | "C" | "D";
 type TimeSignature = "2/4" | "3/4" | "4/4" | "5/4" | "6/4" | "6/8" | "7/8" | "9/8" | "12/8";
@@ -249,6 +258,9 @@ type AppState = {
   activeSettingsCategoryId: string;
   selectedSettingIndex: number;
   settingsValues: SettingsValues;
+  midiAvailable: boolean;
+  midiInputs: { id: string; name: string }[];
+  midiOutputs: { id: string; name: string }[];
   triggeredPads: Record<string, boolean>;
   flashingButtons: Record<string, boolean>;
   tapHistory: number[];
@@ -499,6 +511,17 @@ type AppState = {
   toggleSelectedSetting: () => void;
   persistSettingsNow: () => void;
   hydrateSettings: (values: Partial<SettingsValues>) => void;
+  setMidiAvailable: (value: boolean) => void;
+  setMidiInputs: (inputs: { id: string; name: string }[]) => void;
+  setMidiOutputs: (outputs: { id: string; name: string }[]) => void;
+  setMidiInputDevice: (id: string | null) => void;
+  setMidiOutputDevice: (id: string | null) => void;
+  setMidiPadMapping: (preset: "MPC_NATIVE" | "GM_36_51") => void;
+  setMidiAutoBankSwitch: (value: boolean) => void;
+  setMidiSyncIn: (mode: "OFF" | "CLOCK") => void;
+  setMidiSyncOut: (mode: "OFF" | "CLOCK") => void;
+  setMidiPadOut: (value: boolean) => void;
+  handleMidiInputMessage: (message: MidiMessage) => void;
   // ---- FX system (Phase 2 — 2 blocks per bus + chaining) ----
   setFxBusBlockEffect: (busId: BusId, block: BusBlockId, effect: EffectType | null) => void;
   toggleFxBusBlockBypass: (busId: BusId, block: BusBlockId) => void;
@@ -771,6 +794,13 @@ type SettingsValues = {
   latency: number;
   masterVolume: number;
   audioInputSource: "SYSTEM AUDIO" | "LINE IN" | "USB";
+  midiInputDeviceId: string | null;
+  midiOutputDeviceId: string | null;
+  midiPadMapping: "MPC_NATIVE" | "GM_36_51";
+  midiAutoBankSwitch: boolean;
+  midiSyncIn: "OFF" | "CLOCK";
+  midiSyncOut: "OFF" | "CLOCK";
+  midiPadOut: boolean;
 };
 
 let eventIdCounter = 0;
@@ -954,7 +984,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     latency: 8,
     masterVolume: 100,
     audioInputSource: "SYSTEM AUDIO",
+    midiInputDeviceId: null,
+    midiOutputDeviceId: null,
+    midiPadMapping: "MPC_NATIVE",
+    midiAutoBankSwitch: true,
+    midiSyncIn: "OFF",
+    midiSyncOut: "OFF",
+    midiPadOut: false,
   },
+  midiAvailable: false,
+  midiInputs: [],
+  midiOutputs: [],
   triggeredPads: {},
   flashingButtons: {},
   tapHistory: [],
@@ -963,6 +1003,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     void samplerEngine.ensureReady();
     const state = get();
     if (state.isPlaying) {
+      emitMidiTransportFromStore("STOP");
       set({
         isPlaying: false,
         transportPhase: "IDLE",
@@ -972,6 +1013,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       return;
     }
+    emitMidiTransportFromStore("START");
     requestTransportStartImpl("PLAY", set, get);
   },
   stopPlayback: () => {
@@ -982,6 +1024,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isDoubleStop) {
       samplerEngine.stopAllVoices();
     }
+    emitMidiTransportFromStore("STOP");
     set((state) => ({
       isPlaying: false,
       isSequenceRecording: false,
@@ -1255,6 +1298,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   triggerPad: (selectedPad) => {
     const padNumber = Number(selectedPad.slice(1));
+    emitMidiPadNoteOn(get(), selectedPad);
     const wasArmedSourcePick =
       get().activeScreen === "UTILITY_16_LEVELS" && get().sixteenLevelsSourceArmed;
     set((state) => {
@@ -1606,6 +1650,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   releasePad: (pad) => {
     stopNoteRepeatLoop(pad);
+    emitMidiPadNoteOff(get(), pad);
     const state = get();
     const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
     if (assignment?.mode === "NOTE ON") {
@@ -4331,6 +4376,71 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       settingsValues: { ...state.settingsValues, ...values },
     })),
+  setMidiAvailable: (midiAvailable) => set({ midiAvailable }),
+  setMidiInputs: (midiInputs) => set({ midiInputs }),
+  setMidiOutputs: (midiOutputs) => set({ midiOutputs }),
+  setMidiInputDevice: (id) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiInputDeviceId: id },
+    })),
+  setMidiOutputDevice: (id) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiOutputDeviceId: id },
+    })),
+  setMidiPadMapping: (preset) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiPadMapping: preset },
+    })),
+  setMidiAutoBankSwitch: (value) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiAutoBankSwitch: value },
+    })),
+  setMidiSyncIn: (mode) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiSyncIn: mode },
+    })),
+  setMidiSyncOut: (mode) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiSyncOut: mode },
+    })),
+  setMidiPadOut: (value) =>
+    set((state) => ({
+      settingsValues: { ...state.settingsValues, midiPadOut: value },
+    })),
+  handleMidiInputMessage: (message) => {
+    const state = get();
+    const settings = state.settingsValues;
+    if (message.type === "NOTE_ON" && message.channel === 1) {
+      const padAddress = noteToPad(message.note, settings.midiPadMapping);
+      if (!padAddress) return;
+      const padId = `P${String(padAddress.padIndex + 1).padStart(2, "0")}`;
+      if (settings.midiAutoBankSwitch && padAddress.bank !== state.padBank) {
+        set({ padBank: padAddress.bank });
+      }
+      get().triggerPad(padId);
+      return;
+    }
+    if (message.type === "NOTE_OFF" && message.channel === 1) {
+      const padAddress = noteToPad(message.note, settings.midiPadMapping);
+      if (!padAddress) return;
+      const padId = `P${String(padAddress.padIndex + 1).padStart(2, "0")}`;
+      get().releasePad(padId);
+      return;
+    }
+    if (message.type === "CC" && message.channel === 1) {
+      applyMidiCcToSelectedPad(get, set, message.controller, message.value);
+      return;
+    }
+    if (settings.midiSyncIn === "CLOCK") {
+      if (message.type === "START" || message.type === "CONTINUE") {
+        if (!state.isPlaying) get().togglePlay();
+      } else if (message.type === "STOP") {
+        if (state.isPlaying) get().togglePlay();
+      } else if (message.type === "CLOCK") {
+        handleMidiClockPulse(set);
+      }
+    }
+  },
   createProjectSnapshot: () => {
     const state = get();
     return {
@@ -7206,6 +7316,122 @@ function startTransportAction(
   // subsequent ticks come from RuntimeClock setIntervals.
   getState().tickStepPlayback();
   getState().tickPerformance();
+}
+
+// ============================================================================
+// MIDI helpers — CC routing to selected pad + external clock BPM estimation.
+// ============================================================================
+
+function applyMidiCcToSelectedPad(
+  get: () => AppState,
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+  controller: number,
+  value: number,
+): void {
+  const state = get();
+  const selectedPad = state.selectedPad;
+  const bank = state.padBank;
+
+  if (controller === 7) {
+    // CC 7 — MAIN VOLUME → pad mixer level (0-127).
+    const channels = state.padMixer[bank].map((channel) =>
+      channel.pad === selectedPad ? { ...channel, level: clamp(value, 0, 127) } : channel,
+    );
+    syncMixerBankToAudio(bank, channels, state.currentProgramId);
+    const padMixer = { ...state.padMixer, [bank]: channels };
+    set({ padMixer, programs: syncCurrentProgram(state, { padMixer }) });
+    return;
+  }
+  if (controller === 10) {
+    // CC 10 — PAN (0-127 → -50..+50).
+    const pan = Math.round(((value / 127) * 100) - 50);
+    const channels = state.padMixer[bank].map((channel) =>
+      channel.pad === selectedPad ? { ...channel, pan: clamp(pan, -50, 50) } : channel,
+    );
+    syncMixerBankToAudio(bank, channels, state.currentProgramId);
+    const padMixer = { ...state.padMixer, [bank]: channels };
+    set({ padMixer, programs: syncCurrentProgram(state, { padMixer }) });
+    return;
+  }
+  if (controller === 91) {
+    // CC 91 — FX SEND level (0-127 → 0-100).
+    const send = Math.round((value / 127) * 100);
+    get().setPadFxSendLevel(selectedPad, clamp(send, 0, 100));
+    return;
+  }
+  // CC 74 (CUTOFF), 71 (RESONANCE) → selected pad filter params (0-127 → 0-100).
+  if (controller === 74 || controller === 71) {
+    const field = controller === 74 ? "filterCutoff" : "filterResonance";
+    const padAssignments = state.padAssignments[bank].map((assignment) =>
+      assignment.pad === selectedPad
+        ? { ...assignment, [field]: clamp(Math.round((value / 127) * 100), 0, 100) }
+        : assignment,
+    );
+    set({
+      padAssignments: { ...state.padAssignments, [bank]: padAssignments },
+      programs: syncCurrentProgram(state, { padAssignments: { ...state.padAssignments, [bank]: padAssignments } }),
+    });
+    return;
+  }
+  // CC 73 (ATTACK), 75 (DECAY) — envelope params. Reserved for future
+  // envelope generator (per UX_AUDIT_FINDINGS — currently fake UI).
+}
+
+function emitMidiPadNoteOn(state: AppState, padId: string): void {
+  const s = state.settingsValues;
+  if (!s.midiPadOut || !s.midiOutputDeviceId) return;
+  const note = padToNote(state.padBank, padIdToIndex(padId), s.midiPadMapping);
+  if (note === null) return;
+  midiNoteOn(s.midiOutputDeviceId, 1, note, 100);
+}
+
+function emitMidiPadNoteOff(state: AppState, padId: string): void {
+  const s = state.settingsValues;
+  if (!s.midiPadOut || !s.midiOutputDeviceId) return;
+  const note = padToNote(state.padBank, padIdToIndex(padId), s.midiPadMapping);
+  if (note === null) return;
+  midiNoteOff(s.midiOutputDeviceId, 1, note);
+}
+
+export function emitMidiTransportFromStore(kind: "START" | "STOP" | "CONTINUE"): void {
+  const state = useAppStore.getState();
+  const s = state.settingsValues;
+  if (s.midiSyncOut !== "CLOCK" || !s.midiOutputDeviceId) return;
+  midiSendTransport(s.midiOutputDeviceId, kind);
+}
+
+export function emitMidiClockFromStore(): void {
+  const state = useAppStore.getState();
+  const s = state.settingsValues;
+  if (s.midiSyncOut !== "CLOCK" || !s.midiOutputDeviceId) return;
+  midiSendClock(s.midiOutputDeviceId);
+}
+
+export function subscribeMidiInput(): void {
+  const id = useAppStore.getState().settingsValues.midiInputDeviceId;
+  midiSubscribeToInput(id, (message) => {
+    useAppStore.getState().handleMidiInputMessage(message);
+  });
+}
+
+let midiClockLastTick: number | null = null;
+let midiClockIntervals: number[] = [];
+
+function handleMidiClockPulse(
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void,
+): void {
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (midiClockLastTick !== null) {
+    midiClockIntervals.push(now - midiClockLastTick);
+    if (midiClockIntervals.length > 24) midiClockIntervals.shift();
+  }
+  midiClockLastTick = now;
+  // After collecting one beat worth of pulses (24 PPQN), recompute BPM.
+  if (midiClockIntervals.length >= 24) {
+    const averageMs = midiClockIntervals.reduce((sum, ms) => sum + ms, 0) / midiClockIntervals.length;
+    const bpm = 60000 / (averageMs * 24);
+    set({ bpm: clamp(Math.round(bpm * 100) / 100, 30, 300) });
+  }
 }
 
 function createSettingsCategories(): SettingsCategory[] {

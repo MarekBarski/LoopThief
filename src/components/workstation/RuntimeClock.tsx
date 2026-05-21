@@ -1,9 +1,12 @@
 import { useEffect } from "react";
 import { useAppStore } from "../../store/useAppStore";
+import { emitMidiClockFromStore } from "../../store/useAppStore";
 
 export function RuntimeClock() {
   const isPlaying = useAppStore((state) => state.isPlaying);
   const bpm = useAppStore((state) => state.bpm);
+  const midiSyncOut = useAppStore((state) => state.settingsValues.midiSyncOut);
+  const midiOutputDeviceId = useAppStore((state) => state.settingsValues.midiOutputDeviceId);
   const tickStepPlayback = useAppStore((state) => state.tickStepPlayback);
   const tickPerformance = useAppStore((state) => state.tickPerformance);
   const tickSongPlayback = useAppStore((state) => state.tickSongPlayback);
@@ -29,6 +32,16 @@ export function RuntimeClock() {
     const interval = window.setInterval(() => tickSongPlayback(), 500);
     return () => window.clearInterval(interval);
   }, [isPlaying, tickSongPlayback]);
+
+  // MIDI clock out — 24 PPQ when playing AND sync-out CLOCK selected AND
+  // output device chosen. Sends just clock bytes; Start/Stop come from the
+  // togglePlay/stopPlayback actions in the store.
+  useEffect(() => {
+    if (!isPlaying || midiSyncOut !== "CLOCK" || !midiOutputDeviceId) return;
+    const tickMs = 60_000 / bpm / 24;
+    const interval = window.setInterval(() => emitMidiClockFromStore(), tickMs);
+    return () => window.clearInterval(interval);
+  }, [bpm, isPlaying, midiSyncOut, midiOutputDeviceId]);
 
   return null;
 }

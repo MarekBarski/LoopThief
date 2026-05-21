@@ -99,6 +99,108 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.I — 2026-05-21 — MIDI MVP: Web MIDI input/output + clock sync + MPC pad mapping + Settings UI
+
+### What was attempted
+
+Implement the full MIDI MVP scope per Marek's spec:
+
+1. MIDI INPUT — pad triggering (NoteOn/NoteOff on Ch 1) + CC routing to selected pad params.
+2. MIDI OUTPUT — pad triggers send NoteOn/NoteOff to selected output device.
+3. MIDI CLOCK IN (slave) — external clock drives BPM + Start/Stop respect transport.
+4. MIDI CLOCK OUT (master) — LoopThief emits 24 PPQ + Start/Stop/Continue.
+5. SETTINGS UI in MIDI category — device dropdowns, mapping preset, sync mode toggles, persistent.
+
+### What worked
+
+**MIDI access module (`src/midi/`)** — three new files:
+
+- `access.ts` — Web MIDI API wrapper. Owns the live `MIDIAccess`, parses incoming bytes into structured `MidiMessage` union (NOTE_ON / NOTE_OFF / CC / CLOCK / START / CONTINUE / STOP / OTHER), exposes `subscribeToInput(deviceId, handler)` + `noteOn` / `noteOff` / `sendClock` / `sendTransport` helpers. `isMidiSupported()` guards browsers without Web MIDI (Firefox without the flag, Safari).
+- `mapping.ts` — pad↔note conversion. MPC native: 4 banks × 16 pads = notes 36–99 (bank A 36–51, B 52–67, C 68–83, D 84–99). Alt preset GM 36-51: only bank A receives, other banks ignored on input.
+- `index.ts` — barrel.
+
+**Store integration (`useAppStore.ts`)**:
+
+- Extended `SettingsValues` with: `midiInputDeviceId`, `midiOutputDeviceId`, `midiPadMapping`, `midiAutoBankSwitch`, `midiSyncIn`, `midiSyncOut`, `midiPadOut`. All persist via the existing localStorage debounced subscribe (added in Session 22.G).
+- Added top-level `midiAvailable: boolean` + `midiInputs[]` + `midiOutputs[]` (ephemeral — not persisted, re-enumerated on every state change).
+- New actions: `setMidiAvailable` / `setMidiInputs` / `setMidiOutputs` / `setMidiInputDevice` / `setMidiOutputDevice` / `setMidiPadMapping` / `setMidiAutoBankSwitch` / `setMidiSyncIn` / `setMidiSyncOut` / `setMidiPadOut` / `handleMidiInputMessage`.
+- `handleMidiInputMessage` routes by message type:
+  - NOTE_ON Ch1 → `noteToPad(note, mapping)` → if auto-bank-switch and bank differs, switch bank → `triggerPad(padId)`.
+  - NOTE_OFF Ch1 → `releasePad(padId)`.
+  - CC Ch1 → `applyMidiCcToSelectedPad(controller, value)`: CC 7 LEVEL (0-127), CC 10 PAN (0-127 → -50..+50), CC 74 CUTOFF (→ 0-100), CC 71 RESONANCE, CC 91 FX SEND. CC 73 ATTACK / CC 75 DECAY accepted but no engine target yet (envelope generator absent — listed in `UX_AUDIT_FINDINGS.md`).
+  - START / CONTINUE / STOP / CLOCK messages handled only when `midiSyncIn === "CLOCK"`.
+- Clock-in BPM estimation: rolling 24-pulse interval window → BPM = 60000 / (avgMs * 24), clamped to 30–300.
+- Pad trigger MIDI out: `emitMidiPadNoteOn(state, padId)` + `emitMidiPadNoteOff(state, padId)` called from `triggerPad` and `releasePad`. Uses fixed velocity 100 for now (the existing internal velocity model is per-screen and not always exposed to the trigger path; pinning to 100 keeps MIDI out viable for MVP). Note Off uses velocity 0 (zero-velocity Note On equivalent).
+- Transport hooks: `emitMidiTransportFromStore("START"|"STOP"|"CONTINUE")` called from `togglePlay` (on start AND stop) and `stopPlayback`. Guarded by `midiSyncOut === "CLOCK"` + output device.
+- `subscribeMidiInput()` exported from store — App.tsx calls it after access + on input-device change.
+
+**App.tsx wiring**:
+
+- On mount: `isMidiSupported()` check → `setMidiAvailable(false)` if false, else `requestMidiAccess()`. Permission denial yields `setMidiAvailable(false)`. On grant: enumerate inputs + outputs, subscribe to active input (if any chosen previously from persisted settings), register `onMidiStateChange` for hot device add/remove.
+- Subscription effect: zustand `useAppStore.subscribe` listens for `settingsValues.midiInputDeviceId` change → resubscribes to new device. Old subscription is detached automatically by `access.ts`.
+
+**RuntimeClock MIDI clock out**:
+
+- New useEffect inside `RuntimeClock.tsx` runs a `setInterval` at 60000/bpm/24 ms when `isPlaying && midiSyncOut === "CLOCK" && midiOutputDeviceId`. Calls `emitMidiClockFromStore()` each tick which calls `sendClock(deviceId)` (one-byte 0xF8).
+
+**SettingsScreen MIDI panel**:
+
+- Replaced the "Coming soon" placeholder with real UI. If `midiAvailable === false`: shows "MIDI not available — use Chrome/Edge/Brave" hint.
+- If available: 7 rows — INPUT DEVICE dropdown, OUTPUT DEVICE dropdown, PAD MAPPING dropdown (MPC native / GM 36-51), AUTO BANK SWITCH toggle, MIDI SYNC IN dropdown (Off / MIDI Clock), MIDI SYNC OUT dropdown (Off / MIDI Clock), PAD MIDI OUT toggle.
+- Helper components `MidiSelectRow` (native `<select>` styled to match LCD aesthetic) and `MidiToggleRow` (matches existing toggle pattern).
+- Footer hint shows the hardcoded CC routing reference.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies with a USB MIDI controller. Particularly:
+  - Permission dialog flow (first-run browser prompt).
+  - Hot device add/remove via `onMidiStateChange`.
+  - BPM tracking from external clock (24-pulse window may be too slow to feel responsive; could halve to 12 pulses but trades stability for latency).
+  - Clock-out timing accuracy from `setInterval` — browsers can drift. MVP-acceptable; ideal would be a precise audio-clock scheduler.
+- **Pad MIDI Out velocity is hardcoded to 100** — the internal trigger path doesn't propagate a velocity field consistently across all entry points (mouse pad click, keyboard shortcut, sequence playback, etc.). Velocity could be threaded through later; for MVP a constant value gets MIDI out working.
+- **CC 73 ATTACK / CC 75 DECAY accepted but inert** — there is no envelope generator in the audio engine yet (`UX_AUDIT_FINDINGS.md` flags ATTACK/DECAY in PROGRAM as fake UI). The CC handler explicitly skips these to avoid storing values that don't reach audio.
+- **Clock-in transport handling is binary** — START flips into play, STOP flips out. No CONTINUE-from-mid-sequence position tracking (would need SPP — Song Position Pointer message, not implemented per "MVP only MIDI Clock"). Acceptable per Marek's "NIE w scope MVP: MTC sync".
+- **Web MIDI permission persistence is browser-controlled** — once granted, the browser remembers; once denied, the user must reset site permissions in browser settings. Not a code-fixable surface.
+- **The `subscribeMidiInput` helper bridges store ↔ access module without a circular import**, but the wiring is implicit. App.tsx must call it; if a future refactor forgets, MIDI input silently breaks. Mitigation: a comment in `subscribeMidiInput` explaining the expected lifecycle.
+- **Tauri native MIDI path NOT implemented** — only Web MIDI. When Tauri integration arrives, the `midi/access.ts` module is the swap point (replace `navigator.requestMIDIAccess` with a Tauri-bridged API; keep the same `MidiMessage` interface).
+- **`OUTPUT DEVICE` dropdown shows "— none —" by default** — value persisted as `null`. User must select a real device for output to work. Same pattern for `INPUT DEVICE`.
+- **`MidiPlaceholder` function name retained** — internal naming is now misleading (it's no longer a placeholder). Cosmetic; refactor noise.
+
+### Decisions made
+
+- All pad MIDI on **Channel 1** (MPC default; spec didn't ask for per-bank channels — "NIE w scope: Multiple MIDI channels per bank").
+- **MPC native mapping starts at note 36 (C1)**, not 37. Marek's spec offered either; 36 matches General MIDI Bass Drum convention and is the most common controller-default. Bank A 36–51, B 52–67, C 68–83, D 84–99 = 64 pads in 4 banks.
+- **Velocity hardcoded to 100 on MIDI out** for MVP — a deliberate simplification rather than thread a velocity field through every pad trigger entry point.
+- **Permission denial is silent**, not modal — settings panel shows availability state; user-facing surface for re-enabling is the browser's site-permission UI, not the app.
+- **Auto bank switch defaults ON** (MPC behaviour) — incoming notes from bank C trigger pads in bank C without manual switch.
+- **MIDI settings persist via the existing localStorage debounced subscribe** added in Session 22.G — no separate MIDI persistence layer.
+- **CC routing target is "currently selected pad"** (state.selectedPad) — not the MIDI source channel's note. Matches MPC5000 Q-Link convention.
+
+### Open issues / followups
+
+- Marek physical test of the full chain (controller → pads, controller knobs → CC, external clock in, internal clock out).
+- Velocity propagation through pad trigger entry points (would replace the hardcoded 100).
+- Envelope generator (ATTACK/DECAY) to make CC 73/75 actually do something.
+- CC Learn UI (deferred per spec, "skip dla MVP").
+- MIDI Thru, Program Change, MTC, SysEx — explicitly out of scope.
+- Tauri native MIDI swap when Tauri integration begins.
+- Per-bank MIDI channels (if Marek decides bank C should be on Ch 3 etc.).
+- Better BPM tracking responsiveness (12-pulse window instead of 24).
+
+### Files modified
+
+- New: `src/midi/access.ts` — Web MIDI wrapper (~170 LOC).
+- New: `src/midi/mapping.ts` — pad↔note presets (~55 LOC).
+- New: `src/midi/index.ts` — barrel export.
+- `src/store/useAppStore.ts` — MIDI state + 11 new actions + `handleMidiInputMessage` router + `applyMidiCcToSelectedPad` helper + clock-in BPM estimator + `emitMidiPadNoteOn/Off` / `emitMidiTransportFromStore` / `emitMidiClockFromStore` / `subscribeMidiInput` exports; `triggerPad` and `releasePad` and `togglePlay` and `stopPlayback` call MIDI emit helpers.
+- `src/App.tsx` — Web MIDI initialization + state-change refresh + input-device-change resubscribe.
+- `src/components/workstation/RuntimeClock.tsx` — new `setInterval` for MIDI clock out at 24 PPQ.
+- `src/screens/SettingsScreen.tsx` — MIDI category panel rewritten with device dropdowns + toggles + sync mode selectors + Web MIDI availability fallback. `MidiSelectRow` + `MidiToggleRow` helper components added.
+
+---
+
 ## Session 22.H — 2026-05-21 — SONG editable + TRACK/PAD MUTE F-keys, GROUP mode + visual states
 
 ### What was attempted

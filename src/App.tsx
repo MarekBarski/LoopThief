@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { KeyboardShortcuts } from "./components/workstation/KeyboardShortcuts";
 import { RuntimeClock } from "./components/workstation/RuntimeClock";
-import { useAppStore } from "./store/useAppStore";
+import { useAppStore, subscribeMidiInput } from "./store/useAppStore";
 import {
   clearAutosave,
   readAutosave,
@@ -11,6 +11,13 @@ import {
   writeProjectZip,
 } from "./disk";
 import { getSampleBuffer } from "./audio/sampleLibrary";
+import {
+  isMidiSupported,
+  requestMidiAccess,
+  listInputs,
+  listOutputs,
+  onMidiStateChange,
+} from "./midi";
 
 const APP_VERSION = "0.1.0";
 
@@ -54,6 +61,46 @@ export function App() {
       if (pendingTimer !== null) window.clearTimeout(pendingTimer);
       unsubscribe();
     };
+  }, []);
+
+  // MIDI access initialization. Browsers that don't support Web MIDI keep
+  // midiAvailable=false and the SETTINGS UI surfaces a "MIDI not available"
+  // hint. Permission denial yields the same outcome.
+  useEffect(() => {
+    if (!isMidiSupported()) {
+      useAppStore.getState().setMidiAvailable(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const granted = await requestMidiAccess();
+      if (cancelled) return;
+      useAppStore.getState().setMidiAvailable(granted);
+      if (!granted) return;
+      const refresh = () => {
+        useAppStore.getState().setMidiInputs(listInputs());
+        useAppStore.getState().setMidiOutputs(listOutputs());
+        subscribeMidiInput();
+      };
+      refresh();
+      onMidiStateChange(refresh);
+    })();
+    return () => {
+      cancelled = true;
+      onMidiStateChange(null);
+    };
+  }, []);
+
+  // Resubscribe to the input device whenever the user changes selection.
+  useEffect(() => {
+    let lastInputId = useAppStore.getState().settingsValues.midiInputDeviceId;
+    const unsubscribe = useAppStore.subscribe((state) => {
+      const currentId = state.settingsValues.midiInputDeviceId;
+      if (currentId === lastInputId) return;
+      lastInputId = currentId;
+      subscribeMidiInput();
+    });
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
