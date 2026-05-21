@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { KeyboardShortcuts } from "./components/workstation/KeyboardShortcuts";
 import { RuntimeClock } from "./components/workstation/RuntimeClock";
+import { ViewportWarning } from "./components/workstation/ViewportWarning";
 import { useAppStore, subscribeMidiInput } from "./store/useAppStore";
 import {
   clearAutosave,
@@ -175,6 +176,7 @@ export function App() {
 
   return (
     <>
+      <ViewportWarning />
       <KeyboardShortcuts />
       <RuntimeClock />
       <AppShell />

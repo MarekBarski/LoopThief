@@ -3,6 +3,7 @@ import mainPanelBg from "../../../assets/ui/panels/main_panel_bg_1920_v3.png";
 import { useLayoutStore } from "../../store/useLayoutStore";
 import { LayoutEditorOverlay } from "./LayoutEditorOverlay";
 import { LayoutElements } from "./LayoutElements";
+import { isTauri } from "../../runtime/environment";
 
 export const CANVAS_WIDTH = 2527;
 export const CANVAS_HEIGHT = 1610;
@@ -24,7 +25,12 @@ export function AppShell() {
     return () => window.removeEventListener("resize", updateScale);
   }, []);
 
+  // Layout editor is dev-only — disabled inside Tauri so the shipping .exe
+  // can't accidentally enter edit mode (no F7 toggle, no overlay rendered).
+  const layoutEditorEnabled = !isTauri();
+
   useEffect(() => {
+    if (!layoutEditorEnabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
       // F7 toggles layout editor mode (moved from F2 so F2 can be a normal softkey passthrough).
       if (event.key === "F7") {
@@ -34,7 +40,7 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setEditMode]);
+  }, [layoutEditorEnabled, setEditMode]);
 
   const shellStyle = useMemo(
     () => ({
@@ -59,7 +65,7 @@ export function AppShell() {
           className="pointer-events-none absolute left-0 top-0 h-full w-full select-none"
         />
         <LayoutElements />
-        <LayoutEditorOverlay canvasRef={canvasRef} />
+        {layoutEditorEnabled && <LayoutEditorOverlay canvasRef={canvasRef} />}
       </section>
     </main>
   );

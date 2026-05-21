@@ -99,6 +99,128 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.K — 2026-05-21 — Tauri EXE packaging config + window minSize + ViewportWarning gate
+
+### What was attempted
+
+Set LoopThief up for producing a Windows .exe via Tauri 2. The Tauri scaffold existed from earlier work (`src-tauri/`, `Cargo.toml`, `tauri.conf.json`, Rust entry points) but was never configured for distribution. Per Marek's MVP scope:
+
+1. `tauri.conf.json` updates — identifier, window minSize, bundle targets (msi + nsis), icons block, metadata.
+2. ViewportWarning component for browser-only viewport check; suppressed inside Tauri because the native window enforces minSize as a hard floor.
+3. Runtime detection helper (`isTauri()`) so screens can branch on runtime when needed.
+4. Icons scaffold + regeneration instructions.
+5. README rewrite with end-to-end build instructions (Rust setup → `tauri dev` → `tauri build` → installer outputs).
+6. SystemInfo Tauri detection updated to use the new helper.
+
+### What worked
+
+**`src-tauri/tauri.conf.json`** — rewritten with MVP-ready bundle config:
+
+- `productName: "LoopThief"`, `version: "0.1.0"`, `identifier: "com.marekbarski.loopthief"`.
+- Window: `1920×1080` default, `minWidth: 1280`, `minHeight: 720`, `resizable: true`, `fullscreen: false`. The minSize replaces the browser-side ViewportWarning when running in Tauri.
+- Bundle: `targets: ["msi", "nsis"]` for Windows installers, `category: "Music"`, `copyright: "© Marek Barski"`, short + long descriptions, icon paths under `icons/`.
+
+**`src/runtime/environment.ts`** (new) — `isTauri()` checks both `window.__TAURI_INTERNALS__` (Tauri 2.x) and `window.__TAURI__` (Tauri 1.x legacy) so the same build survives a Tauri major-version swap. `isBrowser()` companion.
+
+**`src/components/workstation/ViewportWarning.tsx`** (new) — fixed-position top-of-screen banner shown only when:
+- Not running in Tauri (`!isTauri()`).
+- `window.innerWidth < 1280` or `window.innerHeight < 720`.
+
+Responds to `resize` events. Suggests installing the desktop build for guaranteed sizing. Pointer-events on the banner only (rest passes through) so it doesn't block the underlying UI.
+
+Mounted in `App.tsx` above the rest of the workstation chrome.
+
+**`src-tauri/icons/`** (new) — placeholder `icon.png` copied from `assets/ui/logo/loopthief_logo.png` (1536×1024). Co-located `README.md` documents the regeneration command:
+
+```
+npx tauri icon src-tauri/icons/icon.png
+```
+
+This produces all required platform sizes (32×32, 128×128, 128×128@2x, multi-resolution `.ico`) that `tauri.conf.json` references.
+
+**`README.md`** — rewritten with a full build flow:
+- Browser dev: `npm install && npm run dev`.
+- Desktop dev: Rust toolchain + Microsoft C++ Build Tools + `npm run tauri dev`.
+- Distributable .exe: `npm run tauri build` → outputs `.msi` + `.nsis` installer + raw `loopthief.exe`.
+- WebView2 runtime notes.
+- Icon regeneration command.
+
+**`SettingsScreen.tsx`** — `runningInTauri` uses the new shared `isTauri()` helper instead of an inline `__TAURI__` check.
+
+**`AppShell.tsx`** — F7 layout editor gated on `!isTauri()`. In the shipping .exe:
+- F7 keydown listener is not attached (no toggle).
+- `<LayoutEditorOverlay />` is not rendered.
+
+Browser dev mode keeps F7 + overlay for ongoing layout work. Per Marek: "w exe go nie chcemy".
+
+Build clean (`tsc && vite build`). The Tauri side (Rust build) was **not** executed in this session — that's the Marek-side step.
+
+### What didn't work / pitfalls hit
+
+- **No Tauri/Rust build executed** — Marek's machine has the toolchain; mine does not. Cannot verify the .exe actually produces or runs. The config is correct per Tauri 2.x schema (`$schema` ref in the JSON validates), but the first `npm run tauri build` Marek runs is the real test.
+- **Source logo is 1536×1024, not square** — Tauri icon generation pads non-square inputs with transparency, producing icons with a "gutter". Functional but visually unpolished. Flagged in `src-tauri/icons/README.md` with the suggestion to crop to a square (e.g. 1024×1024) before running `tauri icon` for best quality.
+- **No ViewportWarning component existed before this session** — Marek's spec assumed one existed and asked me to gate it on Tauri. Searched the codebase, found nothing. Created a minimal new component instead of gating an imaginary one. Behaviour matches the spec: visible in browser when too small, suppressed in Tauri.
+- **WebView2 bootstrapper is NOT bundled** by default — Marek can add `bundle.windows.webviewInstallMode` to embed it for offline installer scenarios. Left default for now to keep installer small. Documented in README.
+- **Tauri capability/permissions file not added** — Tauri 2 introduces a `capabilities/` directory for fine-grained API permissions. Default (no capabilities file) is restrictive but adequate for the current LoopThief feature set (no filesystem / shell / OS plugin usage yet). If Marek later adds plugins (e.g. tauri-plugin-store for native settings), capabilities config will need to be created.
+- **Rust dependencies in `Cargo.toml` untouched** — still only `tauri`, `serde`, `serde_json`. No plugins (`tauri-plugin-fs`, `tauri-plugin-dialog`, etc.) wired yet. Sufficient for MVP; revisit when native filesystem save/load replaces browser file APIs.
+- **Settings persistence still uses localStorage** — works in WebView2 too. Marek's spec explicitly said "zostaw localStorage dla teraz". No migration to `tauri-plugin-store` in this session.
+- **`assets/ui/logo/loopthief_logo.png` is 2.4 MB** — gets bundled both as a Vite asset AND copied into `src-tauri/icons/icon.png` as the icon source. The icon will be regenerated to smaller per-size PNGs when Marek runs `tauri icon`, so the 2.4 MB source only sits in the repo, not in the final installer.
+- **Did not actually test minSize behaviour** — the value is set in JSON but verification requires running the Tauri window and dragging. Marek tests.
+
+### Decisions made
+
+- **Window minSize 1280×720** matches the browser ViewportWarning threshold — same number on both sides of the runtime gate.
+- **Bundle targets msi + nsis** for Windows. NSIS is the user-friendlier installer (single .exe, no Windows Installer dependencies); MSI is for IT-managed environments.
+- **Icon scaffold = source logo + README** rather than committing all derived sizes. Reason: derived icons are easy to regenerate with `npx tauri icon` and would bloat the repo. Marek runs the command once and commits the outputs.
+- **`isTauri()` checks both Tauri 1 and Tauri 2 globals** — defensive, costs nothing.
+- **ViewportWarning is a real new component**, not just a stub — provides actual value in browser dev mode. Suppressed cleanly in Tauri.
+- **README rewrite is exhaustive**, not minimal — Marek asked for "step-by-step jak Marek może zbudować .exe", so the README is the canonical reference.
+
+### Open issues / followups (Marek's tasks)
+
+1. Install Rust toolchain (one-time): https://rustup.rs/
+2. Install Microsoft C++ Build Tools (one-time, via Visual Studio Installer → "Desktop development with C++").
+3. (Optional) Crop `assets/ui/logo/loopthief_logo.png` to a square 1024×1024 source for cleaner icons.
+4. Run `npx tauri icon src-tauri/icons/icon.png` to generate all required sizes; commit the outputs.
+5. `npm run tauri dev` — verify dev window opens, audio + MIDI work, save/load works, ViewportWarning is suppressed, resize is locked to ≥ 1280×720.
+6. `npm run tauri build` — produces `.msi` + `.nsis` in `src-tauri/target/release/bundle/`.
+7. Install on a clean Windows machine and run through the test checklist from the spec (audio, MIDI, save/load, screens, performance).
+8. If WebView2 isn't on the test machine: either Windows Update installs it, or bundle the bootstrapper via `bundle.windows.webviewInstallMode` in `tauri.conf.json`.
+
+### Build instructions summary (for the user manual)
+
+```
+# One-time setup (Marek's machine)
+1. Install Rust via rustup:    https://rustup.rs/
+2. Install MS C++ Build Tools: Visual Studio Installer
+3. Clone + npm install:        git clone …; cd loopthief; npm install
+
+# Iterating
+npm run tauri dev              # native dev window with hot-reload
+npm run dev                    # browser version at http://localhost:1420
+
+# Build distributable
+npm run tauri build
+# outputs:
+#   src-tauri/target/release/loopthief.exe                (raw binary)
+#   src-tauri/target/release/bundle/msi/  LoopThief_X_x64_en-US.msi
+#   src-tauri/target/release/bundle/nsis/ LoopThief_X_x64-setup.exe   ← ship this
+```
+
+### Files modified / created
+
+- `src-tauri/tauri.conf.json` — full rewrite with bundle config, window minSize 1280×720, identifier, icon paths.
+- `src-tauri/icons/icon.png` — source logo copy (placeholder).
+- `src-tauri/icons/README.md` — regeneration instructions.
+- `src/runtime/environment.ts` (new) — `isTauri()` / `isBrowser()` helpers.
+- `src/components/workstation/ViewportWarning.tsx` (new) — browser-only viewport banner, suppressed in Tauri.
+- `src/App.tsx` — mounts `<ViewportWarning />` ahead of the rest of the chrome.
+- `src/screens/SettingsScreen.tsx` — `runningInTauri` uses shared helper.
+- `src/components/layout/AppShell.tsx` — F7 layout editor disabled inside Tauri (keydown listener + overlay both gated on `!isTauri()`).
+- `README.md` — full rewrite with build instructions.
+
+---
+
 ## Session 22.J — 2026-05-21 — Pre-Tauri fixes: GROUP visual + MIDI velocity + ADSR CC
 
 ### What was attempted

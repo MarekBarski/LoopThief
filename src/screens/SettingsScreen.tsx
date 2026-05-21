@@ -4,6 +4,7 @@ import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { EditableNumber } from "../components/EditableNumber";
 import packageJson from "../../package.json";
+import { isTauri } from "../runtime/environment";
 
 const softButtons = [
   "F1 VOL",
@@ -450,7 +451,7 @@ function KeyboardReference() {
 
 function SystemInfo() {
   const audioContextState = typeof window !== "undefined" && "AudioContext" in window ? "available" : "unavailable";
-  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+  const runningInTauri = isTauri();
   const userAgentLine = typeof navigator !== "undefined" ? navigator.userAgent : "n/a";
   const buildDate = (() => {
     try {
@@ -465,7 +466,7 @@ function SystemInfo() {
     ["Coded by", "Marek Barski"],
     ["Version", packageJson.version],
     ["Build date", buildDate],
-    ["Runtime", isTauri ? "Tauri native" : "browser"],
+    ["Runtime", runningInTauri ? "Tauri native" : "browser"],
     ["AudioContext", audioContextState],
     ["User agent", userAgentLine.length > 64 ? userAgentLine.slice(0, 64) + "..." : userAgentLine],
   ];
