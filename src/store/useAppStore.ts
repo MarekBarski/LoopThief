@@ -223,7 +223,8 @@ type AppState = {
   mixerTracks: MixerTrack[];
   padMixer: Record<PadBank, MixerChannel[]>;
   performanceTracks: PerformanceTrack[];
-  trackMuteMode: "MUTE" | "SOLO" | "HOLD";
+  trackMuteMode: "MUTE" | "SOLO" | "GROUP" | "UNGROUP";
+  padMuteMode: "MUTE" | "SOLO" | "GROUP" | "UNGROUP";
   lastPerformanceMessage: string;
   songSteps: SongStep[];
   selectedSongStepIndex: number;
@@ -364,6 +365,9 @@ type AppState = {
   insertSongStep: () => void;
   deleteSelectedSongStep: () => void;
   adjustSelectedSongRepeats: (delta: number) => void;
+  setSongStepRepeats: (index: number, value: number) => void;
+  setSongStepBars: (index: number, value: number) => void;
+  setSongTotalBars: (value: number) => void;
   moveSelectedSongStep: (delta: number) => void;
   cycleSelectedSongSequence: () => void;
   cycleSelectedSongSequenceBack: () => void;
@@ -468,6 +472,11 @@ type AppState = {
   cycleSelectedMixerOutput: () => void;
   cycleTrackMuteMode: () => void;
   setTrackMuteMode: (mode: AppState["trackMuteMode"]) => void;
+  setTrackGroup: (index: number, group: number) => void;
+  setPadMuteMode: (mode: AppState["padMuteMode"]) => void;
+  applyPadMuteAction: (pad: string) => void;
+  setPadGroup: (pad: string, group: number) => void;
+  clearPadMutes: () => void;
   togglePerformanceTrack: (index: number) => void;
   clearTrackMutes: () => void;
   queuePerformanceSequence: (sequence: string) => void;
@@ -704,6 +713,7 @@ type MixerChannel = {
   solo: boolean;
   fxSend: number;
   output: "MAIN" | "OUT1" | "OUT2" | "OUT3";
+  group: number;
 };
 
 type PerformanceTrack = {
@@ -712,6 +722,7 @@ type PerformanceTrack = {
   muted: boolean;
   solo: boolean;
   activity: number;
+  group: number;
 };
 
 type DiskItem = {
@@ -901,9 +912,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   ],
   padMixer: createPadMixer(),
   performanceTracks: [
-    { id: "TRACK01", name: "TRACK01", muted: false, solo: false, activity: 28 },
+    { id: "TRACK01", name: "TRACK01", muted: false, solo: false, activity: 28, group: 0 },
   ],
   trackMuteMode: "MUTE",
+  padMuteMode: "MUTE",
   lastPerformanceMessage: "",
   songSteps: [
     { sequenceId: "01", repeats: 2 },
@@ -2433,6 +2445,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       ),
       ...recordUndo(state, "SONG REPEATS", `song-repeats:${state.selectedSongStepIndex}`),
     })),
+  setSongStepRepeats: (index, value) =>
+    set((state) => ({
+      songSteps: state.songSteps.map((step, i) =>
+        i === index ? { ...step, repeats: clamp(Math.round(value), 1, 99) } : step,
+      ),
+      ...recordUndo(state, "SONG REPEATS", `song-repeats:${index}`),
+    })),
+  setSongStepBars: (index, value) =>
+    set((state) => {
+      const step = state.songSteps[index];
+      if (!step) return state;
+      const sequence = state.sequences.find((s) => s.id === step.sequenceId);
+      const len = sequence?.lengthBars ?? 1;
+      const repeats = clamp(Math.round(Math.max(1, value) / len), 1, 99);
+      return {
+        songSteps: state.songSteps.map((s, i) => (i === index ? { ...s, repeats } : s)),
+        ...recordUndo(state, "SONG BARS", `song-bars:${index}`),
+      };
+    }),
+  setSongTotalBars: (value) =>
+    set((state) => {
+      if (state.songSteps.length === 0) return state;
+      const otherBars = state.songSteps.reduce((sum, step, i) => {
+        if (i === state.selectedSongStepIndex) return sum;
+        const seq = state.sequences.find((s) => s.id === step.sequenceId);
+        return sum + (seq?.lengthBars ?? 0) * step.repeats;
+      }, 0);
+      const selected = state.songSteps[state.selectedSongStepIndex];
+      const selectedSeq = state.sequences.find((s) => s.id === selected.sequenceId);
+      const selectedLen = selectedSeq?.lengthBars ?? 1;
+      const targetForSelected = Math.max(1, Math.round(value - otherBars));
+      const repeats = clamp(Math.round(targetForSelected / selectedLen), 1, 99);
+      return {
+        songSteps: state.songSteps.map((step, i) =>
+          i === state.selectedSongStepIndex ? { ...step, repeats } : step,
+        ),
+        ...recordUndo(state, "SONG TOTAL BARS", `song-total:${Date.now()}`),
+      };
+    }),
   moveSelectedSongStep: (delta) =>
     set((state) => {
       const targetIndex = clamp(state.selectedSongStepIndex + delta, 0, state.songSteps.length - 1);
@@ -3882,6 +3933,80 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, `SOLO ${pad}`, `solo-pad:${pad}:${Date.now()}`),
       };
     }),
+  setPadMuteMode: (padMuteMode) => set({ padMuteMode }),
+  setPadGroup: (pad, group) =>
+    set((state) => {
+      const channels = state.padMixer[state.padBank].map((channel) =>
+        channel.pad === pad ? { ...channel, group: clamp(Math.round(group), 0, 16) } : channel,
+      );
+      const padMixer = { ...state.padMixer, [state.padBank]: channels };
+      return {
+        padMixer,
+        programs: syncCurrentProgram(state, { padMixer }),
+      };
+    }),
+  applyPadMuteAction: (pad) =>
+    set((state) => {
+      const bank = state.padBank;
+      const channels = state.padMixer[bank];
+      const target = channels.find((channel) => channel.pad === pad);
+      if (!target) return state;
+      let next: MixerChannel[];
+      if (state.padMuteMode === "SOLO") {
+        const wasSolo = target.solo;
+        next = channels.map((channel) => ({
+          ...channel,
+          muted: wasSolo ? false : channel.pad !== pad,
+          solo: wasSolo ? false : channel.pad === pad,
+        }));
+      } else if (state.padMuteMode === "GROUP") {
+        // GROUP = pure assignment. Click always cycles 0 → 1 → … → 16 → 0.
+        // Mute state untouched.
+        const nextGroup = ((target.group ?? 0) + 1) % 17;
+        next = channels.map((channel) =>
+          channel.pad === pad ? { ...channel, group: nextGroup, solo: false } : { ...channel, solo: false },
+        );
+      } else if (state.padMuteMode === "UNGROUP") {
+        // UNGROUP = direct reset of clicked pad's group to 0.
+        next = channels.map((channel) =>
+          channel.pad === pad ? { ...channel, group: 0, solo: false } : { ...channel, solo: false },
+        );
+      } else {
+        // MUTE mode: if pad is in a group, propagate to whole group.
+        const targetGroup = target.group ?? 0;
+        if (targetGroup > 0) {
+          const nextMuted = !target.muted;
+          next = channels.map((channel) =>
+            (channel.group ?? 0) === targetGroup
+              ? { ...channel, muted: nextMuted, solo: false }
+              : { ...channel, solo: false },
+          );
+        } else {
+          next = channels.map((channel) =>
+            channel.pad === pad ? { ...channel, muted: !channel.muted, solo: false } : { ...channel, solo: false },
+          );
+        }
+      }
+      syncMixerBankToAudio(bank, next, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [bank]: next };
+      return {
+        padMixer,
+        programs: syncCurrentProgram(state, { padMixer }),
+        ...recordUndo(state, `PAD MUTE ${pad}`, `pad-mute:${pad}:${Date.now()}`),
+      };
+    }),
+  clearPadMutes: () =>
+    set((state) => {
+      const bank = state.padBank;
+      const channels = state.padMixer[bank].map((channel) => ({ ...channel, muted: false, solo: false }));
+      syncMixerBankToAudio(bank, channels, state.currentProgramId);
+      const padMixer = { ...state.padMixer, [bank]: channels };
+      return {
+        padMixer,
+        programs: syncCurrentProgram(state, { padMixer }),
+        ...recordUndo(state, "CLEAR PAD MUTES", `clear-pad-mutes:${Date.now()}`),
+      };
+    }),
   cycleSelectedMixerOutput: () =>
     set((state) => {
       const outputs: MixerChannel["output"][] = ["MAIN", "OUT1", "OUT2", "OUT3"];
@@ -3905,10 +4030,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.trackMuteMode === "MUTE"
           ? "SOLO"
           : state.trackMuteMode === "SOLO"
-            ? "HOLD"
+            ? "GROUP"
             : "MUTE",
     })),
   setTrackMuteMode: (trackMuteMode) => set({ trackMuteMode }),
+  setTrackGroup: (index, group) =>
+    set((state) => ({
+      performanceTracks: state.performanceTracks.map((track, i) =>
+        i === index ? { ...track, group: clamp(Math.round(group), 0, 16) } : track,
+      ),
+    })),
   togglePerformanceTrack: (targetIndex) =>
     set((state) => {
       if (targetIndex < 0 || targetIndex >= state.performanceTracks.length) return state;
@@ -4443,6 +4574,7 @@ function derivePerformanceTracks(sequence: Sequence | undefined): PerformanceTra
     muted: track.mute,
     solo: track.solo,
     activity: 28 + index * 8,
+    group: 0,
   }));
 }
 
@@ -6678,7 +6810,7 @@ function createNextTrack(state: AppState, tracks: Track[]): Partial<AppState> {
     sequences: state.sequences.map((item) =>
       item.id === state.currentSequence ? { ...item, tracks: nextTracks } : item,
     ),
-    performanceTracks: [...state.performanceTracks, { id: currentTrackId, name: nextTrack.name, muted: false, solo: false, activity: 28 }],
+    performanceTracks: [...state.performanceTracks, { id: currentTrackId, name: nextTrack.name, muted: false, solo: false, activity: 28, group: 0 }],
     mixerTracks: [...state.mixerTracks, { name: currentTrackId, level: 100, muted: false, solo: false }],
   };
 }
@@ -6787,12 +6919,44 @@ function nextPerformanceTracks(
   targetIndex: number,
   mode: AppState["trackMuteMode"],
 ) {
+  const target = tracks[targetIndex];
+  if (!target) return tracks;
+
   if (mode === "SOLO") {
     return tracks.map((track, index) => ({
       ...track,
       muted: index !== targetIndex,
       solo: index === targetIndex,
     }));
+  }
+
+  if (mode === "GROUP") {
+    // GROUP mode is pure assignment — click always cycles the target's group
+    // 0 → 1 → … → 16 → 0. Mute state is unaffected.
+    const nextGroup = ((target.group ?? 0) + 1) % 17;
+    return tracks.map((track, index) =>
+      index === targetIndex ? { ...track, group: nextGroup, solo: false } : { ...track, solo: false },
+    );
+  }
+
+  if (mode === "UNGROUP") {
+    // UNGROUP mode resets the clicked target's group to 0.
+    return tracks.map((track, index) =>
+      index === targetIndex ? { ...track, group: 0, solo: false } : { ...track, solo: false },
+    );
+  }
+
+  // MUTE mode: if the target is in a group, mute propagates to every track in
+  // the same group (MPC-canonical "hitting one pad affects the others in the
+  // same group" behaviour). Ungrouped targets toggle only themselves.
+  const targetGroup = target.group ?? 0;
+  if (targetGroup > 0) {
+    const nextMuted = !target.muted;
+    return tracks.map((track) =>
+      (track.group ?? 0) === targetGroup
+        ? { ...track, muted: nextMuted, solo: false }
+        : { ...track, solo: false },
+    );
   }
 
   return tracks.map((track, index) =>
@@ -6824,6 +6988,7 @@ function createMixerBank() {
     solo: false,
     fxSend: (index * 5) % 32,
     output: index < 12 ? ("MAIN" as const) : ("OUT1" as const),
+    group: 0,
   }));
 }
 

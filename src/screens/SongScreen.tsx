@@ -1,6 +1,7 @@
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { EditableNumber } from "../components/EditableNumber";
 
 const softButtons = ["F1 INSERT", "F2 DELETE", "F3 REPEAT", "F4 MOVE", "F5 CONVERT", "F6 EXIT"];
 
@@ -19,6 +20,9 @@ export function SongScreen() {
   const convertSongToSequence = useAppStore((state) => state.convertSongToSequence);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const performanceTracks = useAppStore((state) => state.performanceTracks);
+  const setSongStepRepeats = useAppStore((state) => state.setSongStepRepeats);
+  const setSongStepBars = useAppStore((state) => state.setSongStepBars);
+  const setSongTotalBars = useAppStore((state) => state.setSongTotalBars);
 
   const selectedStep = songSteps[selectedSongStepIndex] ?? songSteps[0];
   const currentStep = songSteps[currentSongStepIndex] ?? songSteps[0];
@@ -44,27 +48,51 @@ export function SongScreen() {
                 const sequence = sequences.find((item) => item.id === step.sequenceId);
                 const active = index === selectedSongStepIndex;
                 const playing = index === currentSongStepIndex;
+                const stepBars = (sequence?.lengthBars ?? 0) * step.repeats;
                 return (
-                  <button
+                  <div
                     key={`${step.sequenceId}-${index}`}
-                    type="button"
-                    className={`grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] px-[4%] py-[3%] text-left text-[clamp(9px,0.72vw,11px)] ${
+                    onPointerDown={() => useAppStore.setState({ selectedSongStepIndex: index })}
+                    className={`grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] items-center px-[4%] py-[3%] text-left text-[clamp(9px,0.72vw,11px)] ${
                       active ? "bg-amber-200/15 text-amber-100" : playing ? "bg-[#d8e3b7]/10 text-[#eef6d8]" : "text-[#aab691]"
                     }`}
-                    onClick={() => useAppStore.setState({ selectedSongStepIndex: index })}
                   >
                     <span>{String(index + 1).padStart(2, "0")}</span>
                     <span>{sequence?.name ?? "---"}</span>
-                    <span>{String(step.repeats).padStart(2, "0")}</span>
-                    <span>{String((sequence?.lengthBars ?? 0) * step.repeats).padStart(3, "0")}</span>
-                  </button>
+                    <EditableNumber
+                      value={step.repeats}
+                      format={(n) => String(n).padStart(2, "0")}
+                      min={1}
+                      max={99}
+                      onCommit={(v) => setSongStepRepeats(index, Math.round(v))}
+                      ariaLabel={`REPEATS step ${index + 1}`}
+                    />
+                    <EditableNumber
+                      value={stepBars}
+                      format={(n) => String(n).padStart(3, "0")}
+                      min={1}
+                      max={999}
+                      onCommit={(v) => setSongStepBars(index, Math.round(v))}
+                      ariaLabel={`BARS step ${index + 1}`}
+                    />
+                  </div>
                 );
               })}
             </div>
           </section>
 
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
-            <Info label="TOTAL BARS" value={String(totalBars).padStart(3, "0")} />
+            <div className="grid gap-[4%]">
+              <span className="text-[#91a477]">TOTAL BARS</span>
+              <EditableNumber
+                value={totalBars}
+                format={(n) => String(n).padStart(3, "0")}
+                min={1}
+                max={999}
+                onCommit={(v) => setSongTotalBars(Math.round(v))}
+                ariaLabel="TOTAL BARS"
+              />
+            </div>
             <Info label="SONG POS" value={`${String(currentSongStepIndex + 1).padStart(2, "0")}.${String(currentSongRepeat).padStart(2, "0")}`} />
             <Info label="CURRENT SEQ" value={currentSequence?.name ?? "---"} />
             <Info label="NEXT SEQ" value={nextSequence?.name ?? "---"} />

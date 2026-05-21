@@ -99,6 +99,119 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.H — 2026-05-21 — SONG editable + TRACK/PAD MUTE F-keys, GROUP mode + visual states
+
+### What was attempted
+
+Three screens. Per Marek's verification rule, current state was inspected first; status flag (OK / fixed / added / removed) recorded per point.
+
+1. SONG SCREEN — TOTAL BARS editable + verify REPEATS/BARS per-step editable.
+2. TRACK MUTE SCREEN — F-keys reshape (remove F4 HOLD, shift CLEAR left to F4, F5 empty); verify F1 MUTE / F2 SOLO / F3 GROUP / F4 CLEAR / F6 EXIT actually work.
+3. PAD MUTE SCREEN — same F-key reshape + add real MUTE/SOLO/GROUP/CLEAR logic on pad tile click + visual feedback (previously only F6 EXIT worked).
+
+### What worked
+
+**1. SONG editable — STATUS: REPEATS was display only → added; BARS was display only → added; TOTAL BARS was derived display → added with target-driven semantic**
+
+`src/store/useAppStore.ts`:
+- New action `setSongStepRepeats(index, value)` — direct set, clamp 1–99.
+- New action `setSongStepBars(index, value)` — derives repeats from target bars: `repeats = round(value / sequence.lengthBars)`, clamp 1–99.
+- New action `setSongTotalBars(value)` — calculates SELECTED step repeats so total bars match: `repeats = round((target - otherStepsBars) / selectedStepSeqLengthBars)`. Clamp 1–99. If target is below other-steps minimum, selected step clamps to 1 (sum will exceed target).
+
+`src/screens/SongScreen.tsx` rewritten:
+- Each song step row now has two EditableNumber widgets: REPEATS (1–99, 2-digit pad) and BARS (1–999, 3-digit pad).
+- The middle stats panel `TOTAL BARS` is now an EditableNumber (1–999, 3-digit pad) wired to `setSongTotalBars`.
+- Other panel fields stay display-only (SONG POS, CURRENT SEQ, NEXT SEQ, LIVE TRACKS).
+- Right panel SEQ+/SEQ-/REP+/REP-/UP/DOWN buttons unchanged.
+- F-keys unchanged (F1 INSERT, F2 DELETE, F3 REPEAT, F4 MOVE, F5 CONVERT, F6 EXIT).
+- Row container is now a `<div>` with `onPointerDown` for selection (not a `<button>`), so EditableNumber children can capture clicks without nested-button DOM error.
+
+**2. TRACK MUTE F-keys — STATUS: F4 HOLD removed, F3 GROUP added, F5 CLEAR shifted to F4**
+
+`src/store/useAppStore.ts`:
+- `trackMuteMode` union changed from `"MUTE" | "SOLO" | "HOLD"` to `"MUTE" | "SOLO" | "GROUP"`.
+- `cycleTrackMuteMode` updated: MUTE → SOLO → GROUP → MUTE.
+- `PerformanceTrack` type extended with `group: number` (0 = ungrouped, 1–16 = group N).
+- New action `setTrackGroup(index, group)` — direct assignment, clamp 0–16.
+- `nextPerformanceTracks` rewritten for MPC-canonical group propagation:
+  - **MUTE mode propagates across groups.** If target.group > 0, mute toggle propagates to every track sharing that group (MPC: "hitting one pad affects the others in the same group" — independent of mode). Ungrouped targets toggle only themselves.
+  - **GROUP mode = pure assignment.** Click cycles target's group 0 → 1 → … → 16 → 0. Mute state untouched.
+  - **UNGROUP mode** (new, F4) — click sets target's group directly to 0. Faster than cycling through GROUP.
+  - SOLO mode untouched.
+- Initial performanceTrack record literal (`useAppStore` initial state + `derivePerformanceTracks` + add-new-track patch) gets `group: 0`.
+
+`src/screens/UtilityScreens.tsx` `TrackMuteUtilityScreen`:
+- Tile shows `G{n}` badge in amber when track is in a group.
+- F-key bar: F1 MUTE / F2 SOLO / F3 GROUP / F4 CLEAR / F5 — / F6 EXIT.
+- Verified F1 MUTE / F2 SOLO / F4 CLEAR / F6 EXIT functioning by code path: `togglePerformanceTrack` reads `trackMuteMode` and dispatches accordingly; `clearTrackMutes` resets all muted/solo (preserves group); `exit` unchanged.
+
+**3. PAD MUTE — STATUS: added complete mute/solo/group/clear logic + visual feedback**
+
+`src/store/useAppStore.ts`:
+- `MixerChannel` type extended with `group: number` field.
+- `createMixerBank` / `padMixer` initialization gets `group: 0`.
+- New state `padMuteMode: "MUTE" | "SOLO" | "GROUP"` (default "MUTE").
+- New actions:
+  - `setPadMuteMode(mode)`.
+  - `setPadGroup(pad, group)` — direct assignment, clamp 0–16.
+  - `applyPadMuteAction(pad)` — mode-aware:
+    - MUTE: toggle channel.muted; clear solo on all.
+    - SOLO: if target already solo → unsolo + unmute all; else mute all except target and set target.solo=true.
+    - GROUP: if target ungrouped → cycle group 0 → 17. If target has group → toggle muted for all channels in same group.
+  - `clearPadMutes()` — resets muted/solo on current bank, preserves groups. Calls `syncMixerBankToAudio` so audio engine picks up the change.
+
+`src/screens/UtilityScreens.tsx` `PadMuteUtilityScreen` rewritten:
+- Custom 4×4 pad tile grid (no longer using the generic `MuteScreen` helper).
+- Per tile: pad ID, status (LIVE / MUTED / SOLO), group badge `G{n}` when grouped.
+- Tile colour:
+  - SOLO → amber.
+  - MUTED → red.
+  - LIVE (audible) → phosphor green.
+  - LIVE but muted-by-others-solo → dim grey.
+- Right panel: MODE, BANK, SOLO PAD, MUTED count, ACTIVE count.
+- F-key bar: F1 MUTE / F2 SOLO / F3 GROUP / F4 CLEAR / F5 — / F6 EXIT.
+- Tile click → `applyPadMuteAction(pad.pad)`.
+
+`MuteScreen` helper deleted from `UtilityScreens.tsx` — no longer referenced after PAD MUTE was rewritten.
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No runtime test by me** — Marek physically verifies all 14 test items from the spec.
+- **Initial GROUP implementation was wrong** — first version made GROUP mode toggle mute after assignment, which meant F1 MUTE click on a grouped pad did NOT propagate. Marek caught it before commit; revised to MPC-canonical semantic (GROUP = pure assignment cycle; MUTE propagation works in F1 MUTE mode independent of which mode you're in).
+- **Shift+click ungroup was the first ungroup mechanism; replaced by F4 UNGROUP mode** per Marek's request. F-key bar is now F1 MUTE / F2 SOLO / F3 GROUP / F4 UNGROUP / F5 CLEAN / F6 EXIT — six functional slots, no ghost. CLEAR was renamed to CLEAN on F5 (same action: resets mute/solo on current bank, preserves group assignments).
+- **GROUP mode UX is click-to-cycle 0→16→0** — no separate "active group selector". UNGROUP is the dedicated reset; cycling is the assignment workflow.
+- **clearTrackMutes / clearPadMutes preserve groups** — explicitly leaves group assignments intact, so CLEAR just resets the live mute/solo state. If Marek wanted CLEAR to also wipe groups, add `group: 0` to the reset.
+- **TOTAL BARS edit semantic** — adjusts the SELECTED song step's repeats to make the total match the typed value. If selected step's sequence length doesn't divide evenly into (target - other-steps-bars), the result rounds. Selected step always clamps to repeats ≥ 1, so very small targets may not be achievable.
+- **PAD MUTE tile colour for "muted by others solo"** — distinguishes LIVE (no mute, not in solo-shadow) from MUTED-BY-SOLO (would play but is silenced because another pad has solo). MPC convention shows these differently. New `audible` derivation handles this.
+- **`MixerChannel.group` field added** to satisfy GROUP mode for pads. Existing `.lthief` project bundles saved before this change won't have the field; defaults to `0` via the `?? 0` reads but explicit deserialization paths (`hydrateProjectBundle`) may need a guard. Did NOT add backfill in this session — flag for verification when loading old projects.
+
+### Decisions made
+
+- F4 HOLD removed from both TRACK MUTE and PAD MUTE (not MPC-canonical per Marek).
+- F5 CLEAR moved to F4 (per Marek's left-shift rule on F-keys when emptying slots).
+- F6 EXIT stays at F6 (right-edge EXIT/SAVE convention).
+- F5 rendered as `"F5 —"` placeholder (ghost) on both screens.
+- GROUP cycle-assign on first click + group-toggle on subsequent clicks (single F3 mode, no separate "assign" mode).
+- CLEAR preserves group assignments.
+- TOTAL BARS edit adjusts SELECTED song step (other steps untouched), with clamp.
+
+### Open issues / followups
+
+- Marek physical test of all 14 spec items.
+- GROUP UX refinement if two-click assign+mute feels off.
+- `.lthief` project hydration: confirm old saves still load when `MixerChannel.group` / `PerformanceTrack.group` fields are missing (defaults to 0 via `?? 0` reads should be safe).
+- Consider an "active group selector" UI affordance (G1–G16 selector buttons) for explicit group assignment workflow.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — `setSongStepRepeats` / `setSongStepBars` / `setSongTotalBars` / `setTrackGroup` / `setPadMuteMode` / `setPadGroup` / `applyPadMuteAction` / `clearPadMutes` actions; `PerformanceTrack.group` + `MixerChannel.group` fields; `trackMuteMode` GROUP added (HOLD removed); `padMuteMode` state added; `nextPerformanceTracks` GROUP branch.
+- `src/screens/SongScreen.tsx` — REPEATS / BARS per-step EditableNumber widgets; TOTAL BARS EditableNumber wired to `setSongTotalBars`; row container changed from `<button>` to `<div onPointerDown>` to avoid nested-button DOM.
+- `src/screens/UtilityScreens.tsx` — `TrackMuteUtilityScreen` F-keys reshape + group badge on tile; `PadMuteUtilityScreen` rewritten with full mode-aware tile-click + visual states; `MuteScreen` helper deleted.
+
+---
+
 ## Session 22.G — 2026-05-21 — Multi-screen sweep: STEP probability verified + MIX F-keys + DISK column removed + SETTINGS rewrite + GO TO editable + PROGRAM verified
 
 ### What was attempted

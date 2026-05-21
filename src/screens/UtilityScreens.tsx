@@ -274,6 +274,13 @@ export function TrackMuteUtilityScreen() {
                   type="button"
                   disabled={!track}
                   onClick={() => togglePerformanceTrack(index)}
+                  title={
+                    mode === "GROUP"
+                      ? "Click cycles group 0–16"
+                      : mode === "UNGROUP"
+                        ? "Click sets group to 0"
+                        : undefined
+                  }
                   className={`grid content-between border p-[8%] text-left ${
                     track?.solo
                       ? "border-amber-300 bg-amber-200/15 text-amber-100"
@@ -286,7 +293,10 @@ export function TrackMuteUtilityScreen() {
                 >
                   <span>{String(index + 1).padStart(2, "0")}</span>
                   <span className="truncate">{track?.name ?? "EMPTY"}</span>
-                  <span className="text-[#91a477]">{status}</span>
+                  <div className="flex items-center justify-between gap-[6px]">
+                    <span className="text-[#91a477]">{status}</span>
+                    {track && (track.group ?? 0) > 0 ? <span className="text-[#d8b34d]">G{track.group}</span> : null}
+                  </div>
                 </button>
               );
             })}
@@ -296,9 +306,9 @@ export function TrackMuteUtilityScreen() {
         [
           { label: "F1 MUTE", onClick: () => setTrackMuteMode("MUTE") },
           { label: "F2 SOLO", onClick: () => setTrackMuteMode("SOLO") },
-          "F3 GROUP",
-          { label: "F4 HOLD", onClick: () => setTrackMuteMode("HOLD") },
-          { label: "F5 CLEAR", onClick: clearTrackMutes },
+          { label: "F3 GROUP", onClick: () => setTrackMuteMode("GROUP") },
+          { label: "F4 UNGROUP", onClick: () => setTrackMuteMode("UNGROUP") },
+          { label: "F5 CLEAN", onClick: clearTrackMutes },
           { label: "F6 EXIT", onClick: exit },
         ],
         exit,
@@ -310,8 +320,75 @@ export function TrackMuteUtilityScreen() {
 export function PadMuteUtilityScreen() {
   const bank = useAppStore((s) => s.padBank);
   const pads = useAppStore((s) => s.padMixer[bank]);
+  const mode = useAppStore((s) => s.padMuteMode);
+  const setPadMuteMode = useAppStore((s) => s.setPadMuteMode);
+  const applyPadMuteAction = useAppStore((s) => s.applyPadMuteAction);
+  const clearPadMutes = useAppStore((s) => s.clearPadMutes);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
-  return <MuteScreen title="PAD MUTE" items={pads.map((p) => ({ label: p.pad, muted: p.muted }))} softkeys={["F1 MUTE","F2 SOLO","F3 GROUP","F4 HOLD","F5 CLEAR","F6 EXIT"]} onExit={exit} />;
+  const anySolo = pads.some((pad) => pad.solo);
+  const mutedCount = pads.filter((pad) => pad.muted).length;
+  const soloPad = pads.find((pad) => pad.solo)?.pad ?? "OFF";
+  return (
+    <ScreenFrame title="PAD MUTE" subtitle={`Bank ${bank} — live pad mute`}>
+      {shell(
+        <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
+          <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
+            {pads.map((pad) => {
+              const audible = !pad.muted && (!anySolo || pad.solo);
+              const status = pad.solo ? "SOLO" : pad.muted ? "MUTED" : "LIVE";
+              return (
+                <button
+                  key={pad.pad}
+                  type="button"
+                  onClick={() => applyPadMuteAction(pad.pad)}
+                  title={
+                    mode === "GROUP"
+                      ? "Click cycles group 0–16"
+                      : mode === "UNGROUP"
+                        ? "Click sets group to 0"
+                        : undefined
+                  }
+                  className={`grid content-between border p-[8%] text-left ${
+                    pad.solo
+                      ? "border-amber-300 bg-amber-200/15 text-amber-100"
+                      : pad.muted
+                        ? "border-red-400 bg-red-500/20 text-red-200"
+                        : audible
+                          ? "border-[#70845a] bg-[#d8e3b7]/10 text-[#eef6d8]"
+                          : "border-[#46533b] bg-black/20 text-[#70805c]"
+                  }`}
+                >
+                  <span>{pad.pad}</span>
+                  <div className="flex items-center justify-between gap-[4px]">
+                    <span className="text-[#91a477]">{status}</span>
+                    {(pad.group ?? 0) > 0 ? <span className="text-[#d8b34d]">G{pad.group}</span> : null}
+                  </div>
+                </button>
+              );
+            })}
+          </section>
+          <Panel
+            rows={[
+              ["MODE", mode],
+              ["BANK", bank],
+              ["SOLO PAD", soloPad],
+              ["MUTED", String(mutedCount).padStart(2, "0")],
+              ["ACTIVE", String(16 - mutedCount).padStart(2, "0")],
+            ]}
+          />
+        </div>,
+        [
+          { label: "F1 MUTE", onClick: () => setPadMuteMode("MUTE") },
+          { label: "F2 SOLO", onClick: () => setPadMuteMode("SOLO") },
+          { label: "F3 GROUP", onClick: () => setPadMuteMode("GROUP") },
+          { label: "F4 UNGROUP", onClick: () => setPadMuteMode("UNGROUP") },
+          { label: "F5 CLEAN", onClick: clearPadMutes },
+          { label: "F6 EXIT", onClick: exit },
+        ],
+        exit,
+      )}
+    </ScreenFrame>
+  );
 }
 
 export function NextSeqUtilityScreen() {
@@ -779,10 +856,6 @@ export function SequenceEditUtilityScreen() {
       )}
     </ScreenFrame>
   );
-}
-
-function MuteScreen({ title, items, softkeys, onExit }: { title: string; items: { label: string; muted: boolean }[]; softkeys: string[]; onExit: () => void }) {
-  return <ScreenFrame title={title} subtitle="Live mute utility">{shell(<div className="grid h-full grid-cols-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%]">{items.map((item) => <div key={item.label} className={`border p-[8%] ${item.muted ? "border-[#46533b] text-[#70805c]" : "border-[#91a477] text-[#eef6d8]"}`}>{item.label}<br /><span className="text-[#91a477]">{item.muted ? "MUTED" : "LIVE"}</span></div>)}</div>, softkeys, onExit)}</ScreenFrame>;
 }
 
 function Panel({ rows }: { rows: [string, string][] }) {
