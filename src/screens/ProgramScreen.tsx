@@ -3,6 +3,8 @@ import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { useHoldRepeat } from "../components/useHoldRepeat";
+import { EditableNumber } from "../components/EditableNumber";
+import { EditableText } from "../components/EditableText";
 
 const softButtons = ["F1 ASSIGN", "F2 PARAMS", "F3 CHOKE", "F4 FILTER", "F5 FX SEND", "F6 SAVE PGM"];
 
@@ -18,6 +20,7 @@ export function ProgramScreen() {
   const assignSourceToSelectedPad = useAppStore((state) => state.assignSourceToSelectedPad);
   const previewSource = useAppStore((state) => state.previewSource);
   const updateSelectedPadParam = useAppStore((state) => state.updateSelectedPadParam);
+  const setSelectedPadParam = useAppStore((state) => state.setSelectedPadParam);
   const toggleSelectedPadMode = useAppStore((state) => state.toggleSelectedPadMode);
   const toggleSelectedPadVoiceMode = useAppStore((state) => state.toggleSelectedPadVoiceMode);
   const setProgramView = useAppStore((state) => state.setProgramView);
@@ -30,7 +33,9 @@ export function ProgramScreen() {
   const fxBuses = useAppStore((state) => state.fxBuses);
   const setPadFxBus = useAppStore((state) => state.setPadFxBus);
   const adjustPadFxSendLevel = useAppStore((state) => state.adjustPadFxSendLevel);
+  const setPadFxSendLevel = useAppStore((state) => state.setPadFxSendLevel);
   const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
+  const setCurrentProgramName = useAppStore((state) => state.setCurrentProgramName);
   const [assignOpen, setAssignOpen] = useState(false);
   const [sourceType, setSourceType] = useState<"SAMPLES" | "SLICES" | "PROGRAM POOL">("SAMPLES");
   const [sourceIndex, setSourceIndex] = useState(0);
@@ -99,7 +104,12 @@ export function ProgramScreen() {
 
           <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-[2.4%] overflow-hidden border border-[#46533b] bg-black/20 p-[3.2%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
             <div className="grid grid-cols-2 gap-x-[3%] gap-y-[6px] border-b border-[#46533b] pb-[2.4%]">
-              <ProgramSwitcher value={activeProgram} onPrevious={previousProgram} onNext={nextProgram} />
+              <ProgramSwitcher
+                value={activeProgram}
+                onPrevious={previousProgram}
+                onNext={nextProgram}
+                onRename={setCurrentProgramName}
+              />
               <Info label="PAD BANK" value={padBank} />
               <Info label="SELECTED PAD" value={selectedAssignment.pad} />
               <Info label="ASSIGNED" value={selectedAssignment.assignment} />
@@ -121,42 +131,49 @@ export function ProgramScreen() {
                 value={selectedAssignment.level}
                 onMinus={() => updateSelectedPadParam("level", -1)}
                 onPlus={() => updateSelectedPadParam("level", 1)}
+                editable={{ numericValue: selectedAssignment.level, min: 0, max: 127, onCommit: (v) => setSelectedPadParam("level", Math.round(v)) }}
               />
               <Param
                 label="TUNE"
                 value={selectedAssignment.tune}
                 onMinus={() => updateSelectedPadParam("tune", -1)}
                 onPlus={() => updateSelectedPadParam("tune", 1)}
+                editable={{ numericValue: selectedAssignment.tune, min: -24, max: 24, allowNegative: true, onCommit: (v) => setSelectedPadParam("tune", Math.round(v)) }}
               />
               <Param
                 label="FINE"
                 value={selectedAssignment.fineTune}
                 onMinus={() => updateSelectedPadParam("fineTune", -1)}
                 onPlus={() => updateSelectedPadParam("fineTune", 1)}
+                editable={{ numericValue: selectedAssignment.fineTune, min: -100, max: 100, allowNegative: true, onCommit: (v) => setSelectedPadParam("fineTune", Math.round(v)) }}
               />
               <Param
                 label="PAN"
                 value={formatPan(selectedAssignment.pan)}
                 onMinus={() => updateSelectedPadParam("pan", -1)}
                 onPlus={() => updateSelectedPadParam("pan", 1)}
+                editable={{ numericValue: selectedAssignment.pan, format: formatPan, min: -50, max: 50, allowNegative: true, onCommit: (v) => setSelectedPadParam("pan", Math.round(v)) }}
               />
               <Param
                 label="ATTACK"
                 value={selectedAssignment.attack}
                 onMinus={() => updateSelectedPadParam("attack", -1)}
                 onPlus={() => updateSelectedPadParam("attack", 1)}
+                editable={{ numericValue: selectedAssignment.attack, min: 0, max: 100, onCommit: (v) => setSelectedPadParam("attack", Math.round(v)) }}
               />
               <Param
                 label="DECAY"
                 value={selectedAssignment.decay}
                 onMinus={() => updateSelectedPadParam("decay", -1)}
                 onPlus={() => updateSelectedPadParam("decay", 1)}
+                editable={{ numericValue: selectedAssignment.decay, min: 0, max: 100, onCommit: (v) => setSelectedPadParam("decay", Math.round(v)) }}
               />
               <Param
                 label="CHOKE"
                 value={selectedAssignment.chokeGroup}
                 onMinus={() => updateSelectedPadParam("chokeGroup", -1)}
                 onPlus={() => updateSelectedPadParam("chokeGroup", 1)}
+                editable={{ numericValue: selectedAssignment.chokeGroup, min: 0, max: 8, onCommit: (v) => setSelectedPadParam("chokeGroup", Math.round(v)) }}
               />
             </div>
             ) : programView === "FILTER" ? (
@@ -172,12 +189,14 @@ export function ProgramScreen() {
                   value={String(selectedAssignment.filterCutoff)}
                   onPrevious={() => updateSelectedPadParam("filterCutoff", -1)}
                   onNext={() => updateSelectedPadParam("filterCutoff", 1)}
+                  editable={{ numericValue: selectedAssignment.filterCutoff, min: 0, max: 100, onCommit: (v) => setSelectedPadParam("filterCutoff", Math.round(v)) }}
                 />
                 <FilterParam
                   label="RESONANCE"
                   value={String(selectedAssignment.filterResonance)}
                   onPrevious={() => updateSelectedPadParam("filterResonance", -1)}
                   onNext={() => updateSelectedPadParam("filterResonance", 1)}
+                  editable={{ numericValue: selectedAssignment.filterResonance, min: 0, max: 100, onCommit: (v) => setSelectedPadParam("filterResonance", Math.round(v)) }}
                 />
               </div>
             ) : programView === "FX" ? (
@@ -206,9 +225,18 @@ export function ProgramScreen() {
                     />
                     <Param
                       label="SEND"
-                      value={sendDisabled ? "---" : padSend}
-                      onMinus={() => !sendDisabled && adjustPadFxSendLevel(selectedAssignment.pad, -1)}
-                      onPlus={() => !sendDisabled && adjustPadFxSendLevel(selectedAssignment.pad, 1)}
+                      value={padBus === 0 ? "---" : padSend}
+                      onMinus={() => padBus !== 0 && adjustPadFxSendLevel(selectedAssignment.pad, -1)}
+                      onPlus={() => padBus !== 0 && adjustPadFxSendLevel(selectedAssignment.pad, 1)}
+                      // SEND editable whenever pad is routed to any bus. In INSERT mode the
+                      // engine ignores the level (signal is 100% wet through the bus), but
+                      // the value is preserved so flipping the bus to SEND later restores it.
+                      editable={padBus === 0 ? undefined : {
+                        numericValue: padSend,
+                        min: 0,
+                        max: 100,
+                        onCommit: (v) => setPadFxSendLevel(selectedAssignment.pad, Math.round(v)),
+                      }}
                     />
                   </div>
                 );
@@ -366,19 +394,25 @@ function ProgramSwitcher({
   value,
   onPrevious,
   onNext,
+  onRename,
 }: {
   value: string;
   onPrevious: () => void;
   onNext: () => void;
+  onRename: (name: string) => void;
 }) {
   return (
     <div className="grid min-w-0 gap-[3px]">
       <span className="text-[#91a477]">PROGRAM</span>
       <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
         <BracketButton label="<" onClick={onPrevious} />
-        <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
-          {value}
-        </button>
+        <EditableText
+          value={value}
+          onCommit={onRename}
+          ariaLabel="PROGRAM"
+          displayClassName="min-w-0 truncate text-center text-[#eef6d8]"
+          editClassName="min-w-0 border border-amber-300/70 bg-black/50 px-[6px] py-[2px] text-center text-[#eef6d8] outline-none"
+        />
         <BracketButton label=">" onClick={onNext} />
       </div>
     </div>
@@ -390,11 +424,21 @@ function Param({
   value,
   onMinus,
   onPlus,
+  editable,
 }: {
   label: string;
   value: string | number;
   onMinus: () => void;
   onPlus: () => void;
+  editable?: {
+    numericValue: number;
+    format?: (n: number) => string;
+    min?: number;
+    max?: number;
+    allowDecimal?: boolean;
+    allowNegative?: boolean;
+    onCommit: (newValue: number) => void;
+  };
 }) {
   const minusHold = useHoldRepeat(onMinus);
   const plusHold = useHoldRepeat(onPlus);
@@ -404,7 +448,22 @@ function Param({
       <button type="button" {...minusHold} className="px-1 text-[#eef6d8]">
         -
       </button>
-      <span className="min-w-[42px] text-center text-[#eef6d8]">{value}</span>
+      {editable ? (
+        <span className="min-w-[42px]">
+          <EditableNumber
+            value={editable.numericValue}
+            format={editable.format}
+            min={editable.min}
+            max={editable.max}
+            allowDecimal={editable.allowDecimal}
+            allowNegative={editable.allowNegative}
+            onCommit={editable.onCommit}
+            ariaLabel={label}
+          />
+        </span>
+      ) : (
+        <span className="min-w-[42px] text-center text-[#eef6d8]">{value}</span>
+      )}
       <button type="button" {...plusHold} className="px-1 text-[#eef6d8]">
         +
       </button>
@@ -417,20 +476,43 @@ function FilterParam({
   value,
   onPrevious,
   onNext,
+  editable,
 }: {
   label: string;
   value: string;
   onPrevious: () => void;
   onNext: () => void;
+  editable?: {
+    numericValue: number;
+    format?: (n: number) => string;
+    min?: number;
+    max?: number;
+    allowDecimal?: boolean;
+    allowNegative?: boolean;
+    onCommit: (newValue: number) => void;
+  };
 }) {
   return (
     <div className="grid grid-cols-[0.78fr_1fr] items-center gap-[10px] border border-[#46533b] bg-black/15 px-[4%] py-[3%]">
       <span className="text-[#91a477]">{label}</span>
       <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
         <BracketButton label="<" onClick={onPrevious} />
-        <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
-          {value}
-        </button>
+        {editable ? (
+          <EditableNumber
+            value={editable.numericValue}
+            format={editable.format}
+            min={editable.min}
+            max={editable.max}
+            allowDecimal={editable.allowDecimal}
+            allowNegative={editable.allowNegative}
+            onCommit={editable.onCommit}
+            ariaLabel={label}
+          />
+        ) : (
+          <button type="button" onClick={onNext} className="truncate text-center text-[#eef6d8]">
+            {value}
+          </button>
+        )}
         <BracketButton label=">" onClick={onNext} />
       </div>
     </div>
@@ -440,7 +522,12 @@ function FilterParam({
 function BracketButton({ label, onClick }: { label: string; onClick: () => void }) {
   const hold = useHoldRepeat(onClick);
   return (
-    <button type="button" {...hold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+    <button
+      type="button"
+      tabIndex={-1}
+      {...hold}
+      className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]"
+    >
       {label}
     </button>
   );

@@ -99,6 +99,558 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 22.E — 2026-05-21 — Keyboard overhaul close-out: FX SEND popup wiring + EditableText applications + COUNT_IN + MIX per-strip + Tab order
+
+### What was attempted
+
+Close out the deferred items from Session 22.D in a single pass per Marek's "dojechać wszystko w jednej sesji" mandate. Specifically:
+
+1. Diagnose why FX SEND still didn't accept typed input despite the 22.D defensive condition relaxation.
+2. Apply `EditableText` to track / sequence / program / sample names.
+3. Add CHOP slice-position / BPM-EST decision (editable or not).
+4. Restructure COUNT_IN UI from Panel display rows to ArrowRow widgets.
+5. Per-strip MIX editing for 16 channels.
+6. C5 Tab ref ordering polish so typing-Tab walks editable fields cleanly.
+7. STEP PARAM TYPE / VALUE dispatch (PARAM VALUE was wired pre-compaction; TYPE deferred as cycle field).
+
+### What worked
+
+**FX SEND popup wiring fix (real bug):**
+
+Code review revealed the actual broken path. The in-screen `<Param label="SEND">` in `programView === "FX"` was already wired in 22.D. But the FX SEND popup window (`FxSendWindowScreen` in `UtilityScreens.tsx`, opened via F5 in PROGRAM) used `<ArrowRow label="SEND LEVEL">` *without* an `editable` config. That popup is the typical edit surface Marek tests. Added `editable` config to that ArrowRow + imported `setPadFxSendLevel`. The full path now: F5 in PROGRAM → popup → click SEND LEVEL → typeable. ArrowRow already had the `editable` prop shape since Phase C3c (FX bus blocks), so no component change required.
+
+**EditableText applications (`MainScreen.tsx`, `ProgramScreen.tsx`, `ChopScreen.tsx`):**
+
+- `MainScreen` `<EditableRow>` (SEQ / TRACK / PROGRAM name rows): refactored from local `useState`-driven `<input>` to `<EditableText>` embedded in the same `< value >` bracket layout. Same `onRename` callback (`setCurrentSequenceName` / `setCurrentTrackName` / `setCurrentProgramName`). Empty-on-commit reverts (no rename). Filename-safe sanitization + max-length 16 now enforced.
+- `ProgramScreen` `<ProgramSwitcher>`: program name display rewrapped in `EditableText` between bracket arrows. Calls `setCurrentProgramName`.
+- `ChopScreen` sample name (between previous/next sample arrows): wrapped in `EditableText` with `uppercase` flag. Calls `renameSelectedMemorySample`.
+- `EditableText` component extended with separate `displayClassName` / `editClassName` props (previously one shared `className` mode), so callers can style the click target and the active editor differently — important here because display is center-aligned plain text and editor needs amber border.
+- DiskScreen project-name input not refactored — it's local `useState` for choosing a save-target filename, not editing persistent state. Leave as native input.
+
+**COUNT_IN UI restructure (`UtilityScreens.tsx` CountInUtilityScreen):**
+
+- Replaced the `<Panel rows=[...]>` 6-row display with a typed `<section>` containing:
+  - `<StatusRow>` for ON/OFF booleans (METRONOME, DURING REC, TC COUNT, WAIT PAD COMPAT).
+  - `<ArrowRow editable>` for COUNT BARS (0-8) and CLICK VOL (0-100), wired to existing `adjustMetronomeCountInBars` / `adjustMetronomeVolume` (arrows) and `setMetronomeCountInBars` / `setMetronomeVolume` (typed commit).
+- New `StatusRow` helper added to `UtilityScreens.tsx` (label + centered value pattern matching ArrowRow visual rhythm).
+
+**MIX per-strip editing (`MixScreen.tsx`):**
+
+- `ChannelStrip` extended with two new editable inline fields below the fader:
+  - LEVEL: `EditableNumber` 0-127, click-to-edit, calls existing `setMixerChannelValue(pad, "level", v)` via `onLevel` prop.
+  - SEND: `EditableNumber` 0-100 when bus assigned, falls back to `—` when bus is OFF. New `onSendCommit` prop calls existing `setPadFxSendLevel(pad, v)`.
+- Grid rows expanded from 6 to 8 (`grid-rows-[auto_auto_1fr_auto_auto_auto_auto_auto]`). Visual density acceptable in tight strip width since EditableNumber uses borderless styling in display mode and only shows the amber editor border while typing.
+- Header VOL/PAN/SND remain editable for the selected channel (Phase C3c2). Per-strip and header are now both editable, so workflow is flexible.
+
+**C5 Tab ref ordering (`MainScreen.tsx`, `ProgramScreen.tsx`, `UtilityScreens.tsx`, `ChopScreen.tsx`):**
+
+- Added `tabIndex={-1}` to all `<` / `>` increment-decrement arrow buttons across screens (StepButton, BracketButton, ArrowRow arrows, ChopScreen sample-prev/next).
+- Net effect: native Tab walks only between editable fields. Shift+Tab walks backwards. Arrow buttons remain mouse-clickable + hold-to-repeat works, just not focusable via Tab.
+- Wrap-from-last-to-first within an LCD screen NOT implemented — that would require a screen-bound focus trap. Native browser order suffices for the primary workflow: Tab from last field exits LCD into the hardware shell layer (which has its own keyboard mapping).
+
+Build clean (`tsc && vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No live test by me** — Marek verifies each path physically. Particularly the FX SEND popup fix needs runtime click to confirm the popup-side ArrowRow now enters edit mode on click.
+- **EditableNumber accepts a single shared `className`** — I pass a borderless style for the MIX per-strip widget so that the display state blends with the strip. Side effect: while editing in the strip, the amber border is also suppressed (since `className` overrides both modes). Acceptable trade-off for tight strip space; could be split into `displayClassName` / `editClassName` like EditableText if Marek wants visual feedback during typing in the strip. Deferred.
+- **CHOP slice positions / sample START-END / BPM EST left as Info displays** — slice positions and sample boundaries are MPC-canonical drag-on-waveform markers, not numeric entries. LOOP BPM EST is derived from loop length (not a user-input value). Making these typeable would be a workflow change, not a wiring fix. Decision: leave as display-only.
+- **STEP PARAM TYPE remains a cycle field**, per Marek's "CYCLE FIELDS NIE TYKAĆ" rule. PARAM VALUE was already wired pre-compaction.
+- **Screen-bound focus wrap for Tab** not implemented — `tabIndex={-1}` on arrows is sufficient for "Tab walks editable fields only" inside a screen; the focus eventually exits the LCD which is acceptable.
+
+### Decisions made
+
+- FX SEND fix delivered on the popup side (`FxSendWindowScreen` ArrowRow), which is the user-facing edit surface for SEND. The in-screen `<Param>` in `programView === "FX"` was already wired in 22.D; the missing layer was the popup.
+- `EditableText` applied to MainScreen SEQ/TRACK/PROGRAM names, ProgramScreen program name, and ChopScreen sample name. DiskScreen project name left as native input (one-shot filename picker).
+- COUNT_IN screen now uses ArrowRow editable widgets for the two numeric settings (count bars + click volume).
+- MIX per-strip LEVEL + SEND editable inline; FX bus stays cycle button; pan stays knob-drag.
+- Tab ordering: `tabIndex={-1}` on arrow buttons; native DOM-order between EditableNumber/EditableText fields.
+- CHOP slice positions / sample boundaries / BPM EST: drag-on-waveform / derived value semantics preserved. Not text-editable.
+
+### Open issues / followups
+
+1. Marek to verify FX SEND popup is now type-editable (F5 in PROGRAM → click SEND LEVEL → type).
+2. Confirm MIX per-strip widget UX in tight columns — if cramped, consider widening strips or moving SEND to a popup.
+3. Per-strip editor visual feedback during typing (amber border) currently suppressed by shared className. Split EditableNumber className if needed.
+4. Tab wrap behavior could be added with explicit focus traps per screen if "Tab from last field goes back to first" is desired; not implemented.
+
+### Files modified
+
+- `src/components/EditableText.tsx` — added `displayClassName` + `editClassName` props (separate from shared `className`).
+- `src/screens/MainScreen.tsx` — `EditableRow` refactored to use `EditableText`; `StepButton` gets `tabIndex={-1}`; removed local `useState` for edit drafts.
+- `src/screens/ProgramScreen.tsx` — `ProgramSwitcher` wired to `setCurrentProgramName` via `EditableText`; `BracketButton` gets `tabIndex={-1}`; `EditableText` imported.
+- `src/screens/ChopScreen.tsx` — sample name wrapped in `EditableText` (uppercase); `renameSelectedMemorySample` pulled from store; sample arrows get `tabIndex={-1}`; `EditableText` imported.
+- `src/screens/UtilityScreens.tsx` — FX SEND popup ArrowRow `editable` config + `setPadFxSendLevel` import; CountInUtilityScreen Panel replaced with StatusRow + ArrowRow editable widgets; new `StatusRow` helper; ArrowRow arrow buttons get `tabIndex={-1}`.
+- `src/screens/MixScreen.tsx` — `ChannelStrip` extended with `EditableNumber` for LEVEL + SEND inline; grid rows widened; new `onSendCommit` prop wired to `setPadFxSendLevel`.
+
+---
+
+## Session 22.D — 2026-05-21 — Keyboard overhaul Phase D: FX SEND defensive fix + EditableText component + CHOP LOOP BARS
+
+### What was attempted
+
+Marek's Phase D close-out ask: fix the FX SEND field that wasn't accepting typed input + finish all remaining deferred Phase C items (EditableText component + applications, C5 Tab order, CHOP fields, COUNT_IN restructure, MIX per-strip, STEP PARAM TYPE/VALUE). Realistic session-length scope = partial close-out. Landed FX SEND fix + EditableText component (no applications yet) + CHOP LOOP BARS editable. The remaining items are documented as deferred with rationale — keyboard task remains partially open.
+
+### What worked
+
+**FX SEND defensive fix (`ProgramScreen.tsx`):**
+
+Original condition: `sendDisabled = !targetBus || !targetBus.direct;` — SEND was non-editable in INSERT mode AND when no bus assigned.
+
+New condition: SEND is editable whenever `padBus !== 0` (any bus assigned), regardless of direct mode. In INSERT mode the engine ignores the send level value (signal is 100% wet through the bus), but the value persists — flipping the bus to SEND mode later restores the typed value. Mouse arrows also use the same relaxed condition.
+
+Comment added in code explaining the semantic: typing in INSERT mode is benign (engine ignores), and the looser predicate eliminates the most likely cause of Marek's "FX SEND nie edytuje" report (testing with INSERT mode or some intermediate state).
+
+**New reusable `<EditableText>` component (`src/components/EditableText.tsx`):**
+
+Sibling of `EditableNumber`. Click-to-edit text with sanitization + max length + Enter/Esc/Tab/blur lifecycle. Default config:
+- `maxLength = 16` (MPC convention).
+- `allowedChars = /[A-Za-z0-9 \-_.]/` (filename-safe subset; disallowed chars dropped silently at input time).
+- `uppercase` flag for fields that uppercase on commit (matches existing sample name convention).
+- Empty value reverts (no commit) — `trim().length > 0` guard.
+
+**CHOP LOOP BARS editable (`ChopScreen.tsx`):**
+
+LOOP BARS field was previously `<Info label="LOOP BARS" value={String(loopBars)} />` — display-only. Replaced with inline `EditableNumber` (range 1–16, the same range `adjustLoopBars` uses). `BARS - / BARS +` MiniButtons in LOOP mode still work alongside. New `setLoopBars(value)` direct setter added to store mirroring `adjustLoopBars` clamp.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **`EditableText` component is foundation-only this session** — no applications wired. Track names / sequence names / program names are already editable via MainScreen's pre-existing local `<EditableRow>` text-edit pattern. Sample name in Sample Edit Keep/Retry already uses a manual `<input>`. Refactoring those to use the new reusable component is cleanup (no new functionality), so deferred to a session that pairs the refactor with new EditableText applications.
+- **FX SEND fix is defensive, not diagnosed** — I couldn't reproduce Marek's exact bug from code review (the wiring appeared correct under the SEND mode condition). Relaxing the condition to `padBus !== 0` removes the most likely failure modes (testing in INSERT mode, intermediate state between toggles). If the bug persists after this fix, Marek to report exact click sequence + DevTools state.
+- **C5 explicit Tab ref ordering NOT delivered**. Native browser Tab works for adjacent input focus. Custom wrap-from-last-to-first behavior + ref-managed ordering deferred. Practical impact: Tab moves to next input in DOM order; on the last input it moves browser focus to other focusable elements (e.g., buttons), not back to the first input. Marek can verify if native behavior is acceptable.
+- **COUNT_IN UI restructure NOT delivered**. The screen uses `<Panel>` rows for display-only values + softkey-driven adjusts. Adding click-to-edit per-row would require restructuring the Panel into ArrowRow widgets. Bigger refactor; out of scope.
+- **MIX per-strip editing NOT delivered**. 16 channel strips at narrow widths (`clamp(7px,0.56vw,9px)`) can't fit inline number inputs without UI redesign. Header-row editing (selected channel's VOL/PAN/SND) covers the workflow; per-strip would need either modal popup or "double-click to edit" pattern.
+- **STEP PARAM TYPE/VALUE dynamic dispatch NOT delivered**. PARAM TYPE is a cycle (NONE/TUNE/FILTER/etc.). PARAM VALUE depends on the selected type with different ranges per type (semitones for TUNE, 0-100% for FILTER cutoff, etc.). Would need per-type setter dispatch. Defer to a focused mini-session on Note Variation.
+- **CHOP NUMBER OF CHOPS** — already has a typeable input via existing pre-Phase-C code (`SliceCountInput` with manual onChange + onBlur + onKeyDown). Skipped because already works.
+- **CHOP BPM EST, slice start/end** — display-only fields; editable would require additional store actions + UI changes. Defer.
+- **No live test by me** — Marek verifies.
+
+### Decisions made
+
+- **FX SEND becomes editable whenever pad is routed**, regardless of bus direct mode. INSERT-mode typing is benign (engine ignores) and friendlier than dead UI.
+- **`EditableText` component created but not applied** — foundation for future text-field work. No refactor of existing ad-hoc text inputs this session.
+- **CHOP LOOP BARS editable** as a single quick win for this session — small, self-contained, demonstrates `EditableNumber` in CHOP context.
+- **Keyboard task NOT fully closed** — explicit honesty. Multiple deferrals require additional sessions or UI restructures that don't fit in a single safe scope.
+
+### Open issues / followups — keyboard task remaining
+
+Items to close in dedicated sessions:
+
+1. **EditableText applications** — refactor MainScreen `<EditableRow>` to use `<EditableText>`; apply to any newly-rename-needed text field (e.g., per-strip MIX track labels if added later, custom FX bus names if Marek wants them).
+2. **C5 explicit Tab ref ordering** — per-screen `refs` array + wrap-from-last behavior. Phase D polish.
+3. **CHOP** — BPM EST, slice start/end editable (needs additional setters + UI).
+4. **COUNT_IN UI restructure** — Panel → ArrowRow conversion to make count-in bars, metronome volume, etc. click-editable.
+5. **MIX per-strip editing** — popup or hover-to-reveal inline inputs per channel strip (16 strips).
+6. **STEP PARAM TYPE/VALUE** — Note Variation dynamic dispatch with per-type setter.
+7. **FX SEND visual feedback in INSERT mode** — currently typing in INSERT changes the stored value without audible effect. Could show a hint like "INSERT — send ignored" or grey the field. Phase D polish.
+8. **Live verification of FX SEND fix** by Marek.
+
+### Files modified
+
+- **New**: `src/components/EditableText.tsx` — reusable click-to-edit text component (~95 LOC).
+- `src/screens/ProgramScreen.tsx` — FX SEND `editable` predicate relaxed from `!sendDisabled` to `padBus !== 0`.
+- `src/screens/ChopScreen.tsx` — `<Info label="LOOP BARS">` replaced with inline EditableNumber widget; `setLoopBars` added to hook destructure; `EditableNumber` imported.
+- `src/store/useAppStore.ts` — `setLoopBars(value)` direct setter action + type signature.
+
+---
+
+## Session 22.C3c2 — 2026-05-21 — Keyboard overhaul Phase C3c2: STEP event params + MIX header + SETTINGS editable
+
+### What was attempted
+
+Final Phase C3 sweep covering remaining deferred numeric fields: STEP (event velocity/offset/duration/probability), MIX (header VOL/PAN/SND for selected channel), SETTINGS (master volume via generic numeric settings). Marek also asked to finish C4 (text inputs everywhere) and C5 (Tab order management) in one session. Realistically still too much; further deferred CHOP/COUNT_IN UI restructure + EditableText component creation + C5 explicit Tab ref ordering to follow-up session.
+
+### What worked
+
+**STEP screen event editor (4 fields):**
+
+- Extended local `<EditableValue>` component in `StepScreen.tsx` with optional `editable` config (mirrors ArrowRow / ValueRow / Param / FilterParam pattern across previous phases).
+- New `setSelectedEvent(field, value)` direct setter in store, mirroring `adjustSelectedEvent` clamp ranges:
+  - velocity: 1–127
+  - timingOffset: −24..24 (allow negative)
+  - duration: 0–96
+  - probability: 0–100
+- All 4 fields wired with `editable` config + side effect: typing also sets `eventEditMode` to match the field being edited (consistent with arrow-click behavior).
+
+**MIX screen header row (3 fields for selected channel):**
+
+- VOL (level): EditableNumber 0–127, format raw number.
+- PAN: EditableNumber −50..50, allow negative, format via `formatPan` so display shows "L20"/"R20" but typing accepts signed numeric.
+- SND: EditableNumber 0–100, only when bus is in SEND mode (`padBus !== 0` AND bus is direct). When in INSERT mode or no bus, displays `—`.
+- Header values were previously `<span>` display-only; now interactive inline EditableNumber widgets within the same `inline-flex` row. Channel strip per-pad sliders (Fader / PanKnob) untouched — they remain mouse-only since 16 narrow strips would clutter with inline inputs. Mouse-via-header workflow remains: click strip to select pad, then click VOL/PAN/SND in header to type new value for that pad.
+- Uses existing `setMixerChannelValue(pad, field, value)` and `setPadFxSendLevel(pad, value)` direct setters — no new store actions needed.
+
+**SETTINGS screen master volume (and any numeric setting):**
+
+- New `setSelectedSetting(value)` action — generic numeric direct setter mirroring `adjustSelectedSetting` side effects. Clamps to per-setting metadata `min`/`max`. Triggers `samplerEngine.setMasterVolume` when `key === "masterVolume"` and the metronome volume side effects via `metronomeSettingPatch` for metronome-related keys.
+- SettingsScreen's right-panel ADJUST display swapped from static `<span>` to `<EditableNumber>` when current setting is numeric. Format uses existing `formatSettingValue(value, key)` so "100%" renders for masterVolume. min/max sourced from the setting metadata. Toggle/enum settings still render their plain display.
+- Master volume now click-to-edit in addition to mouse arrows + ADJUST -/+ buttons. Also works for other numeric settings (latency, padCurve numeric values, etc.) — generic via the metadata-driven setter.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No live test by me** — Marek verifies each field.
+- **MIX per-strip editing skipped** — 16 channel strips at `clamp(7px,0.56vw,9px)` font size can't fit inline number inputs. Header-row editing is the natural workflow (select strip → header VOL editable). If Marek wants per-strip typing, that's a UI restructure (strip width grows or hover-to-reveal input). Defer.
+- **STEP PARAM TYPE + PARAM VALUE fields skipped** — PARAM TYPE is a cycle (NONE/TUNE/FILTER/etc.). PARAM VALUE depends on the parameter type and has dynamic range; would need per-type setter dispatch. Defer.
+- **`<EditableNumber>` doesn't respect SETTINGS' step value** — typed value is clamped to min/max but not snapped to step granularity. Master volume step is 5; user typing 87 would commit as 87 (not 85 or 90). Acceptable per spec ("Clamps do min/max, NIE reject"). Snap-to-step would be Phase D polish.
+- **C4 EditableText component + applications NOT delivered this session** — would need a foundational component creation + refactor of `EditableRow` in MainScreen + apply to track names / sequence names / program names / sample names / project name dialog. Each app is ~10-15 LOC change. Defer cleanly.
+- **C5 explicit Tab ref ordering NOT delivered** — native browser Tab moves focus through inputs in DOM order, which today happens to match visible top-to-bottom layout for the screens I've wired. Wrap-from-last (Tab on last field returns to first) and Shift+Tab reverse work natively (browser default). Custom ordering with `refs` array + onKeyDown handler is Phase D polish if Marek wants.
+- **CHOP fields, COUNT_IN restructure** — explicit deferrals per Marek's "flag if requires bigger refactor" allowance.
+- **SETTINGS toggle/enum settings not editable** — toggle is one-bit (click to flip) and enum cycles through fixed values. Editable typing wouldn't be sensible. Their display stays as plain text.
+
+### Decisions made
+
+- **MIX header VOL/PAN/SND editable**, NOT per-strip. Workflow: select strip via click → adjust header values. Marek hasn't explicitly required per-strip; defer.
+- **STEP PARAM TYPE / PARAM VALUE deferred** — complex dispatch.
+- **SETTINGS numeric editable via generic setSelectedSetting** — covers masterVolume + future numeric settings without per-setting hardcoded paths.
+- **C4 EditableText component creation deferred** — MainScreen's existing `<EditableRow>` text-edit pattern is the de facto template; lifting it to reusable component + applying elsewhere is a separate session.
+- **C5 explicit Tab ref ordering deferred** — native Tab order is "good enough" for current screens; explicit wrap/reverse can come later.
+- **CHOP / COUNT_IN deferred** — both need UI restructure beyond Phase C scope.
+
+### Open issues / followups
+
+- **Phase C completion remaining**:
+  - **C4 EditableText component** + applications across track/sequence/program/sample/project names. Foundational + ~6-8 call sites.
+  - **C5 Tab ref ordering** if Marek wants explicit wrap-to-first behavior on last field.
+  - **CHOP fields** — NUMBER OF CHOPS, LOOP BARS, slice positions. Multi-component refactor.
+  - **COUNT_IN restructure** — currently Panel display-only; would need ArrowRow widgets added before editable.
+  - **MIX per-strip editing** if Marek wants typing inside each channel strip (16 of them) instead of via header.
+  - **STEP PARAM TYPE / PARAM VALUE** dispatch by parameter type.
+- **Phase D polish**:
+  - Snap-to-step on commit (e.g., master volume snaps to 5).
+  - "L20"/"R20" smart parser for PAN typing.
+  - Multi-pad hold deduplication verification (should work from Phase B; smoke test).
+  - Build clean final pass.
+- **Live test** of all C3c2 fields by Marek.
+
+### Files modified
+
+- `src/screens/StepScreen.tsx` — `<EditableValue>` extended; VELOCITY/OFFSET/DURATION/PROBABILITY wired editable; `setSelectedEvent` imported.
+- `src/screens/MixScreen.tsx` — header row VOL/PAN/SND replaced with EditableNumber widgets; `setPadFxSendLevel` added to hook destructure; `EditableNumber` imported.
+- `src/screens/SettingsScreen.tsx` — adjust panel value display replaced with EditableNumber for numeric settings; `setSelectedSetting` added to hook destructure; `EditableNumber` imported.
+- `src/store/useAppStore.ts` — `setSelectedEvent` + `setSelectedSetting` direct-setter actions + type signatures.
+
+---
+
+## Session 22.C3c — 2026-05-21 — Keyboard overhaul Phase C3c: PROGRAM per-pad params editable
+
+### What was attempted
+
+Continuation of Phase C3 from C3b. Spec asks for click-to-edit across remaining numeric fields in PROGRAM/MIX/STEP/CHOP/COUNT_IN/SETTINGS. Marek's priority: PROGRAM first (biggest per-pad UX win), then the rest. This session = **C3c only**: PROGRAM screen per-pad parameters. MIX/STEP/CHOP/COUNT_IN/SETTINGS deferred.
+
+### What worked
+
+**`<Param>` component in `ProgramScreen.tsx` extended** with optional `editable` config — mirrors the ArrowRow / ValueRow extensions from C3a / C2. When `editable` is present, the central value `<span>` is replaced by `<EditableNumber>`; `<` / `>` arrow buttons stay external (mouse press-and-hold still works).
+
+**`<FilterParam>` component also extended** — used for CUTOFF / RESONANCE in the FILTER view. Same `editable` config shape.
+
+**New direct setter `setSelectedPadParam(field, value)`** added to the store next to the existing `updateSelectedPadParam(field, delta)`. Same clamp ranges (via `getParamLimits`), same side effects (`syncSelectedPadFilterToAudio` for filter fields, `recordUndo` for all). Per-field type signature mirrors the existing `updateSelectedPadParam` union.
+
+**PROGRAM fields wired editable (10 fields):**
+
+PARAMS view:
+- **LEVEL** (0–127)
+- **TUNE** (−24..+24 semitones, negative allowed)
+- **FINE** (−100..+100 cents, negative allowed)
+- **PAN** (−50..+50, negative allowed, with `formatPan` formatter so "L20" / "R20" displays)
+- **ATTACK** (0–100)
+- **DECAY** (0–100)
+- **CHOKE** (0–8 group)
+
+FILTER view:
+- **CUTOFF** (0–100)
+- **RESONANCE** (0–100)
+
+FX view:
+- **SEND** (0–100, only when bus.direct = SEND mode; `editable` is undefined when INSERT mode disables the send field).
+
+**Skipped intentionally:**
+- **MODE / VOICE** in PARAMS view — these are enum cycles (ONE SHOT / NOTE ON, POLY / MONO). Per spec cycle fields stay cycle-only.
+- **FILTER TYPE** in FILTER view — cycle (OFF/LOWPASS/HIGHPASS/BANDPASS).
+- **FX BUS** in FX view — cycle (OFF/FX1/FX2/FX3/FX4). User could type 0–4 in principle but the field is semantically an enum, not a number. Mouse cycle stays.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **`PAN` formatter compatibility**: PAN's value in EditableNumber is the raw numeric (−50..+50). When typed, user enters "-20", parses to -20, commits via `setSelectedPadParam("pan", -20)`. EditableNumber's display in idle mode shows `formatPan(-20)` = `"L20"`. The `format` function received in `editable` config maps the numeric value to the visual string. On commit, `parseFloat` handles plain numeric input. Typing "L20" itself wouldn't parse — user must type the signed number. Documented; user-facing convention.
+- **`CHOKE` integer 0–8** — typing "9" clamps to 8. Acceptable per spec ("Out of range: clamp do min/max, NIE reject").
+- **No live test by me** — Marek to verify the 10 PROGRAM fields.
+- **`setSelectedPadParam` is a near-duplicate of `updateSelectedPadParam`** — same clamp + side-effect block, with `value` instead of `delta + clamp(... + delta)`. Could refactor to a single helper `applyPadParamPatch(state, field, nextValue)` that both adjust and set call. Mild dup; ~25 LOC; not refactoring now.
+- **Skipped per-Param cycle ones** (MODE / VOICE / FILTER TYPE / FX BUS / CHOKE GROUP if user wants enum input) — per spec.
+- **`PAN` "L20" / "R20" display vs `-20` / `20` typed input** — visual inconsistency between mouse arrows (show "L20") and keyboard typing (user types "-20"). Could improve UX with a smarter parser ("L20" → -20). Defer; not in spec.
+- **Pad parameter changes don't show in the FX block params on FX screen** — separate concern. Per-pad and per-FX-bus are distinct.
+
+### Decisions made
+
+- **Each pad numeric field gets editable**. PAN included despite the format wrinkle.
+- **MODE/VOICE/FILTER TYPE/FX BUS stay cycle** — Marek's "cycle fields nie tykać" rule.
+- **`<FilterParam>` extended too** — same pattern as `<Param>`. Cleaner than inline EditableNumber at FilterParam call sites.
+- **`setSelectedPadParam` direct setter added** alongside the existing adjust action. Both clamp via `getParamLimits` so ranges are consistent between mouse arrows and keyboard typing.
+- **C3c scope = PROGRAM only**. MIX, STEP, CHOP, COUNT_IN, SETTINGS deferred to follow-up — each requires its own component extension (channel strip / event row / chop UI / panel layout / generic settings adjust system).
+
+### Open issues / followups
+
+- **C3d candidates** (next session):
+  - **MIX channel strips** — vertical Fader + horizontal PanKnob + bus button. NOT ArrowRow / Param. Would need either inline EditableNumber overlay or a "double-click value to edit" pattern. Different UI extension.
+  - **STEP event params** — velocity/duration/probability via `adjustSelectedEvent(field, delta)`. Delta-based, needs new `setSelectedEvent(field, value)` direct setter.
+  - **CHOP** — BPM EST, NUMBER OF CHOPS, LOOP BARS. Multiple per-feature UI components. Larger refactor.
+  - **COUNT_IN** — display-only `<Panel>`, needs UI restructure to add ArrowRow widgets.
+  - **SETTINGS** — generic `adjustSelectedSetting(delta)` system. Needs `setSelectedSetting(value)` and per-setting clamp lookup.
+- **`PAN` smart parser** ("L20" / "R20") — Phase D polish if Marek wants.
+- **`setSelectedPadParam` / `updateSelectedPadParam` dedup** — refactor opportunity, not urgent.
+- **Live test** of 10 PROGRAM fields.
+
+### Files modified
+
+- `src/screens/ProgramScreen.tsx` — `<Param>` and `<FilterParam>` extended with optional `editable` config; 10 Param/FilterParam callsites wired with editable. `setSelectedPadParam` + `setPadFxSendLevel` added to store hook destructure.
+- `src/store/useAppStore.ts` — new `setSelectedPadParam(field, value)` direct setter action + type signature. Mirrors `updateSelectedPadParam` clamp/side-effect logic.
+
+---
+
+## Session 22.C3b — 2026-05-21 — Keyboard overhaul Phase C3b: FX (all params) + SAMPLE EDIT editable
+
+### What was attempted
+
+Continuation of Phase C3 from C3a. Spec calls for click-to-edit across remaining numeric fields in FX/PROGRAM/STEP/MIX/SAMPLE EDIT/CHOP/COUNT_IN/SETTINGS. Marek's priority order: FX first (most fields, biggest user impact), then PROGRAM, then SAMPLE EDIT, etc. This session = **C3b only**: FX (all bus block params + master EQ + master Comp) + SAMPLE EDIT (all numeric op params). PROGRAM, MIX, STEP, CHOP, COUNT_IN, SETTINGS deferred.
+
+### What worked
+
+**FX screen — bus block params, master EQ, master Comp:**
+
+Extended the parameter registry types from `{ key, label, step, format? }` to `FxParamSpec = { key, label, step, min, max, allowDecimal?, allowNegative?, format? }`. Ranges sourced from the canonical clamps inside `fxEngine.ts` — so UI ranges and engine ranges agree:
+
+- **REVERB**: size/damping/wetDry 0–100, preDelay 0–1000 ms, hpCut/lpCut 20–20000 Hz.
+- **DELAY**: timeMs 1–2000, feedback 0–95 (engine caps at 95 to keep loop stable), wetDry 0–100, hp/lp 20–20000.
+- **EQ** (bus, 4-band): low/lowMid/highMid/high gain −24..+24 dB decimal+negative, freqs 20–20000 Hz.
+- **FLANGER**: rate 0.05–10 Hz decimal, depth 0–100, feedback 0–95, wetDry 0–100.
+- **CHORUS**: rate 0.05–10 Hz decimal, depth 0–100, mix 0–100.
+- **BITCRUSHER**: bits 1–16, sampleRateReduction 1–32, wetDry 0–100.
+- **COMPRESSOR** (bus): threshold −60..0 decimal+negative, ratio 1–20 decimal, attack 0–1000 ms, release 1–1000 ms, makeupGain −24..+24 decimal+negative.
+- **MASTER EQ**: same as bus EQ.
+- **MASTER COMP**: same as bus comp BUT makeupGain is 0–24 (positive-only — engine clamps via `Math.max(0, Math.min(24, value))`).
+
+All three rendering loops in `FxScreen` (bus-block, master-eq, master-comp) now pass `editable` config to each ArrowRow, wired to the pre-existing direct setters `setFxBusBlockParam(busId, block, key, v)`, `setMasterEqParam(key, v)`, `setMasterCompParam(key, v)`. No new setters needed — they already existed from FX Phase 1/2.
+
+**SAMPLE EDIT window — all numeric op params:**
+
+`renderOpParams` returns ArrowRows for the active op's parameter set. Each numeric ArrowRow now has `editable` config wired to the existing `setSampleEditParam(key, value)` setter:
+
+- TIME_STRETCH RATIO 50–200% int (MPC2000XL/5000 canonical), ORIG BPM 30–300, NEW BPM 30–300 (canonical BPM range matching MainScreen). BPM_MATCH ratio also clamped to 0.5–2.0 in engine `applyOp`.
+- PITCH_SHIFT SEMITONES −12..+12 int + negative (MPC canonical), CENTS −100..100 int + negative.
+- WARP SPEED 50–200% int (MPC canonical), engine `applyOp` clamps here too.
+- NORMALIZE TARGET dB −60..0 decimal + negative.
+- BIT REDUCE BIT DEPTH 1–16, SAMPLE RATE 1000–48000 Hz.
+- FADE IN/OUT LENGTH 1–10000 ms.
+
+Cycle-style ArrowRows in the same screen (MODE = RATIO/BPM_MATCH, PRESET = SP-1200/MPC60/NES/ATARI/CUSTOM, CURVE = LINEAR/LOG/EXP) deliberately left without `editable` config — they're enum cycles per spec.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **DELAY feedback max = 95**, not 100. Engine clamps at 0.95 to keep the feedback loop stable. UI was already at this value implicitly via mouse arrows; documented now in metadata.
+- **No live test by me** — Marek to verify all FX params + SAMPLE EDIT params. Particular suspects:
+  - **BITCRUSHER sampleRateReduction max=32** — engine code uses this as an integer "hold every Nth sample" factor. 32 is the standard ceiling; if engine's tolerance differs, UI clamp might disagree.
+  - **EQ gain negative typing** — user types "-6", sanitizer must allow leading minus when `allowNegative=true`. Tested in C2; should work for these too.
+  - **Decimal typing for rate/ratio** — user types "1.5"; sanitizer must allow one `.` per field when `allowDecimal=true`.
+- **`useEffect` etc. removed dependency** — N/A here; no new effects.
+- **No new store actions added this session** — all direct setters (`setFxBusBlockParam`, `setMasterEqParam`, `setMasterCompParam`, `setSampleEditParam`) already existed.
+- **SAMPLE EDIT params have NO clamping in store** — `setSampleEditParam(key, value)` stores raw value without clamp. Engine clamps on apply. EditableNumber clamps on commit. So state can technically store an out-of-range value if directly mutated, but UI never produces one. Acceptable.
+- **Master COMP makeupGain UI shows negative arrow click as no-op** — `adjustMasterCompParam` doesn't clamp at 0 inside the store; engine clamps at 0. UI displays 0 floor correctly when user types negative values (EditableNumber clamps via `min: 0`). When user clicks `<` arrow at 0, store stores 0 - 0.5 = -0.5, then engine displays 0 effectively (clamp). Inconsistency between displayed state and effective engine value at edge case. Minor; defer.
+
+### Decisions made
+
+- **Per-spec ranges sourced from fxEngine.ts clamps** — single source of truth for what's "valid". UI clamps on type-commit, engine clamps on apply.
+- **`FxParamSpec` type added to UtilityScreens.tsx** for the param metadata. Inline at point of use; could be lifted to a shared types file later.
+- **Master Comp makeupGain UI range = 0–24** (positive-only), distinct from bus Comp makeupGain (−24..+24).
+- **Cycle-style ArrowRows untouched** — MODE, PRESET, CURVE stay cycle-only.
+- **No store-level clamping added for FX params** — engine is canonical clamp authority. UI clamps for UX; state can drift slightly but display stays consistent because rendering reads `selectedBlock.params[key]` after the type-commit set call.
+
+### Open issues / followups
+
+- **C3c candidates** (next session):
+  - **PROGRAM screen per-pad params** — uses `<Param>` component (not ArrowRow). Need to extend Param with editable support, then wire each param row. Fields: LEVEL/TUNE/FINE/PAN/ATTACK/DECAY/CHOKE for PARAMS view, plus CUTOFF/RESONANCE for FILTER view.
+  - **MIX screen track params** — different UI (vertical Fader + horizontal PanKnob + bus button per channel strip). Not ArrowRow. Different component extension needed OR add EditableNumber to header row's selected-channel display.
+  - **STEP event params** — velocity/duration/probability. Uses `adjustSelectedEvent(field, delta)` — DELTA-based, need direct setter.
+  - **CHOP**: BPM EST, slice count, loop bars, slice positions. Multiple component patterns to extend.
+  - **COUNT_IN**: requires UI restructure (Panel display → ArrowRow).
+  - **SETTINGS**: generic adjust system; needs refactor of `adjustSelectedSetting` to add direct `setSelectedSetting`.
+- **Live test** of FX + SAMPLE EDIT fields by Marek.
+- **Master Comp makeupGain edge case** — minor inconsistency at 0 boundary; defer.
+
+### Files modified
+
+- `src/screens/UtilityScreens.tsx` — `EFFECT_PARAM_KEYS` / `MASTER_EQ_PARAMS` / `MASTER_COMP_PARAMS` type extended with min/max/allowDecimal/allowNegative metadata; 3 FX rendering loops + 10 SAMPLE EDIT ArrowRow callsites now pass `editable` config. New `FxParamSpec` type declared inline. Imports unchanged.
+
+---
+
+## Session 22.C3a — 2026-05-21 — Keyboard overhaul Phase C3a: ArrowRow extended + NOTE REPEAT + BAR EDITOR + TIME SIG editable
+
+### What was attempted
+
+Marek's Phase C3 spec asks for click-to-edit on every numeric field across ~10 screens (STEP, NOTE REPEAT, COUNT/METRONOME, FX, CHOP, PROGRAM, MIX, SAMPLE EDIT, SETTINGS, BAR EDITOR). Realistic scope = 3–5 sessions to do completely. This session = **C3a only**: extend the shared `ArrowRow` helper with optional editable support (one component edit propagates to all ArrowRow callsites that opt in), then wire the easier fields. Bigger screens (FX/PROGRAM/STEP/MIX/SAMPLE EDIT/CHOP/COUNT_IN) deferred to follow-up sessions per Marek's "split sub-phases" allowance.
+
+### What worked
+
+**`ArrowRow` (in `UtilityScreens.tsx`) extended with optional `editable` prop** — mirrors the same pattern `ValueRow` got in Phase C2. When `editable` is present, the value `<span>` is replaced by `<EditableNumber>` (arrows stay external; mouse press-and-hold still works). When absent, the original static `<span>` renders — full back-compat.
+
+**Direct setters added to store** for the fields wired this phase:
+- `setNoteRepeatGate(value)` — clamp 1–100 integer.
+- `setMetronomeCountInBars(value)` — clamp 0–4 integer (added preemptively; COUNT_IN screen uses `<Panel>` display-only, no ArrowRow widget to bind yet — wiring deferred).
+- `setMetronomeVolume(value)` — clamp 0–100 integer (same preemptive add).
+
+**Fields wired editable (7 total across 3 screens):**
+
+1. **NOTE REPEAT GATE** — `setNoteRepeatGate`, min 1, max 100, integer.
+2. **NOTE REPEAT SWING** — reuses `setSwing` (added in C2), min 50, max 75.
+3. **BAR EDITOR NUM** (EDIT TS mode) — local `setEditNum`, min 1, max 31.
+4. **BAR EDITOR NUM** (INSERT mode) — same local `setEditNum`.
+5. **BAR EDITOR COUNT** (INSERT count) — local `setInsertCount`, min 1, max 99.
+6. **BAR EDITOR COPIES** — local `setCopyCount`, min 1, max 99.
+7. **TIME SIG WINDOW NUM** — local `setNum`, min 1, max 31.
+
+All using the existing direct-setter pattern from C2 — no delta math.
+
+**Skipped intentionally:**
+- **BAR EDITOR FIRST BAR / LAST BAR / BEFORE BAR** — displayed 1-indexed but stored 0-indexed. Editable config would need `format/onCommit` conversion. Easy to add but skipped here to keep PR tight.
+- **BAR EDITOR FROM SEQ / TO SEQ** — cycle through sequence IDs, not pure numeric.
+- **BAR EDITOR DEN / TIME SIG WINDOW DEN** — cycle fields (4/8/16/32), not editable per spec.
+- **RATE / TRIPLET / VELOCITY MODE in NOTE REPEAT** — cycle fields.
+- **COUNT_IN bars + metronome volume** — screen uses `<Panel>` display rows; no ArrowRow widget on screen. Setters added but unused. Wiring requires UI redesign (add ArrowRow widgets) — deferred.
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **Phase C3 scope as written is genuinely 3–5 sessions of work** — every numeric field across 10 screens means 50+ ArrowRow callsites + 20+ new direct setters (or refactored adjust actions). Doing it all in one commit creates massive blast radius and high revert risk given recent revert history. Aggressively scoped down to a tight C3a.
+- **EditableNumber's `className` prop overrides BOTH idle and editing states** — when ArrowRow passed a className for idle styling (amber border looked good in edit mode, wrong in idle), the same class applied to both. Fixed by NOT passing `className` from ArrowRow; defaults handle both modes cleanly.
+- **Highlighted state lost in editable mode** — when `editable` is present, the `highlighted` prop on ArrowRow doesn't affect the EditableNumber's idle text color (which uses EditableNumber's default `text-[#eef6d8]`). Practical impact: zero current callers combine `highlighted={true}` with `editable={...}`. Acceptable until someone needs both.
+- **Unused setters added (`setMetronomeCountInBars`, `setMetronomeVolume`)** — preemptively added but not wired. Will be used when COUNT_IN screen gets ArrowRow widgets (separate session). Six lines of dead code; documents intent.
+- **No live verification by me** — Marek tests the 7 fields.
+- **Cycle-skip behavior**: ArrowRow without `editable` still renders the plain `<span>`. Some screens (e.g. effect cycle, MODE select) pass cycle-style ArrowRow with non-numeric values — these CORRECTLY don't get editable since they don't have a numeric `value` to commit. Good guard.
+- **EditableNumber input's default border styling** uses amber to signal edit-mode visually. Matches the LCD aesthetic but may look out of place in dense ArrowRow grids. Marek can verify.
+
+### Decisions made
+
+- **C3a scope = ArrowRow extension + 7 fields**. Smaller than Marek's full Phase C3 ask, but defensible given session-length realities and revert history. Pattern is established; follow-up sessions can adopt the same approach screen-by-screen.
+- **Direct setters per field**, not delta-based (matches C2 fix after Marek's "scaling" bug report).
+- **No format/onCommit conversion for 1-indexed bar fields** in this commit — deferred for clean code paths.
+- **No COUNT_IN wiring** — screen uses display-only Panel, not ArrowRow. Requires UI restructure.
+- **`setMetronomeCountInBars` / `setMetronomeVolume` added preemptively** — documented as unused-but-needed-soon. Removing them would mean re-adding in next session.
+
+### Open issues / followups
+
+- **Phase C3b** candidates (next session):
+  - **SAMPLE EDIT WINDOW params** — many ArrowRow callsites; uses `setSampleEditParam(key, value)` direct setter; straightforward wiring with min/max from spec.
+  - **FX screen effect params** — uses `adjustFxBusBlockParam(busId, block, key, delta)` for arrows. Direct setter `setFxBusBlockParam(busId, block, key, value)` already exists! Wiring is straightforward; min/max per param needs to be added to `EFFECT_PARAM_KEYS` registry (currently just has step + format).
+  - **FX master EQ/Comp params** — same pattern via `setMasterEqParam` / `setMasterCompParam`.
+  - **BAR EDITOR FIRST/LAST/BEFORE BAR** — need format/onCommit offset conversion for 1-indexed display.
+- **Phase C3c** candidates:
+  - **PROGRAM screen per-pad params** — many fields using `<Param>` component (not ArrowRow). Different component would need similar extension.
+  - **MIX screen track params** — vol / pan / send level.
+  - **STEP screen event params** — velocity / duration / probability.
+  - **CHOP screen** — BPM EST, slice count, loop bars, slice positions.
+- **COUNT_IN screen** — UI redesign needed before editable wiring (no ArrowRow widgets to extend).
+- **SETTINGS screen** — uses generic adjust system; would need refactor of settings action to accept direct value per key. Defer.
+- **Live tests** of the 7 wired fields by Marek.
+
+### Files modified
+
+- `src/screens/UtilityScreens.tsx` — `ArrowRow` signature extended with optional `editable` config; 7 ArrowRow callsites wired with editable.
+- `src/store/useAppStore.ts` — added `setNoteRepeatGate`, `setMetronomeCountInBars`, `setMetronomeVolume` direct setters next to their `adjust*` counterparts. Type signatures added.
+
+---
+
+## Session 22.C — 2026-05-21 — Keyboard overhaul Phase C1+C2: EditableNumber component + MainScreen proof-of-concept
+
+### What was attempted
+
+Third sub-phase of the keyboard overhaul. Spec asks for click-to-edit on every numeric and text field across the app — BPM/BARS/SWING/TC/cutoff/reso/ADSR/velocity/probability/FX params/ effect params/track names/sequence names/etc. Realistically a 2–3 session refactor touching 9+ screens × dozens of fields each.
+
+Scope this session = **C1 + C2 only**: build the reusable `EditableNumber` component and apply it to the three obvious numeric fields on MAIN screen (BPM, BARS, SWING). Defer C3 (rest of screens), C4 (text inputs everywhere), and C5 (Tab order management) to follow-up sessions. Smaller blast radius given recent revert history.
+
+### What worked
+
+**New component `src/components/EditableNumber.tsx`** (~115 LOC):
+- Renders as a `<button>` showing formatted value when idle, switches to `<input>` on click.
+- Click-to-edit: `startEditing` populates draft with formatted display string; input is `autoFocus`'d and `select()`s on focus.
+- `Enter` → `commit` → parse + clamp + call `onCommit(newValue)` + blur.
+- `Escape` → `cancel` → leave state unchanged, exit edit mode, blur.
+- `Tab` → native focus move; input's `onBlur` fires → `commit` (so Tab = confirm + next, matching spec).
+- `onBlur` always commits (so click-outside also confirms).
+- Sanitizer drops non-digit characters at input time. Decimal `.` allowed only when `allowDecimal={true}`. Negative leading `-` allowed only when `allowNegative={true}`. Multiple decimal points / misplaced minus collapsed.
+- Out-of-range values are clamped on commit (NOT rejected) per spec.
+- Props: `value`, `format(n)`, `min`, `max`, `allowDecimal`, `allowNegative`, `onCommit`, `className`, `style`, `ariaLabel`.
+
+**MainScreen integration (C2 proof-of-concept):**
+- `ValueRow` signature extended with an optional `editable` config prop. When provided, the middle slot of the `< value >` triple becomes an `EditableNumber`; arrows stay external (mouse press-and-hold still works on `<` / `>`).
+- BPM: `value=bpm`, `min=30`, `max=300` (MPC canonical range per MPC2000XL/5000 manuals — widened from the prior 40-240 in this session), `allowDecimal=true`, `format=n.toFixed(1)`, `onCommit=setBpm`.
+- BARS: `value=sequenceLengthBars`, `min=1`, `max=999`, integer, format zero-padded to 3 digits, `onCommit=setSequenceLengthBars`.
+- SWING: `value=swing`, `min=50`, `max=75`, integer, `onCommit=setSwing`.
+- TIME SIG stays as plain `ValueRow` (no `editable` prop) — it's a cycle field, not a typing field, per spec.
+- SEQ/TRACK/PROGRAM rows already had `EditableRow` text-edit pattern (pre-existing); untouched.
+
+**Direct setters added to store** — initial implementation used delta-based commits (`adjustBpm(v - currentBpm)`) to reuse existing `adjustX` actions. Marek hit a bug ("wpisywane cyfry są skalowane") and asked for direct setters that bypass any internal logic in `adjustX`. Added `setBpm(value)`, `setSwing(value)`, `setSequenceLengthBars(value)` actions. Each clamps to the canonical range for the field (30–300 for BPM with 2-decimal rounding — MPC2000XL/5000 standard; `adjustBpm` was also widened from 40–240 to 30–300 in this session to match. 50–75 for SWING integer, 1–999 for BARS integer) and dispatches the same side effects (`recordUndo`, sequence mirror, clampTransportToSequenceLength). `EditableNumber.onCommit` now points directly at the setter — typed `120` → `setBpm(120)` → `bpm = 120` literally, no delta arithmetic.
+
+**Focus management** (from Phase B):
+- Typing in `EditableNumber` focuses an `<input>`; the global keyboard handler's typing guard kicks in and skips all globals → user types "1" into BPM, NOT triggers P01.
+- Enter/Esc inside input → `commit`/`cancel` + explicit `event.currentTarget.blur()` → focus returns to body → globals reactivate.
+- Tab inside input → native focus move; browser handles it. Blur fires on the leaving input → commit runs. Native Tab order is DOM order, which matches the visible layout grid (BARS → TIME SIG → BPM → SWING).
+
+Build clean (`tsc + vite build`).
+
+### What didn't work / pitfalls hit
+
+- **No live test by me** — Marek to verify the 3 fields behave correctly with both mouse arrows AND keyboard typing.
+- **Tab order**: relies on DOM order matching visual order. Currently in MainScreen, BARS / TIME SIG / BPM / SWING are rendered in a 2-column grid. DOM order = BARS, TIME SIG, BPM, SWING. Native Tab from BPM skips TIME SIG (not focusable since it's a cycle button, not an input). Goes BARS → BPM → SWING. Acceptable; user can Tab through editable fields linearly.
+- **Cycle fields in the same row as editable**: TIME SIG sits between BARS and BPM. Tab from BARS lands on BPM (skipping TIME SIG). Visual order is `BARS TIME-SIG / BPM SWING` (2 columns × 2 rows), Tab order is `BARS BPM SWING`. Top-to-bottom, left-to-right with cycle fields skipped. Marek's spec said top-to-bottom-left-to-right but didn't address skipping; current behavior matches.
+- **Decimal handling for BPM**: `parseFloat("94")` = 94, `parseFloat("94.5")` = 94.5, `parseFloat("94.")` = 94. Trailing-dot input commits as 94 (the parse drops the trailing dot). Acceptable.
+- **`adjustBpm(0)` corner case**: if user types the same BPM value (e.g. 94 when current is 94), the EditableNumber compares `clamped !== value` and skips `onCommit`. No spurious adjust. Good.
+- **Out-of-range typing UX**: input lets user type "999" for BPM even though max is 300. Only on commit does it clamp. Visual feedback during typing could be improved (red border when out of range) but spec says clamp-not-reject, so current behavior matches.
+- **Empty input + Enter**: `parseFloat("")` = NaN, `Number.isFinite(NaN)` = false, `commit` skips the `onCommit` call → reverts to previous value silently. Matches spec: "Empty input + Enter: revert do poprzedniej wartości".
+- **Delta-based approach failed** in initial attempt (caused Marek's "scaling" bug — root cause not fully isolated in code review, but the symptom went away once direct setters were introduced). Replaced with direct setters per Marek's instruction.
+- **No `Tab` press-and-hold accel** for incrementing values via keyboard arrows. Marek's spec deferred Up/Down keyboard arrows on focused inputs as optional / future polish. Not implemented.
+- **Component-level `<input>` styling**: defaults to amber border + dark bg matching the LCD aesthetic. Caller can override via `className` prop. None of the MainScreen call sites override; they accept the default.
+
+### Decisions made
+
+- **C2 scope = MainScreen BPM/BARS/SWING only** as proof-of-concept. Marek's spec lists ~50+ fields; doing all of them in one commit creates massive blast radius and high revert risk. Component now exists; remaining screens can adopt it incrementally.
+- **`ValueRow` extended with optional `editable` config** rather than creating a new `EditableValueRow` component. Single component, two modes, matches existing call-site shape.
+- **Direct setters** (`setBpm` / `setSwing` / `setSequenceLengthBars`) added to the store. Initial delta-based approach (`adjustX(v - currentX)`) was reverted after Marek hit a bug; direct setters bypass any `adjustX` internal arithmetic.
+- **TIME SIG stays as cycle** (no `editable` prop). Cycle fields are explicit enums per spec.
+- **Tab order uses native DOM order** without explicit `tabIndex` management. Simpler; matches visible layout in MainScreen.
+- **No keyboard Up/Down arrows** for incrementing values on focused inputs. Mouse arrows + typing cover the workflow.
+
+### Open issues / followups
+
+- **C3 — apply EditableNumber to remaining screens**:
+  - **CHOP**: BPM EST, NUMBER OF CHOPS, BARS, slice start/end, NORMALIZE target
+  - **PROGRAM**: ROOT, VELOCITY, OFFSET, CUTOFF, RESO, ADSR (A/D/S/R), level, pan, tune, FX SEND level
+  - **STEP**: event position, velocity, duration, pitch
+  - **MIX**: track volume, pan, send levels
+  - **FX**: all effect parameters (size/decay/gain/freq/time/mix/depth/rate/threshold/ratio)
+  - **SETTINGS**: master volume
+  - **COUNT_IN / METRONOME**: count-in bars, metronome volume
+  - **NOTE REPEAT**: rate, gate, swing
+  - **BAR EDITOR**: NUM, DEN, target bar (NUM/DEN are cycle; bar number editable)
+  - **SAMPLE EDIT**: ratio, semitones, cents, speed, bit depth, sample rate, fade length, target dB
+- **C4 — text inputs** (track / sequence / program / sample / project names). MainScreen `EditableRow` already does text edit; could be lifted to reusable `EditableText` mirroring `EditableNumber`.
+- **C5 — Tab order management**: native DOM-order works for now. May need explicit `tabIndex` if Marek wants a specific custom flow that doesn't match DOM order.
+- **Visual feedback for out-of-range during typing** (red border) — Phase D polish candidate.
+- **Live tests** by Marek for the 3 MainScreen fields.
+
+### Files modified
+
+- **New**: `src/components/EditableNumber.tsx` — reusable click-to-edit numeric component (~115 LOC).
+- `src/screens/MainScreen.tsx` — added `EditableNumber` import, extended `ValueRow` with optional `editable` prop, wired BPM/BARS/SWING to use it via direct setters.
+- `src/store/useAppStore.ts` — added `setBpm`, `setSwing`, `setSequenceLengthBars` direct-setter actions next to their `adjustX` counterparts (same clamp range, same side effects).
+
+---
+
 ## Session 22.B — 2026-05-21 — Keyboard overhaul Phase B: global mappings (pads, banks, transport, tracks, dialogs, F-keys, Ctrl+S)
 
 ### What was attempted

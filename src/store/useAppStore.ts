@@ -264,7 +264,9 @@ type AppState = {
   toggleMetronomeEnabled: () => void;
   toggleMetronomeDuringRecord: () => void;
   adjustMetronomeCountInBars: (delta: number) => void;
+  setMetronomeCountInBars: (value: number) => void;
   adjustMetronomeVolume: (delta: number) => void;
+  setMetronomeVolume: (value: number) => void;
   toggleTimingCorrectionCount: () => void;
   toggleWaitPadCompat: () => void;
   requestTransportStart: (action: "PLAY" | "REC") => void;
@@ -314,9 +316,12 @@ type AppState = {
   createProgram: () => void;
   cycleTimingCorrect: () => void;
   adjustSequenceLengthBars: (delta: number) => void;
+  setSequenceLengthBars: (value: number) => void;
   cycleTimeSignature: (delta: number) => void;
   adjustBpm: (delta: number) => void;
+  setBpm: (value: number) => void;
   adjustSwing: (delta: number) => void;
+  setSwing: (value: number) => void;
   adjustQuantizeStrength: (delta: number) => void;
   cycleTimingApplyTo: () => void;
   applyTimingCorrectToEvents: () => void;
@@ -340,6 +345,7 @@ type AppState = {
   cycleNoteRepeatRate: () => void;
   cycleNoteRepeatRateBack: () => void;
   adjustNoteRepeatGate: (delta: number) => void;
+  setNoteRepeatGate: (value: number) => void;
   toggleTripletMode: () => void;
   cycleTimingCorrectBack: () => void;
   cycleNoteRepeatVelocityMode: () => void;
@@ -370,6 +376,7 @@ type AppState = {
   setAutoSliceCount: (count: number) => void;
   enableLoopMode: () => void;
   adjustLoopBars: (delta: number) => void;
+  setLoopBars: (value: number) => void;
   enterChopMode: () => void;
   autoChop: () => void;
   setWaveformZoom: (zoom: number) => void;
@@ -402,6 +409,20 @@ type AppState = {
       | "fxSend",
     delta: number,
   ) => void;
+  setSelectedPadParam: (
+    field:
+      | "level"
+      | "tune"
+      | "fineTune"
+      | "pan"
+      | "attack"
+      | "decay"
+      | "chokeGroup"
+      | "filterCutoff"
+      | "filterResonance"
+      | "fxSend",
+    value: number,
+  ) => void;
   toggleSelectedPadMode: () => void;
   toggleSelectedPadVoiceMode: () => void;
   cycleSelectedPadFilterType: (delta: number) => void;
@@ -414,6 +435,7 @@ type AppState = {
   cycleStepTrack: (delta: number) => void;
   setEventEditMode: (mode: AppState["eventEditMode"]) => void;
   adjustSelectedEvent: (field: "velocity" | "timingOffset" | "duration" | "probability", delta: number) => void;
+  setSelectedEvent: (field: "velocity" | "timingOffset" | "duration" | "probability", value: number) => void;
   cycleSelectedEventTrack: () => void;
   deleteSelectedEvent: () => void;
   toggleEventMuted: (eventId: string) => void;
@@ -423,6 +445,7 @@ type AppState = {
   toggleStepInputAutoAdvance: () => void;
   cycleSelectedEventAppliedParameter: (delta: number) => void;
   adjustSelectedEventAppliedValue: (delta: number) => void;
+  setSelectedEventAppliedValue: (value: number) => void;
   stepBackward: () => void;
   stepForward: () => void;
   barBackward: () => void;
@@ -459,6 +482,7 @@ type AppState = {
   setActiveSettingsCategory: (id: string) => void;
   selectSetting: (index: number) => void;
   adjustSelectedSetting: (delta: number) => void;
+  setSelectedSetting: (value: number) => void;
   toggleSelectedSetting: () => void;
   // ---- FX system (Phase 2 — 2 blocks per bus + chaining) ----
   setFxBusBlockEffect: (busId: BusId, block: BusBlockId, effect: EffectType | null) => void;
@@ -1059,9 +1083,27 @@ export const useAppStore = create<AppState>((set, get) => ({
         settingsValues: { ...state.settingsValues, metronomeCountInBars },
       };
     }),
+  setMetronomeCountInBars: (value) =>
+    set((state) => {
+      const metronomeCountInBars = clamp(Math.round(value), 0, 4);
+      return {
+        metronomeCountInBars,
+        countInMode: countInBarsToMode(metronomeCountInBars),
+        settingsValues: { ...state.settingsValues, metronomeCountInBars },
+      };
+    }),
   adjustMetronomeVolume: (delta) =>
     set((state) => {
       const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 100);
+      return {
+        metronomeVolume,
+        countInClickVolume: metronomeVolume,
+        settingsValues: { ...state.settingsValues, metronomeVolume },
+      };
+    }),
+  setMetronomeVolume: (value) =>
+    set((state) => {
+      const metronomeVolume = clamp(Math.round(value), 0, 100);
       return {
         metronomeVolume,
         countInClickVolume: metronomeVolume,
@@ -1821,6 +1863,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, "SEQ BARS", `seq-bars:${state.currentSequence}`),
       };
     }),
+  // Direct setter used by typed input (EditableNumber). Clamps to the same range
+  // adjustSequenceLengthBars uses; no delta math.
+  setSequenceLengthBars: (value) =>
+    set((state) => {
+      const sequenceLengthBars = clamp(Math.round(value), 1, 999);
+      return {
+        ...clampTransportToSequenceLength(state, sequenceLengthBars),
+        sequenceLengthBars,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, lengthBars: sequenceLengthBars } : sequence,
+        ),
+        ...recordUndo(state, "SEQ BARS", `seq-bars:${state.currentSequence}`),
+      };
+    }),
   cycleTimeSignature: (delta) =>
     set((state) => {
       const values: TimeSignature[] = ["2/4", "3/4", "4/4", "5/4", "6/8", "7/8"];
@@ -1844,7 +1900,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => cycleTimingCorrectPatch(state, -1, { includeOff: false })),
   adjustBpm: (delta) =>
     set((state) => {
-      const bpm = clamp(Math.round((state.bpm + delta) * 100) / 100, 40, 240);
+      const bpm = clamp(Math.round((state.bpm + delta) * 100) / 100, 30, 300);
+      return {
+        bpm,
+        sequences: state.sequences.map((sequence) =>
+          sequence.id === state.currentSequence ? { ...sequence, bpm } : sequence,
+        ),
+        ...recordUndo(state, "BPM", `bpm:${state.currentSequence}`),
+      };
+    }),
+  // Direct setter for typed input. MPC canonical range 30-300 (per MPC2000XL/5000 manuals).
+  setBpm: (value) =>
+    set((state) => {
+      const bpm = clamp(Math.round(value * 100) / 100, 30, 300);
       return {
         bpm,
         sequences: state.sequences.map((sequence) =>
@@ -1856,6 +1924,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   adjustSwing: (delta) =>
     set((state) => {
       const swing = clamp(state.swing + delta, 50, 75);
+      return {
+        swing,
+        ...recordUndo(state, "SWING", `swing:${state.currentSequence}`),
+      };
+    }),
+  setSwing: (value) =>
+    set((state) => {
+      const swing = clamp(Math.round(value), 50, 75);
       return {
         swing,
         ...recordUndo(state, "SWING", `swing:${state.currentSequence}`),
@@ -2220,6 +2296,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   adjustNoteRepeatGate: (delta) =>
     set((state) => ({ noteRepeatGate: clamp(state.noteRepeatGate + delta, 1, 100) })),
+  setNoteRepeatGate: (value) =>
+    set(() => ({ noteRepeatGate: clamp(Math.round(value), 1, 100) })),
   toggleTripletMode: () =>
     set((state) => {
       const tripletMode = !state.tripletMode;
@@ -2470,6 +2548,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   adjustLoopBars: (delta) =>
     set((state) => ({ loopBars: clamp(state.loopBars + delta, 1, 16) })),
+  setLoopBars: (value) => set(() => ({ loopBars: clamp(Math.round(value), 1, 16) })),
   enterChopMode: () =>
     set((state) => {
       const sliceMarkers =
@@ -2751,6 +2830,32 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, `${labelGroup} ${state.selectedPad}`, `pad-param-${field}:${state.selectedPad}`),
       };
     }),
+  // Direct setter for typed input. Same clamp + side effects as updateSelectedPadParam.
+  setSelectedPadParam: (field, value) =>
+    set((state) => {
+      const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) => {
+          if (pad.pad !== state.selectedPad) return pad;
+          const limits = getParamLimits(field);
+          return {
+            ...pad,
+            [field]: clamp(value, limits.min, limits.max),
+          };
+        });
+      if (field === "filterCutoff" || field === "filterResonance") {
+        syncSelectedPadFilterToAudio(state, padAssignments);
+      }
+      const labelGroup: string =
+        field === "tune" || field === "fineTune" ? "TUNE"
+        : field === "attack" || field === "decay" ? "ENV"
+        : field === "filterCutoff" || field === "filterResonance" ? "FILTER"
+        : field === "chokeGroup" ? "CHOKE"
+        : `MIX ${(field as string).toUpperCase()}`;
+      return {
+        padAssignments,
+        programs: syncCurrentProgram(state, { padAssignments }),
+        ...recordUndo(state, `${labelGroup} ${state.selectedPad}`, `pad-param-${field}:${state.selectedPad}`),
+      };
+    }),
   toggleSelectedPadMode: () =>
     set((state) => {
       const padAssignments = updatePadAssignmentsForProgram(state, state.padBank, (pad) =>
@@ -2906,6 +3011,36 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, `EDIT ${fieldLabel}`, `edit-event-${field}:${event.id}`),
       };
     }),
+  // Direct setter for typed input. Same clamps as adjustSelectedEvent.
+  setSelectedEvent: (field, value) =>
+    set((state) => {
+      const event = state.stepEvents[state.selectedEventIndex];
+      if (!event) return state;
+      const rounded = Math.round(value);
+      const nextValue =
+        field === "velocity"
+          ? clamp(rounded, 1, 127)
+          : field === "timingOffset"
+            ? clamp(rounded, -24, 24)
+            : field === "duration"
+              ? clamp(rounded, 0, 96)
+              : clamp(rounded, 0, 100);
+      const stepEvents = state.stepEvents.map((item, index) =>
+        index === state.selectedEventIndex
+          ? {
+              ...item,
+              [field]: nextValue,
+              ...(field === "duration" ? { length: nextValue } : {}),
+            }
+          : item,
+      );
+      const fieldLabel = field === "timingOffset" ? "OFFSET" : field.toUpperCase();
+      return {
+        stepEvents,
+        sequences: updateCurrentSequenceEvents(state, stepEvents),
+        ...recordUndo(state, `EDIT ${fieldLabel}`, `edit-event-${field}:${event.id}`),
+      };
+    }),
   cycleSelectedEventTrack: () =>
     set((state) => {
       const event = state.stepEvents[state.selectedEventIndex];
@@ -2968,6 +3103,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = event.parameterValue ?? event.appliedValue ?? 0;
       const range = appliedValueRange(event.appliedParameter);
       const next = clamp(current + delta, range.min, range.max);
+      const stepEvents = state.stepEvents.map((item, index) =>
+        index !== state.selectedEventIndex ? item : { ...item, appliedValue: next, parameterValue: next },
+      );
+      return {
+        stepEvents,
+        sequences: updateCurrentSequenceEvents(state, stepEvents),
+        ...recordUndo(state, "PARAM VALUE", `param-value:${event.id}`),
+      };
+    }),
+  // Direct setter for typed input. Range comes from the event's applied parameter type.
+  setSelectedEventAppliedValue: (value) =>
+    set((state) => {
+      const event = state.stepEvents[state.selectedEventIndex];
+      if (!event || !event.appliedParameter) return state;
+      const range = appliedValueRange(event.appliedParameter);
+      const next = clamp(Math.round(value), range.min, range.max);
       const stepEvents = state.stepEvents.map((item, index) =>
         index !== state.selectedEventIndex ? item : { ...item, appliedValue: next, parameterValue: next },
       );
@@ -3954,6 +4105,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveSettingsCategory: (activeSettingsCategoryId) =>
     set({ activeSettingsCategoryId, selectedSettingIndex: 0 }),
   selectSetting: (selectedSettingIndex) => set({ selectedSettingIndex }),
+  // Direct setter used by typed input (EditableNumber) on numeric settings.
+  // Clamps to setting's metadata min/max; runs same side effects as adjustSelectedSetting.
+  setSelectedSetting: (value) =>
+    set((state) => {
+      const category = state.settingsCategories.find((item) => item.id === state.activeSettingsCategoryId);
+      const setting = category?.settings[state.selectedSettingIndex];
+      if (!setting || setting.kind !== "numeric") return state;
+      const min = setting.min ?? value;
+      const max = setting.max ?? value;
+      const nextValue = clamp(value, min, max);
+      if (setting.key === "masterVolume") samplerEngine.setMasterVolume(nextValue);
+      return {
+        ...metronomeSettingPatch(setting.key, nextValue),
+        settingsValues: {
+          ...state.settingsValues,
+          [setting.key]: nextValue,
+        },
+      };
+    }),
   adjustSelectedSetting: (delta) =>
     set((state) => {
       const category = state.settingsCategories.find((item) => item.id === state.activeSettingsCategoryId);

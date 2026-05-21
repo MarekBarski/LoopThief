@@ -1,6 +1,7 @@
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { EditableNumber } from "../components/EditableNumber";
 
 const softButtons = ["F1 MIDI", "F2 AUDIO", "F3 SYNC", "F4 CLICK", "F5 SYSTEM", "F6 SAVE"];
 
@@ -12,6 +13,7 @@ export function SettingsScreen() {
   const setActiveSettingsCategory = useAppStore((state) => state.setActiveSettingsCategory);
   const selectSetting = useAppStore((state) => state.selectSetting);
   const adjustSelectedSetting = useAppStore((state) => state.adjustSelectedSetting);
+  const setSelectedSetting = useAppStore((state) => state.setSelectedSetting);
   const toggleSelectedSetting = useAppStore((state) => state.toggleSelectedSetting);
 
   const activeCategory = categories.find((category) => category.id === activeCategoryId) ?? categories[0];
@@ -85,8 +87,19 @@ export function SettingsScreen() {
                 <button type="button" onClick={() => adjustSelectedSetting(-1)} className="px-1 text-[#eef6d8]">
                   -
                 </button>
-                <span className="min-w-[72px] text-center text-[#eef6d8]">
-                  {formatSettingValue(selectedValue, selectedSetting.key)}
+                <span className="min-w-[72px] text-center">
+                  {selectedSetting.kind === "numeric" && typeof selectedValue === "number" ? (
+                    <EditableNumber
+                      value={selectedValue}
+                      format={(n) => formatSettingValue(n, selectedSetting.key)}
+                      min={selectedSetting.min}
+                      max={selectedSetting.max}
+                      onCommit={(v) => setSelectedSetting(Math.round(v))}
+                      ariaLabel={selectedSetting.label}
+                    />
+                  ) : (
+                    <span className="text-[#eef6d8]">{formatSettingValue(selectedValue, selectedSetting.key)}</span>
+                  )}
                 </span>
                 <button type="button" onClick={() => adjustSelectedSetting(1)} className="px-1 text-[#eef6d8]">
                   +

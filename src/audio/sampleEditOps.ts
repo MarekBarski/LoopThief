@@ -298,12 +298,21 @@ export function applyOp(
       } else {
         ratio = (params.stretchRatio ?? 100) / 100;
       }
+      // MPC2000XL / MPC5000 canonical range: 50–200% → ratio 0.5..2.0.
+      ratio = Math.max(0.5, Math.min(2.0, ratio));
       return timeStretch(ctx, input, ratio);
     }
-    case "PITCH_SHIFT":
-      return pitchShift(ctx, input, params.semitones ?? 0, params.cents ?? 0);
-    case "WARP":
-      return warp(ctx, input, params.warpSpeed ?? 100);
+    case "PITCH_SHIFT": {
+      // MPC canonical range: ±12 semitones, ±100 cents.
+      const semitones = Math.max(-12, Math.min(12, params.semitones ?? 0));
+      const cents = Math.max(-100, Math.min(100, params.cents ?? 0));
+      return pitchShift(ctx, input, semitones, cents);
+    }
+    case "WARP": {
+      // MPC canonical range: 50–200%.
+      const speed = Math.max(50, Math.min(200, params.warpSpeed ?? 100));
+      return warp(ctx, input, speed);
+    }
     case "REVERSE":
       return reverse(ctx, input);
     case "NORMALIZE":

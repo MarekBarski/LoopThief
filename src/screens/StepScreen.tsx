@@ -3,6 +3,7 @@ import { isPadAssigned, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { useHoldRepeat } from "../components/useHoldRepeat";
+import { EditableNumber } from "../components/EditableNumber";
 
 const noop = () => {};
 
@@ -24,6 +25,7 @@ export function StepScreen() {
   const padBank = useAppStore((state) => state.padBank);
   const setEventEditMode = useAppStore((state) => state.setEventEditMode);
   const adjustSelectedEvent = useAppStore((state) => state.adjustSelectedEvent);
+  const setSelectedEvent = useAppStore((state) => state.setSelectedEvent);
   const selectStepEvent = useAppStore((state) => state.selectStepEvent);
   const cycleStepTrack = useAppStore((state) => state.cycleStepTrack);
   const previousStepEvent = useAppStore((state) => state.previousStepEvent);
@@ -41,6 +43,7 @@ export function StepScreen() {
   const addEventArmed = useAppStore((state) => state.addEventArmed);
   const cycleSelectedEventAppliedParameter = useAppStore((state) => state.cycleSelectedEventAppliedParameter);
   const adjustSelectedEventAppliedValue = useAppStore((state) => state.adjustSelectedEventAppliedValue);
+  const setSelectedEventAppliedValue = useAppStore((state) => state.setSelectedEventAppliedValue);
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const sequences = useAppStore((state) => state.sequences);
   const currentSequence = useAppStore((state) => state.currentSequence);
@@ -178,6 +181,12 @@ export function StepScreen() {
               value={selectedEvent ? String(selectedEvent.velocity) : "---"}
               onPrevious={selectedEvent ? () => { setEventEditMode("VELOCITY"); adjustSelectedEvent("velocity", -1); } : undefined}
               onNext={selectedEvent ? () => { setEventEditMode("VELOCITY"); adjustSelectedEvent("velocity", 1); } : undefined}
+              editable={selectedEvent ? {
+                numericValue: selectedEvent.velocity,
+                min: 1,
+                max: 127,
+                onCommit: (v) => { setEventEditMode("VELOCITY"); setSelectedEvent("velocity", v); },
+              } : undefined}
             />
             <EditableValue
               active={eventEditMode === "OFFSET"}
@@ -185,6 +194,13 @@ export function StepScreen() {
               value={selectedEvent ? formatSigned(selectedEvent.timingOffset) : "---"}
               onPrevious={selectedEvent ? () => { setEventEditMode("OFFSET"); adjustSelectedEvent("timingOffset", -1); } : undefined}
               onNext={selectedEvent ? () => { setEventEditMode("OFFSET"); adjustSelectedEvent("timingOffset", 1); } : undefined}
+              editable={selectedEvent ? {
+                numericValue: selectedEvent.timingOffset,
+                min: -24,
+                max: 24,
+                allowNegative: true,
+                onCommit: (v) => { setEventEditMode("OFFSET"); setSelectedEvent("timingOffset", v); },
+              } : undefined}
             />
             <EditableValue
               active={eventEditMode === "DURATION"}
@@ -192,6 +208,12 @@ export function StepScreen() {
               value={selectedEvent ? (selectedEvent.duration === 0 ? "FULL" : String(selectedEvent.duration)) : "---"}
               onPrevious={selectedEvent ? () => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", -1); } : undefined}
               onNext={selectedEvent ? () => { setEventEditMode("DURATION"); adjustSelectedEvent("duration", 1); } : undefined}
+              editable={selectedEvent ? {
+                numericValue: selectedEvent.duration,
+                min: 0,
+                max: 96,
+                onCommit: (v) => { setEventEditMode("DURATION"); setSelectedEvent("duration", v); },
+              } : undefined}
             />
             <EditableValue
               active={eventEditMode === "PROBABILITY"}
@@ -199,6 +221,13 @@ export function StepScreen() {
               value={selectedEvent ? `${selectedEvent.probability}%` : "---"}
               onPrevious={selectedEvent ? () => { setEventEditMode("PROBABILITY"); adjustSelectedEvent("probability", -5); } : undefined}
               onNext={selectedEvent ? () => { setEventEditMode("PROBABILITY"); adjustSelectedEvent("probability", 5); } : undefined}
+              editable={selectedEvent ? {
+                numericValue: selectedEvent.probability,
+                format: (n) => `${n}%`,
+                min: 0,
+                max: 100,
+                onCommit: (v) => { setEventEditMode("PROBABILITY"); setSelectedEvent("probability", v); },
+              } : undefined}
             />
             <EditableValue
               label="PARAM TYPE"
@@ -211,6 +240,23 @@ export function StepScreen() {
               value={formatParamValue(selectedEvent)}
               onPrevious={selectedEvent?.appliedParameter ? () => adjustSelectedEventAppliedValue(-1) : undefined}
               onNext={selectedEvent?.appliedParameter ? () => adjustSelectedEventAppliedValue(1) : undefined}
+              editable={selectedEvent?.appliedParameter ? (() => {
+                const current = selectedEvent.parameterValue ?? selectedEvent.appliedValue ?? 0;
+                // Range per applied parameter type:
+                //   VELOCITY 1-127, TUNE -12..12, FILTER 0-127, ATTACK/DECAY 0-100.
+                const p = selectedEvent.appliedParameter;
+                const range = p === "VELOCITY" ? { min: 1, max: 127, neg: false }
+                  : p === "TUNE" ? { min: -12, max: 12, neg: true }
+                  : p === "FILTER" ? { min: 0, max: 127, neg: false }
+                  : { min: 0, max: 100, neg: false };
+                return {
+                  numericValue: current,
+                  min: range.min,
+                  max: range.max,
+                  allowNegative: range.neg,
+                  onCommit: (v: number) => setSelectedEventAppliedValue(v),
+                };
+              })() : undefined}
             />
           </section>
 
@@ -282,12 +328,22 @@ function EditableValue({
   active = false,
   onPrevious,
   onNext,
+  editable,
 }: {
   label: string;
   value: string;
   active?: boolean;
   onPrevious?: () => void;
   onNext?: () => void;
+  editable?: {
+    numericValue: number;
+    format?: (n: number) => string;
+    min?: number;
+    max?: number;
+    allowDecimal?: boolean;
+    allowNegative?: boolean;
+    onCommit: (newValue: number) => void;
+  };
 }) {
   const prevHold = useHoldRepeat(onPrevious ?? noop);
   const nextHold = useHoldRepeat(onNext ?? noop);
@@ -298,7 +354,20 @@ function EditableValue({
         <button type="button" {...prevHold} disabled={!onPrevious} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
           &lt;
         </button>
-        <span className="text-center">{value}</span>
+        {editable ? (
+          <EditableNumber
+            value={editable.numericValue}
+            format={editable.format}
+            min={editable.min}
+            max={editable.max}
+            allowDecimal={editable.allowDecimal}
+            allowNegative={editable.allowNegative}
+            onCommit={editable.onCommit}
+            ariaLabel={label}
+          />
+        ) : (
+          <span className="text-center">{value}</span>
+        )}
         <button type="button" {...nextHold} disabled={!onNext} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7] disabled:opacity-40">
           &gt;
         </button>

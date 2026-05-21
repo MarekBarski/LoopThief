@@ -1,7 +1,8 @@
-import { useState } from "react";
 import { ScreenFrame } from "./ScreenFrame";
 import { useAppStore } from "../store/useAppStore";
 import { useHoldRepeat } from "../components/useHoldRepeat";
+import { EditableNumber } from "../components/EditableNumber";
+import { EditableText } from "../components/EditableText";
 
 const softButtons = ["F1 TC", "F2 SEQ", "F3 TRACK", "F4 PROGRAM", "F5 SONG", "F6 WINDOW"] as const;
 
@@ -31,9 +32,12 @@ export function MainScreen() {
   const previousProgram = useAppStore((state) => state.previousProgram);
   const nextProgram = useAppStore((state) => state.nextProgram);
   const adjustSequenceLengthBars = useAppStore((state) => state.adjustSequenceLengthBars);
+  const setSequenceLengthBars = useAppStore((state) => state.setSequenceLengthBars);
   const cycleTimeSignature = useAppStore((state) => state.cycleTimeSignature);
   const adjustBpm = useAppStore((state) => state.adjustBpm);
+  const setBpm = useAppStore((state) => state.setBpm);
   const adjustSwing = useAppStore((state) => state.adjustSwing);
+  const setSwing = useAppStore((state) => state.setSwing);
   const cycleTimingCorrect = useAppStore((state) => state.cycleTimingCorrect);
   const setCurrentSequenceName = useAppStore((state) => state.setCurrentSequenceName);
   const setCurrentTrackName = useAppStore((state) => state.setCurrentTrackName);
@@ -74,10 +78,46 @@ export function MainScreen() {
             </div>
 
             <div className="grid grid-cols-2 gap-x-[5%] gap-y-[8px]">
-              <ValueRow label="BARS" value={String(sequenceLengthBars).padStart(3, "0")} onPrevious={() => adjustSequenceLengthBars(-1)} onNext={() => adjustSequenceLengthBars(1)} />
+              <ValueRow
+                label="BARS"
+                value={String(sequenceLengthBars).padStart(3, "0")}
+                onPrevious={() => adjustSequenceLengthBars(-1)}
+                onNext={() => adjustSequenceLengthBars(1)}
+                editable={{
+                  numericValue: sequenceLengthBars,
+                  format: (n) => String(n).padStart(3, "0"),
+                  min: 1,
+                  max: 999,
+                  onCommit: setSequenceLengthBars,
+                }}
+              />
               <ValueRow label="TIME SIG" value={timeSignature} onPrevious={() => cycleTimeSignature(-1)} onNext={() => cycleTimeSignature(1)} />
-              <ValueRow label="BPM" value={bpm.toFixed(1)} onPrevious={() => adjustBpm(-1)} onNext={() => adjustBpm(1)} />
-              <ValueRow label="SWING" value={String(swing)} onPrevious={() => adjustSwing(-1)} onNext={() => adjustSwing(1)} />
+              <ValueRow
+                label="BPM"
+                value={bpm.toFixed(1)}
+                onPrevious={() => adjustBpm(-1)}
+                onNext={() => adjustBpm(1)}
+                editable={{
+                  numericValue: bpm,
+                  format: (n) => n.toFixed(1),
+                  min: 30,
+                  max: 300,
+                  allowDecimal: true,
+                  onCommit: setBpm,
+                }}
+              />
+              <ValueRow
+                label="SWING"
+                value={String(swing)}
+                onPrevious={() => adjustSwing(-1)}
+                onNext={() => adjustSwing(1)}
+                editable={{
+                  numericValue: swing,
+                  min: 50,
+                  max: 75,
+                  onCommit: setSwing,
+                }}
+              />
               <ValueRow label="TC" value={timingCorrect} onPrevious={cycleTimingCorrect} onNext={cycleTimingCorrect} />
             </div>
             {timeSignature !== "4/4" && (
@@ -130,16 +170,43 @@ function ValueRow({
   value,
   onPrevious,
   onNext,
+  editable,
 }: {
   label: string;
   value: string;
   onPrevious: () => void;
   onNext: () => void;
+  editable?: {
+    numericValue: number;
+    format?: (n: number) => string;
+    min?: number;
+    max?: number;
+    allowDecimal?: boolean;
+    allowNegative?: boolean;
+    onCommit: (newValue: number) => void;
+  };
 }) {
   return (
     <div className="grid grid-cols-[auto_1fr] items-center gap-[8px] text-[clamp(9px,0.72vw,12px)] tracking-[0.14em]">
       <span className="text-[#91a477]">{label}</span>
-      <BracketValue value={value} onPrevious={onPrevious} onNext={onNext} />
+      {editable ? (
+        <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
+          <StepButton label="<" onClick={onPrevious} />
+          <EditableNumber
+            value={editable.numericValue}
+            format={editable.format}
+            min={editable.min}
+            max={editable.max}
+            allowDecimal={editable.allowDecimal}
+            allowNegative={editable.allowNegative}
+            onCommit={editable.onCommit}
+            ariaLabel={label}
+          />
+          <StepButton label=">" onClick={onNext} />
+        </div>
+      ) : (
+        <BracketValue value={value} onPrevious={onPrevious} onNext={onNext} />
+      )}
     </div>
   );
 }
@@ -157,38 +224,20 @@ function EditableRow({
   onNext: () => void;
   onRename: (name: string) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-
-  const startEditing = () => {
-    setDraft(value);
-    setEditing(true);
-  };
-  const commit = () => {
-    onRename(draft);
-    setEditing(false);
-  };
-
   return (
     <div className="grid grid-cols-[76px_1fr] items-center gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
-      <button type="button" onClick={startEditing} className="text-left text-[#91a477]">
-        {label}
-      </button>
-      {editing ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") commit();
-            if (event.key === "Escape") setEditing(false);
-          }}
-          className="min-w-0 border border-[#70845a] bg-black/50 px-[6px] py-[3px] text-[#eef6d8] outline-none"
+      <span className="text-left text-[#91a477]">{label}</span>
+      <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
+        <StepButton label="<" onClick={onPrevious} />
+        <EditableText
+          value={value}
+          onCommit={onRename}
+          ariaLabel={label}
+          displayClassName="min-w-0 truncate text-center text-[#eef6d8]"
+          editClassName="min-w-0 border border-amber-300/70 bg-black/50 px-[6px] py-[2px] text-center text-[#eef6d8] outline-none"
         />
-      ) : (
-        <BracketValue value={value} onPrevious={onPrevious} onNext={onNext} onValueClick={startEditing} />
-      )}
+        <StepButton label=">" onClick={onNext} />
+      </div>
     </div>
   );
 }
@@ -227,7 +276,12 @@ function StatusBox({ label, value, active }: { label: string; value: string; act
 function StepButton({ label, onClick }: { label: string; onClick: () => void }) {
   const hold = useHoldRepeat(onClick);
   return (
-    <button type="button" {...hold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+    <button
+      type="button"
+      tabIndex={-1}
+      {...hold}
+      className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]"
+    >
       {label}
     </button>
   );

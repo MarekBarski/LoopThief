@@ -13,6 +13,8 @@ import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { useHoldRepeat } from "../components/useHoldRepeat";
+import { EditableNumber } from "../components/EditableNumber";
+import { EditableText } from "../components/EditableText";
 
 const zoomSteps = [1, 2, 4, 8, 16];
 type MarkerId = "sampleStart" | "sampleEnd" | "loopStart" | "loopEnd" | `slice:${number}`;
@@ -52,6 +54,7 @@ export function ChopScreen() {
   const setAutoSliceCount = useAppStore((state) => state.setAutoSliceCount);
   const enableLoopMode = useAppStore((state) => state.enableLoopMode);
   const adjustLoopBars = useAppStore((state) => state.adjustLoopBars);
+  const setLoopBars = useAppStore((state) => state.setLoopBars);
   const enterChopMode = useAppStore((state) => state.enterChopMode);
   const setWaveformZoom = useAppStore((state) => state.setWaveformZoom);
   const panWaveform = useAppStore((state) => state.panWaveform);
@@ -70,6 +73,7 @@ export function ChopScreen() {
   const discardChopEdits = useAppStore((state) => state.discardChopEdits);
   const assignCurrentSliceToSelectedPad = useAppStore((state) => state.assignCurrentSliceToSelectedPad);
   const openSampleEditWindow = useAppStore((state) => state.openSampleEditWindow);
+  const renameSelectedMemorySample = useAppStore((state) => state.renameSelectedMemorySample);
 
   const waveformRectRef = useRef<HTMLDivElement>(null);
   const baseNameInputRef = useRef<HTMLInputElement>(null);
@@ -226,11 +230,22 @@ export function ChopScreen() {
             <div className="grid gap-[4%]">
               <span className="text-[#91a477]">SAMPLE</span>
               <span className="flex items-center gap-[6px] text-[#eef6d8]">
-                <button type="button" {...prevSampleHold} className="text-[#91a477]">
+                <button type="button" tabIndex={-1} {...prevSampleHold} className="text-[#91a477]">
                   &lt;
                 </button>
-                <span className="truncate">{sample?.name ?? "NO SAMPLE"}</span>
-                <button type="button" {...nextSampleHold} className="text-[#91a477]">
+                {sample ? (
+                  <EditableText
+                    value={sample.name}
+                    onCommit={(next) => renameSelectedMemorySample(next)}
+                    uppercase
+                    ariaLabel="SAMPLE NAME"
+                    displayClassName="min-w-0 truncate text-[#eef6d8]"
+                    editClassName="min-w-0 border border-amber-300/70 bg-black/50 px-[6px] py-[2px] text-[#eef6d8] outline-none"
+                  />
+                ) : (
+                  <span className="truncate">NO SAMPLE</span>
+                )}
+                <button type="button" tabIndex={-1} {...nextSampleHold} className="text-[#91a477]">
                   &gt;
                 </button>
               </span>
@@ -360,7 +375,16 @@ export function ChopScreen() {
                   label="LOOP"
                   value={`${formatPercent(originalToActivePosition(loopStart, activeStart, activeLength))} → ${formatPercent(originalToActivePosition(loopEnd, activeStart, activeLength))}`}
                 />
-                <Info label="LOOP BARS" value={String(loopBars)} />
+                <div className="grid grid-cols-[1fr_auto] items-center gap-[6px]">
+                  <span className="text-[#91a477]">LOOP BARS</span>
+                  <EditableNumber
+                    value={loopBars}
+                    min={1}
+                    max={16}
+                    onCommit={(v) => setLoopBars(Math.round(v))}
+                    ariaLabel="LOOP BARS"
+                  />
+                </div>
                 <Info label="LOOP BPM EST" value={bpmEstimate ? bpmEstimate.toFixed(2) : "--.--"} />
               </>
             )}

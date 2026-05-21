@@ -2,6 +2,7 @@ import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "rea
 import { isPadVisuallyTriggered, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
+import { EditableNumber } from "../components/EditableNumber";
 
 const softButtons = ["F1 PAD MIX", "F2 BANK", "F3 MUTE", "F4 SOLO", "F5 FX SEND", "F6 OUTPUT"];
 
@@ -21,6 +22,7 @@ export function MixScreen() {
   const toggleMixerChannelSolo = useAppStore((state) => state.toggleMixerChannelSolo);
   const cycleSelectedMixerOutput = useAppStore((state) => state.cycleSelectedMixerOutput);
   const setPadFxBus = useAppStore((state) => state.setPadFxBus);
+  const setPadFxSendLevel = useAppStore((state) => state.setPadFxSendLevel);
   const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
   const anySolo = channels.some((channel) => channel.solo);
   const padBus = selectedAssignment?.fxBus ?? 0;
@@ -33,10 +35,43 @@ export function MixScreen() {
           <section className="grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] items-center gap-[10px] border border-[#46533b] bg-black/20 px-[2.2%] py-[1.4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em]">
             <span className="text-[#91a477]">BANK {padBank} / 16 PAD CHANNELS</span>
             <span>{selectedChannel.pad}</span>
-            <span>VOL {selectedChannel.level}</span>
-            <span>PAN {formatPan(selectedChannel.pan)}</span>
+            <span className="inline-flex items-center gap-[4px]">
+              <span>VOL</span>
+              <EditableNumber
+                value={selectedChannel.level}
+                min={0}
+                max={127}
+                onCommit={(v) => setMixerChannelValue(selectedChannel.pad, "level", Math.round(v))}
+                ariaLabel="VOL"
+              />
+            </span>
+            <span className="inline-flex items-center gap-[4px]">
+              <span>PAN</span>
+              <EditableNumber
+                value={selectedChannel.pan}
+                format={formatPan}
+                min={-50}
+                max={50}
+                allowNegative
+                onCommit={(v) => setMixerChannelValue(selectedChannel.pad, "pan", Math.round(v))}
+                ariaLabel="PAN"
+              />
+            </span>
             <span>FX {padBus === 0 ? "—" : `B${padBus}`}</span>
-            <span>SND {padBus === 0 ? "—" : padSendLevel}</span>
+            <span className="inline-flex items-center gap-[4px]">
+              <span>SND</span>
+              {padBus === 0 ? (
+                <span>—</span>
+              ) : (
+                <EditableNumber
+                  value={padSendLevel}
+                  min={0}
+                  max={100}
+                  onCommit={(v) => setPadFxSendLevel(selectedChannel.pad, Math.round(v))}
+                  ariaLabel="SND"
+                />
+              )}
+            </span>
             <span className={selectedChannel.solo ? "text-amber-100" : selectedChannel.muted ? "text-[#91a477]" : ""}>
               {selectedChannel.solo ? "SOLO" : selectedChannel.muted ? "MUTE" : selectedChannel.output}
             </span>
@@ -62,6 +97,7 @@ export function MixScreen() {
                   onLevel={(value) => setMixerChannelValue(channel.pad, "level", value)}
                   onPan={(value) => setMixerChannelValue(channel.pad, "pan", value)}
                   onFxBusCycle={() => setPadFxBus(channel.pad, ((bus + 1) % 5) as 0 | 1 | 2 | 3 | 4)}
+                  onSendCommit={(value) => setPadFxSendLevel(channel.pad, value)}
                   onMute={() => toggleMixerChannelMute(channel.pad)}
                   onSolo={() => toggleMixerChannelSolo(channel.pad)}
                 />
@@ -113,6 +149,7 @@ function ChannelStrip({
   onLevel,
   onPan,
   onFxBusCycle,
+  onSendCommit,
   onMute,
   onSolo,
 }: {
@@ -127,19 +164,33 @@ function ChannelStrip({
   onLevel: (value: number) => void;
   onPan: (value: number) => void;
   onFxBusCycle: () => void;
+  onSendCommit: (value: number) => void;
   onMute: () => void;
   onSolo: () => void;
 }) {
   return (
     <div
       onPointerDown={onSelect}
-      className={`grid min-h-0 grid-rows-[auto_auto_1fr_auto_auto_auto] gap-[4px] border px-[3px] py-[4px] text-center text-[clamp(7px,0.56vw,9px)] tracking-[0.08em] ${
+      className={`grid min-h-0 grid-rows-[auto_auto_1fr_auto_auto_auto_auto_auto] gap-[3px] border px-[3px] py-[4px] text-center text-[clamp(7px,0.56vw,9px)] tracking-[0.08em] ${
         selected ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
       } ${audible ? "" : "opacity-45"}`}
     >
       <span>{channel.pad.slice(1)}</span>
       <PanKnob value={channel.pan} onChange={onPan} />
       <Fader value={channel.level} onChange={onLevel} />
+      <div
+        onPointerDown={(event) => event.stopPropagation()}
+        className="grid place-items-center"
+      >
+        <EditableNumber
+          value={channel.level}
+          min={0}
+          max={127}
+          onCommit={(v) => onLevel(Math.round(v))}
+          ariaLabel="LEVEL"
+          className="w-full border-0 bg-transparent text-center text-[#eef6d8] outline-none"
+        />
+      </div>
       <button
         type="button"
         onPointerDown={(event) => event.stopPropagation()}
@@ -147,9 +198,28 @@ function ChannelStrip({
         title="Click to cycle FX bus (OF/1/2/3/4)"
         className="border border-[#46533b] bg-black/20 px-[1px]"
       >
-        {fxBus === 0 ? "OF" : `B${fxBus}:${fxSendLevel}`}
+        {fxBus === 0 ? "OF" : `B${fxBus}`}
       </button>
+      <div
+        onPointerDown={(event) => event.stopPropagation()}
+        className="grid grid-cols-[auto_1fr] items-center gap-[2px]"
+      >
+        <span className="text-[#91a477]">S</span>
+        {fxBus === 0 ? (
+          <span className="text-[#91a477]">—</span>
+        ) : (
+          <EditableNumber
+            value={fxSendLevel}
+            min={0}
+            max={100}
+            onCommit={(v) => onSendCommit(Math.round(v))}
+            ariaLabel="SEND"
+            className="w-full border-0 bg-transparent text-center text-[#eef6d8] outline-none"
+          />
+        )}
+      </div>
       <Meter active={meterActive} level={meterLevel} />
+
       <div className="grid grid-cols-2 gap-[2px]">
         <button
           type="button"

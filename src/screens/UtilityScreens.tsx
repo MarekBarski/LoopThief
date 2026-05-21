@@ -3,6 +3,7 @@ import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { useHoldRepeat } from "../components/useHoldRepeat";
+import { EditableNumber } from "../components/EditableNumber";
 import type { ReactNode } from "react";
 
 const shell = (children: ReactNode, softkeys: Softkey[], onExit?: () => void) => (
@@ -178,18 +179,72 @@ function PanelRow({ label, value, onClick, highlighted = false }: { label: strin
   return <div>{content}</div>;
 }
 
-function ArrowRow({ label, value, onPrev, onNext, highlighted = false }: { label: string; value: string; onPrev: () => void; onNext: () => void; highlighted?: boolean }) {
+function StatusRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid content-start gap-[2px]">
+      <p className="text-[#91a477]">{label}</p>
+      <p className="text-center text-[#eef6d8]">{value}</p>
+    </div>
+  );
+}
+
+function ArrowRow({
+  label,
+  value,
+  onPrev,
+  onNext,
+  highlighted = false,
+  editable,
+}: {
+  label: string;
+  value: string;
+  onPrev: () => void;
+  onNext: () => void;
+  highlighted?: boolean;
+  editable?: {
+    numericValue: number;
+    format?: (n: number) => string;
+    min?: number;
+    max?: number;
+    allowDecimal?: boolean;
+    allowNegative?: boolean;
+    onCommit: (newValue: number) => void;
+  };
+}) {
   const prevHold = useHoldRepeat(onPrev);
   const nextHold = useHoldRepeat(onNext);
   return (
     <div className="grid content-start gap-[2px]">
       <p className="text-[#91a477]">{label}</p>
       <div className="grid grid-cols-[22px_1fr_22px] items-center gap-[4px]">
-        <button type="button" {...prevHold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+        <button
+          type="button"
+          tabIndex={-1}
+          {...prevHold}
+          className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]"
+        >
           &lt;
         </button>
-        <span className={`text-center ${highlighted ? "text-amber-200" : ""}`}>{value}</span>
-        <button type="button" {...nextHold} className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]">
+        {editable ? (
+          <EditableNumber
+            value={editable.numericValue}
+            format={editable.format}
+            min={editable.min}
+            max={editable.max}
+            allowDecimal={editable.allowDecimal}
+            allowNegative={editable.allowNegative}
+            onCommit={editable.onCommit}
+            ariaLabel={label}
+          />
+        ) : (
+          <span className={`text-center ${highlighted ? "text-amber-200" : ""}`}>{value}</span>
+        )}
+        <button
+          type="button"
+          tabIndex={-1}
+          {...nextHold}
+          className="border border-[#46533b] bg-black/30 text-center text-[#d8e3b7]"
+        >
           &gt;
         </button>
       </div>
@@ -311,7 +366,9 @@ export function NoteRepeatUtilityScreen() {
   const cycleNoteRepeatRate = useAppStore((s) => s.cycleNoteRepeatRate);
   const cycleNoteRepeatRateBack = useAppStore((s) => s.cycleNoteRepeatRateBack);
   const adjustNoteRepeatGate = useAppStore((s) => s.adjustNoteRepeatGate);
+  const setNoteRepeatGate = useAppStore((s) => s.setNoteRepeatGate);
   const adjustSwing = useAppStore((s) => s.adjustSwing);
+  const setSwing = useAppStore((s) => s.setSwing);
   const toggleTripletMode = useAppStore((s) => s.toggleTripletMode);
   const cycleNoteRepeatVelocityMode = useAppStore((s) => s.cycleNoteRepeatVelocityMode);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
@@ -320,8 +377,31 @@ export function NoteRepeatUtilityScreen() {
       {shell(
         <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
           <ArrowRow label="RATE" value={timingCorrect === "OFF" ? "1/16" : timingCorrect} onPrev={cycleNoteRepeatRateBack} onNext={cycleNoteRepeatRate} />
-          <ArrowRow label="GATE" value={`${noteRepeatGate}%`} onPrev={() => adjustNoteRepeatGate(-1)} onNext={() => adjustNoteRepeatGate(1)} />
-          <ArrowRow label="SWING" value={`${swing}%`} onPrev={() => adjustSwing(-1)} onNext={() => adjustSwing(1)} />
+          <ArrowRow
+            label="GATE"
+            value={`${noteRepeatGate}%`}
+            onPrev={() => adjustNoteRepeatGate(-1)}
+            onNext={() => adjustNoteRepeatGate(1)}
+            editable={{
+              numericValue: noteRepeatGate,
+              format: (n) => `${n}`,
+              min: 1,
+              max: 100,
+              onCommit: setNoteRepeatGate,
+            }}
+          />
+          <ArrowRow
+            label="SWING"
+            value={`${swing}%`}
+            onPrev={() => adjustSwing(-1)}
+            onNext={() => adjustSwing(1)}
+            editable={{
+              numericValue: swing,
+              min: 50,
+              max: 75,
+              onCommit: setSwing,
+            }}
+          />
           <ArrowRow label="TRIPLET" value={tripletMode ? "ON" : "OFF"} onPrev={toggleTripletMode} onNext={toggleTripletMode} />
           <ArrowRow label="VELOCITY MODE" value={noteRepeatVelocityMode} onPrev={cycleNoteRepeatVelocityMode} onNext={cycleNoteRepeatVelocityMode} />
         </section>,
@@ -393,6 +473,8 @@ export function CountInUtilityScreen() {
   const toggleMetronomeDuringRecord = useAppStore((s) => s.toggleMetronomeDuringRecord);
   const adjustMetronomeCountInBars = useAppStore((s) => s.adjustMetronomeCountInBars);
   const adjustMetronomeVolume = useAppStore((s) => s.adjustMetronomeVolume);
+  const setMetronomeCountInBars = useAppStore((s) => s.setMetronomeCountInBars);
+  const setMetronomeVolume = useAppStore((s) => s.setMetronomeVolume);
   const toggleTimingCorrectionCount = useAppStore((s) => s.toggleTimingCorrectionCount);
   const setActiveScreen = useAppStore((s) => s.setActiveScreen);
 
@@ -406,16 +488,37 @@ export function CountInUtilityScreen() {
     <ScreenFrame title="COUNT IN / METRONOME" subtitle="Transport utility">
       {shell(
         <div className="grid h-full grid-cols-[1fr_0.62fr] gap-[2.3%]">
-          <Panel
-            rows={[
-              ["METRONOME", metronomeEnabled ? "ON" : "OFF"],
-              ["DURING REC", metronomeDuringRecord ? "ON" : "OFF"],
-              ["COUNT BARS", String(metronomeCountInBars)],
-              ["CLICK VOL", String(metronomeVolume)],
-              ["TC COUNT", timingCorrectionCountEnabled ? "ON" : "OFF"],
-              ["WAIT PAD COMPAT", waitPadCompatEnabled ? "ON" : "OFF"],
-            ]}
-          />
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <p className="text-[#91a477]">SETTINGS</p>
+            <StatusRow label="METRONOME" value={metronomeEnabled ? "ON" : "OFF"} />
+            <StatusRow label="DURING REC" value={metronomeDuringRecord ? "ON" : "OFF"} />
+            <ArrowRow
+              label="COUNT BARS"
+              value={String(metronomeCountInBars)}
+              onPrev={() => adjustMetronomeCountInBars(-1)}
+              onNext={() => adjustMetronomeCountInBars(1)}
+              editable={{
+                numericValue: metronomeCountInBars,
+                min: 0,
+                max: 8,
+                onCommit: (v) => setMetronomeCountInBars(Math.round(v)),
+              }}
+            />
+            <ArrowRow
+              label="CLICK VOL"
+              value={String(metronomeVolume)}
+              onPrev={() => adjustMetronomeVolume(-1)}
+              onNext={() => adjustMetronomeVolume(1)}
+              editable={{
+                numericValue: metronomeVolume,
+                min: 0,
+                max: 100,
+                onCommit: (v) => setMetronomeVolume(Math.round(v)),
+              }}
+            />
+            <StatusRow label="TC COUNT" value={timingCorrectionCountEnabled ? "ON" : "OFF"} />
+            <StatusRow label="WAIT PAD COMPAT" value={waitPadCompatEnabled ? "ON" : "OFF"} />
+          </section>
 
           <section className="grid content-start gap-[14px] border border-[#46533b] bg-black/20 p-[6%] text-[clamp(10px,0.8vw,13px)]">
             <p className="text-[#91a477]">METRONOME</p>
@@ -961,15 +1064,33 @@ export function BarEditorScreen() {
             <p className="text-amber-100 text-[clamp(13px,1vw,16px)]">{ACTION_LABELS[action]}</p>
             {action === "EDIT_TS" && (
               <>
-                <ArrowRow label="NUM" value={String(editNum)} onPrev={() => adjustNum(-1)} onNext={() => adjustNum(1)} />
+                <ArrowRow
+                  label="NUM"
+                  value={String(editNum)}
+                  onPrev={() => adjustNum(-1)}
+                  onNext={() => adjustNum(1)}
+                  editable={{ numericValue: editNum, min: 1, max: 31, onCommit: (v) => setEditNum(Math.round(v)) }}
+                />
                 <ArrowRow label="DEN" value={String(editDen)} onPrev={() => adjustDen(-1)} onNext={() => adjustDen(1)} />
                 <p className="text-[#91a477]">PREVIEW: {editNum}/{editDen}</p>
               </>
             )}
             {action === "INSERT" && (
               <>
-                <ArrowRow label="COUNT" value={String(insertCount)} onPrev={() => setInsertCount((p) => Math.max(1, p - 1))} onNext={() => setInsertCount((p) => Math.min(99, p + 1))} />
-                <ArrowRow label="NUM" value={String(editNum)} onPrev={() => adjustNum(-1)} onNext={() => adjustNum(1)} />
+                <ArrowRow
+                  label="COUNT"
+                  value={String(insertCount)}
+                  onPrev={() => setInsertCount((p) => Math.max(1, p - 1))}
+                  onNext={() => setInsertCount((p) => Math.min(99, p + 1))}
+                  editable={{ numericValue: insertCount, min: 1, max: 99, onCommit: (v) => setInsertCount(Math.round(v)) }}
+                />
+                <ArrowRow
+                  label="NUM"
+                  value={String(editNum)}
+                  onPrev={() => adjustNum(-1)}
+                  onNext={() => adjustNum(1)}
+                  editable={{ numericValue: editNum, min: 1, max: 31, onCommit: (v) => setEditNum(Math.round(v)) }}
+                />
                 <ArrowRow label="DEN" value={String(editDen)} onPrev={() => adjustDen(-1)} onNext={() => adjustDen(1)} />
                 <p className="text-[#91a477]">INSERT BEFORE BAR {String(selectedBar + 1).padStart(3, "0")}</p>
               </>
@@ -1021,6 +1142,7 @@ export function BarEditorScreen() {
                   value={String(copyCount)}
                   onPrev={() => setCopyCount((p) => Math.max(1, p - 1))}
                   onNext={() => setCopyCount((p) => Math.min(99, p + 1))}
+                  editable={{ numericValue: copyCount, min: 1, max: 99, onCommit: (v) => setCopyCount(Math.round(v)) }}
                 />
                 <p className="text-[#91a477] text-[clamp(9px,0.74vw,11px)]">
                   {copyLastBar - copyFirstBar + 1} bar(s) × {copyCount} = +{(copyLastBar - copyFirstBar + 1) * copyCount} bars
@@ -1064,75 +1186,89 @@ const FX_EFFECT_LABEL: Record<string, string> = {
   COMPRESSOR: "COMP",
 };
 
-// Per-effect parameter keys (display order) + UI step size.
-const EFFECT_PARAM_KEYS: Record<string, Array<{ key: string; label: string; step: number; format?: (v: number) => string }>> = {
+// Per-effect parameter metadata: key, display label, mouse-arrow step, optional
+// formatter, AND keyboard-typing range/decimal config (used by EditableNumber).
+// Ranges match the canonical clamps inside fxEngine.ts so the engine and UI agree.
+type FxParamSpec = {
+  key: string;
+  label: string;
+  step: number;
+  min: number;
+  max: number;
+  allowDecimal?: boolean;
+  allowNegative?: boolean;
+  format?: (v: number) => string;
+};
+
+const EFFECT_PARAM_KEYS: Record<string, FxParamSpec[]> = {
   REVERB: [
-    { key: "size", label: "SIZE", step: 1 },
-    { key: "damping", label: "DAMP", step: 1 },
-    { key: "wetDry", label: "WET/DRY", step: 1 },
-    { key: "preDelay", label: "PREDELAY", step: 1, format: (v) => `${v}ms` },
-    { key: "hpCut", label: "HP CUT", step: 50, format: (v) => `${v}Hz` },
-    { key: "lpCut", label: "LP CUT", step: 100, format: (v) => `${v}Hz` },
+    { key: "size", label: "SIZE", step: 1, min: 0, max: 100 },
+    { key: "damping", label: "DAMP", step: 1, min: 0, max: 100 },
+    { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
+    { key: "preDelay", label: "PREDELAY", step: 1, min: 0, max: 1000, format: (v) => `${v}ms` },
+    { key: "hpCut", label: "HP CUT", step: 50, min: 20, max: 20000, format: (v) => `${v}Hz` },
+    { key: "lpCut", label: "LP CUT", step: 100, min: 20, max: 20000, format: (v) => `${v}Hz` },
   ],
   DELAY: [
-    { key: "timeMs", label: "TIME", step: 10, format: (v) => `${v}ms` },
-    { key: "feedback", label: "FEEDBACK", step: 1 },
-    { key: "wetDry", label: "WET/DRY", step: 1 },
-    { key: "hpCut", label: "HP CUT", step: 50, format: (v) => `${v}Hz` },
-    { key: "lpCut", label: "LP CUT", step: 100, format: (v) => `${v}Hz` },
+    { key: "timeMs", label: "TIME", step: 10, min: 1, max: 2000, format: (v) => `${v}ms` },
+    { key: "feedback", label: "FEEDBACK", step: 1, min: 0, max: 95 },
+    { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
+    { key: "hpCut", label: "HP CUT", step: 50, min: 20, max: 20000, format: (v) => `${v}Hz` },
+    { key: "lpCut", label: "LP CUT", step: 100, min: 20, max: 20000, format: (v) => `${v}Hz` },
   ],
   EQ: [
-    { key: "lowGain", label: "LOW GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
-    { key: "lowFreq", label: "LOW FREQ", step: 10, format: (v) => `${v}Hz` },
-    { key: "lowMidGain", label: "LMID GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
-    { key: "lowMidFreq", label: "LMID FREQ", step: 50, format: (v) => `${v}Hz` },
-    { key: "highMidGain", label: "HMID GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
-    { key: "highMidFreq", label: "HMID FREQ", step: 100, format: (v) => `${v}Hz` },
-    { key: "highGain", label: "HIGH GAIN", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
-    { key: "highFreq", label: "HIGH FREQ", step: 200, format: (v) => `${v}Hz` },
+    { key: "lowGain", label: "LOW GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "lowFreq", label: "LOW FREQ", step: 10, min: 20, max: 20000, format: (v) => `${v}Hz` },
+    { key: "lowMidGain", label: "LMID GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "lowMidFreq", label: "LMID FREQ", step: 50, min: 20, max: 20000, format: (v) => `${v}Hz` },
+    { key: "highMidGain", label: "HMID GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "highMidFreq", label: "HMID FREQ", step: 100, min: 20, max: 20000, format: (v) => `${v}Hz` },
+    { key: "highGain", label: "HIGH GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "highFreq", label: "HIGH FREQ", step: 200, min: 20, max: 20000, format: (v) => `${v}Hz` },
   ],
   FLANGER: [
-    { key: "rate", label: "RATE", step: 0.1, format: (v) => `${v.toFixed(1)}Hz` },
-    { key: "depth", label: "DEPTH", step: 1 },
-    { key: "feedback", label: "FEEDBACK", step: 1 },
-    { key: "wetDry", label: "WET/DRY", step: 1 },
+    { key: "rate", label: "RATE", step: 0.1, min: 0.05, max: 10, allowDecimal: true, format: (v) => `${v.toFixed(1)}Hz` },
+    { key: "depth", label: "DEPTH", step: 1, min: 0, max: 100 },
+    { key: "feedback", label: "FEEDBACK", step: 1, min: 0, max: 95 },
+    { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
   ],
   CHORUS: [
-    { key: "rate", label: "RATE", step: 0.1, format: (v) => `${v.toFixed(1)}Hz` },
-    { key: "depth", label: "DEPTH", step: 1 },
-    { key: "mix", label: "MIX", step: 1 },
+    { key: "rate", label: "RATE", step: 0.1, min: 0.05, max: 10, allowDecimal: true, format: (v) => `${v.toFixed(1)}Hz` },
+    { key: "depth", label: "DEPTH", step: 1, min: 0, max: 100 },
+    { key: "mix", label: "MIX", step: 1, min: 0, max: 100 },
   ],
   BITCRUSHER: [
-    { key: "bits", label: "BITS", step: 1 },
-    { key: "sampleRateReduction", label: "SR REDUCE", step: 1, format: (v) => `1/${v}` },
-    { key: "wetDry", label: "WET/DRY", step: 1 },
+    { key: "bits", label: "BITS", step: 1, min: 1, max: 16 },
+    { key: "sampleRateReduction", label: "SR REDUCE", step: 1, min: 1, max: 32, format: (v) => `1/${v}` },
+    { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
   ],
   COMPRESSOR: [
-    { key: "threshold", label: "THRESHOLD", step: 1, format: (v) => `${v}dB` },
-    { key: "ratio", label: "RATIO", step: 0.5, format: (v) => `${v.toFixed(1)}:1` },
-    { key: "attack", label: "ATTACK", step: 1, format: (v) => `${v}ms` },
-    { key: "release", label: "RELEASE", step: 5, format: (v) => `${v}ms` },
-    { key: "makeupGain", label: "MAKEUP", step: 0.5, format: (v) => `${v.toFixed(1)}dB` },
+    { key: "threshold", label: "THRESHOLD", step: 1, min: -60, max: 0, allowDecimal: true, allowNegative: true, format: (v) => `${v}dB` },
+    { key: "ratio", label: "RATIO", step: 0.5, min: 1, max: 20, allowDecimal: true, format: (v) => `${v.toFixed(1)}:1` },
+    { key: "attack", label: "ATTACK", step: 1, min: 0, max: 1000, format: (v) => `${v}ms` },
+    { key: "release", label: "RELEASE", step: 5, min: 1, max: 1000, format: (v) => `${v}ms` },
+    { key: "makeupGain", label: "MAKEUP", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
   ],
 };
 
-const MASTER_EQ_PARAMS = [
-  { key: "lowGain", label: "LOW GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
-  { key: "lowFreq", label: "LOW FREQ", step: 10, format: (v: number) => `${v}Hz` },
-  { key: "lowMidGain", label: "LMID GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
-  { key: "lowMidFreq", label: "LMID FREQ", step: 50, format: (v: number) => `${v}Hz` },
-  { key: "highMidGain", label: "HMID GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
-  { key: "highMidFreq", label: "HMID FREQ", step: 100, format: (v: number) => `${v}Hz` },
-  { key: "highGain", label: "HIGH GAIN", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
-  { key: "highFreq", label: "HIGH FREQ", step: 200, format: (v: number) => `${v}Hz` },
+const MASTER_EQ_PARAMS: FxParamSpec[] = [
+  { key: "lowGain", label: "LOW GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "lowFreq", label: "LOW FREQ", step: 10, min: 20, max: 20000, format: (v: number) => `${v}Hz` },
+  { key: "lowMidGain", label: "LMID GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "lowMidFreq", label: "LMID FREQ", step: 50, min: 20, max: 20000, format: (v: number) => `${v}Hz` },
+  { key: "highMidGain", label: "HMID GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "highMidFreq", label: "HMID FREQ", step: 100, min: 20, max: 20000, format: (v: number) => `${v}Hz` },
+  { key: "highGain", label: "HIGH GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v: number) => `${v.toFixed(1)}dB` },
+  { key: "highFreq", label: "HIGH FREQ", step: 200, min: 20, max: 20000, format: (v: number) => `${v}Hz` },
 ];
 
-const MASTER_COMP_PARAMS = [
-  { key: "threshold", label: "THRESHOLD", step: 1, format: (v: number) => `${v}dB` },
-  { key: "ratio", label: "RATIO", step: 0.5, format: (v: number) => `${v.toFixed(1)}:1` },
-  { key: "attack", label: "ATTACK", step: 1, format: (v: number) => `${v}ms` },
-  { key: "release", label: "RELEASE", step: 5, format: (v: number) => `${v}ms` },
-  { key: "makeupGain", label: "MAKEUP", step: 0.5, format: (v: number) => `${v.toFixed(1)}dB` },
+// Master COMP makeupGain is positive-only (engine clamps 0..24) — distinct from bus comp makeup.
+const MASTER_COMP_PARAMS: FxParamSpec[] = [
+  { key: "threshold", label: "THRESHOLD", step: 1, min: -60, max: 0, allowDecimal: true, allowNegative: true, format: (v: number) => `${v}dB` },
+  { key: "ratio", label: "RATIO", step: 0.5, min: 1, max: 20, allowDecimal: true, format: (v: number) => `${v.toFixed(1)}:1` },
+  { key: "attack", label: "ATTACK", step: 1, min: 0, max: 1000, format: (v: number) => `${v}ms` },
+  { key: "release", label: "RELEASE", step: 5, min: 1, max: 1000, format: (v: number) => `${v}ms` },
+  { key: "makeupGain", label: "MAKEUP", step: 0.5, min: 0, max: 24, allowDecimal: true, format: (v: number) => `${v.toFixed(1)}dB` },
 ];
 
 type FxSelection =
@@ -1148,13 +1284,16 @@ export function FxScreen() {
   const setFxBusBlockEffect = useAppStore((s) => s.setFxBusBlockEffect);
   const toggleFxBusBlockBypass = useAppStore((s) => s.toggleFxBusBlockBypass);
   const adjustFxBusBlockParam = useAppStore((s) => s.adjustFxBusBlockParam);
+  const setFxBusBlockParam = useAppStore((s) => s.setFxBusBlockParam);
   const toggleFxBusDirect = useAppStore((s) => s.toggleFxBusDirect);
   const toggleFxChain = useAppStore((s) => s.toggleFxChain);
   const resetBusBlock = useAppStore((s) => s.resetBusBlock);
   const toggleMasterEqBypass = useAppStore((s) => s.toggleMasterEqBypass);
   const toggleMasterCompBypass = useAppStore((s) => s.toggleMasterCompBypass);
   const adjustMasterEqParam = useAppStore((s) => s.adjustMasterEqParam);
+  const setMasterEqParam = useAppStore((s) => s.setMasterEqParam);
   const adjustMasterCompParam = useAppStore((s) => s.adjustMasterCompParam);
+  const setMasterCompParam = useAppStore((s) => s.setMasterCompParam);
   const resetMasterEq = useAppStore((s) => s.resetMasterEq);
   const resetMasterComp = useAppStore((s) => s.resetMasterComp);
   const setActiveScreen = useAppStore((s) => s.setActiveScreen);
@@ -1352,7 +1491,8 @@ export function FxScreen() {
             <p className="text-[#91a477]">PARAMETERS</p>
             {selection.kind === "bus-block" && selectedBus && selectedBlock ? (
               selectedBlock.effect ? (
-                EFFECT_PARAM_KEYS[selectedBlock.effect].map(({ key, label, step, format }) => {
+                EFFECT_PARAM_KEYS[selectedBlock.effect].map((spec) => {
+                  const { key, label, step, min, max, allowDecimal, allowNegative, format } = spec;
                   const value = selectedBlock.params[key] ?? 0;
                   return (
                     <ArrowRow
@@ -1361,6 +1501,15 @@ export function FxScreen() {
                       value={format ? format(value) : String(value)}
                       onPrev={() => adjustFxBusBlockParam(selectedBus.id, selection.block, key, -step)}
                       onNext={() => adjustFxBusBlockParam(selectedBus.id, selection.block, key, step)}
+                      editable={{
+                        numericValue: value,
+                        format,
+                        min,
+                        max,
+                        allowDecimal,
+                        allowNegative,
+                        onCommit: (v) => setFxBusBlockParam(selectedBus.id, selection.block, key, v),
+                      }}
                     />
                   );
                 })
@@ -1368,7 +1517,8 @@ export function FxScreen() {
                 <p className="text-[#91a477]">No effect assigned. Use EFFECT &lt; &gt; in middle panel.</p>
               )
             ) : selection.kind === "master-eq" ? (
-              MASTER_EQ_PARAMS.map(({ key, label, step, format }) => {
+              MASTER_EQ_PARAMS.map((spec) => {
+                const { key, label, step, min, max, allowDecimal, allowNegative, format } = spec;
                 const value = masterFx.eq.params[key] ?? 0;
                 return (
                   <ArrowRow
@@ -1377,11 +1527,21 @@ export function FxScreen() {
                     value={format ? format(value) : String(value)}
                     onPrev={() => adjustMasterEqParam(key, -step)}
                     onNext={() => adjustMasterEqParam(key, step)}
+                    editable={{
+                      numericValue: value,
+                      format,
+                      min,
+                      max,
+                      allowDecimal,
+                      allowNegative,
+                      onCommit: (v) => setMasterEqParam(key, v),
+                    }}
                   />
                 );
               })
             ) : (
-              MASTER_COMP_PARAMS.map(({ key, label, step, format }) => {
+              MASTER_COMP_PARAMS.map((spec) => {
+                const { key, label, step, min, max, allowDecimal, allowNegative, format } = spec;
                 const value = masterFx.compressor.params[key] ?? 0;
                 return (
                   <ArrowRow
@@ -1390,6 +1550,15 @@ export function FxScreen() {
                     value={format ? format(value) : String(value)}
                     onPrev={() => adjustMasterCompParam(key, -step)}
                     onNext={() => adjustMasterCompParam(key, step)}
+                    editable={{
+                      numericValue: value,
+                      format,
+                      min,
+                      max,
+                      allowDecimal,
+                      allowNegative,
+                      onCommit: (v) => setMasterCompParam(key, v),
+                    }}
                   />
                 );
               })
@@ -1417,6 +1586,7 @@ export function FxSendWindowScreen() {
   const fxBuses = useAppStore((s) => s.fxBuses);
   const setPadFxBus = useAppStore((s) => s.setPadFxBus);
   const adjustPadFxSendLevel = useAppStore((s) => s.adjustPadFxSendLevel);
+  const setPadFxSendLevel = useAppStore((s) => s.setPadFxSendLevel);
   const closeFxSendWindow = useAppStore((s) => s.closeFxSendWindow);
 
   const assignment = padAssignments[padBank].find((a) => a.pad === selectedPad);
@@ -1459,6 +1629,12 @@ export function FxSendWindowScreen() {
               value={sendDisabled ? "---" : `${sendLevel}`}
               onPrev={() => adjustSend(-1)}
               onNext={() => adjustSend(1)}
+              editable={sendDisabled ? undefined : {
+                numericValue: sendLevel,
+                min: 0,
+                max: 100,
+                onCommit: (v) => setPadFxSendLevel(selectedPad, Math.round(v)),
+              }}
             />
             {sendDisabled && busId !== 0 ? (
               <p className="text-[#91a477] text-[clamp(9px,0.7vw,11px)]">Bus is INSERT mode — send disabled.</p>
@@ -1560,7 +1736,13 @@ export function TimeSigWindowScreen() {
         <div className="grid h-full grid-cols-[1fr_1fr] gap-[2.3%]">
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(11px,0.9vw,14px)] tracking-[0.14em]">
             <p className="text-[#91a477]">TIME SIG</p>
-            <ArrowRow label="NUM" value={String(num)} onPrev={() => cycleNum(-1)} onNext={() => cycleNum(1)} />
+            <ArrowRow
+              label="NUM"
+              value={String(num)}
+              onPrev={() => cycleNum(-1)}
+              onNext={() => cycleNum(1)}
+              editable={{ numericValue: num, min: 1, max: 31, onCommit: (v) => setNum(Math.round(v)) }}
+            />
             <ArrowRow label="DEN" value={String(den)} onPrev={() => cycleDen(-1)} onNext={() => cycleDen(1)} />
             <p className="mt-[8%] text-[#91a477]">PREVIEW</p>
             <p className="text-[#eef6d8] text-[clamp(20px,1.6vw,28px)]">{num} / {den}</p>
@@ -1722,8 +1904,9 @@ function renderOpParams(
           <ArrowRow
             label="RATIO"
             value={`${params.stretchRatio ?? 100}%`}
-            onPrev={() => setParam("stretchRatio", Math.max(25, (params.stretchRatio ?? 100) - 1))}
-            onNext={() => setParam("stretchRatio", Math.min(400, (params.stretchRatio ?? 100) + 1))}
+            onPrev={() => setParam("stretchRatio", Math.max(50, (params.stretchRatio ?? 100) - 1))}
+            onNext={() => setParam("stretchRatio", Math.min(200, (params.stretchRatio ?? 100) + 1))}
+            editable={{ numericValue: params.stretchRatio ?? 100, format: (n) => `${n}%`, min: 50, max: 200, onCommit: (v) => setParam("stretchRatio", Math.round(v)) }}
           />
         ) : (
           <>
@@ -1732,12 +1915,14 @@ function renderOpParams(
               value={`${params.originalBpm ?? 120}`}
               onPrev={() => setParam("originalBpm", Math.max(30, (params.originalBpm ?? 120) - 1))}
               onNext={() => setParam("originalBpm", Math.min(300, (params.originalBpm ?? 120) + 1))}
+              editable={{ numericValue: params.originalBpm ?? 120, min: 30, max: 300, onCommit: (v) => setParam("originalBpm", Math.round(v)) }}
             />
             <ArrowRow
               label="NEW BPM"
               value={`${params.newBpm ?? 120}`}
               onPrev={() => setParam("newBpm", Math.max(30, (params.newBpm ?? 120) - 1))}
               onNext={() => setParam("newBpm", Math.min(300, (params.newBpm ?? 120) + 1))}
+              editable={{ numericValue: params.newBpm ?? 120, min: 30, max: 300, onCommit: (v) => setParam("newBpm", Math.round(v)) }}
             />
           </>
         )}
@@ -1750,14 +1935,16 @@ function renderOpParams(
         <ArrowRow
           label="SEMITONES"
           value={String(params.semitones ?? 0)}
-          onPrev={() => setParam("semitones", Math.max(-24, (params.semitones ?? 0) - 1))}
-          onNext={() => setParam("semitones", Math.min(24, (params.semitones ?? 0) + 1))}
+          onPrev={() => setParam("semitones", Math.max(-12, (params.semitones ?? 0) - 1))}
+          onNext={() => setParam("semitones", Math.min(12, (params.semitones ?? 0) + 1))}
+          editable={{ numericValue: params.semitones ?? 0, min: -12, max: 12, allowNegative: true, onCommit: (v) => setParam("semitones", Math.round(v)) }}
         />
         <ArrowRow
           label="CENTS"
           value={String(params.cents ?? 0)}
           onPrev={() => setParam("cents", Math.max(-100, (params.cents ?? 0) - 1))}
           onNext={() => setParam("cents", Math.min(100, (params.cents ?? 0) + 1))}
+          editable={{ numericValue: params.cents ?? 0, min: -100, max: 100, allowNegative: true, onCommit: (v) => setParam("cents", Math.round(v)) }}
         />
       </>
     );
@@ -1768,8 +1955,9 @@ function renderOpParams(
         <ArrowRow
           label="SPEED"
           value={`${params.warpSpeed ?? 100}%`}
-          onPrev={() => setParam("warpSpeed", Math.max(25, (params.warpSpeed ?? 100) - 1))}
-          onNext={() => setParam("warpSpeed", Math.min(400, (params.warpSpeed ?? 100) + 1))}
+          onPrev={() => setParam("warpSpeed", Math.max(50, (params.warpSpeed ?? 100) - 1))}
+          onNext={() => setParam("warpSpeed", Math.min(200, (params.warpSpeed ?? 100) + 1))}
+          editable={{ numericValue: params.warpSpeed ?? 100, format: (n) => `${n}%`, min: 50, max: 200, onCommit: (v) => setParam("warpSpeed", Math.round(v)) }}
         />
         <p className="text-[#91a477] text-[clamp(9px,0.72vw,11px)]">Vinyl-style: changes pitch + tempo together.</p>
       </>
@@ -1785,6 +1973,7 @@ function renderOpParams(
         value={`${(params.targetDb ?? -0.3).toFixed(1)} dB`}
         onPrev={() => setParam("targetDb", Math.max(-60, (params.targetDb ?? -0.3) - 0.1))}
         onNext={() => setParam("targetDb", Math.min(0, (params.targetDb ?? -0.3) + 0.1))}
+        editable={{ numericValue: params.targetDb ?? -0.3, format: (n) => `${n.toFixed(1)} dB`, min: -60, max: 0, allowDecimal: true, allowNegative: true, onCommit: (v) => setParam("targetDb", v) }}
       />
     );
   }
@@ -1812,12 +2001,14 @@ function renderOpParams(
           value={String(bits)}
           onPrev={() => setParam("bitDepth", Math.max(1, bits - 1))}
           onNext={() => setParam("bitDepth", Math.min(16, bits + 1))}
+          editable={{ numericValue: bits, min: 1, max: 16, onCommit: (v) => setParam("bitDepth", Math.round(v)) }}
         />
         <ArrowRow
           label="SAMPLE RATE"
           value={`${rate} Hz`}
           onPrev={() => setParam("reducedSampleRate", Math.max(1000, rate - 250))}
           onNext={() => setParam("reducedSampleRate", Math.min(48000, rate + 250))}
+          editable={{ numericValue: rate, format: (n) => `${n} Hz`, min: 1000, max: 48000, onCommit: (v) => setParam("reducedSampleRate", Math.round(v)) }}
         />
       </>
     );
@@ -1831,6 +2022,7 @@ function renderOpParams(
           value={`${params.fadeMs ?? 50} ms`}
           onPrev={() => setParam("fadeMs", Math.max(1, (params.fadeMs ?? 50) - 5))}
           onNext={() => setParam("fadeMs", Math.min(10000, (params.fadeMs ?? 50) + 5))}
+          editable={{ numericValue: params.fadeMs ?? 50, format: (n) => `${n} ms`, min: 1, max: 10000, onCommit: (v) => setParam("fadeMs", Math.round(v)) }}
         />
         <ArrowRow
           label="CURVE"
