@@ -3408,14 +3408,52 @@ export const useAppStore = create<AppState>((set, get) => ({
       const retainedSamples = state.recordedSamples.filter(
         (item, index) => index === actualIndex || !item.name.startsWith(`${baseName}_S`),
       );
-      const padAssignments = createProgram
-        ? updatePadAssignmentsForProgram(state, targetBank, (pad, index) =>
-            sliceSamples[index] ? { ...pad, assignment: sliceSamples[index].name } : pad,
-          )
-        : state.padAssignments;
+
+      // Multi-bank distribution: starting from targetBank, fill into
+      // A→B→C→D in order, NO wraparound from D back to A. Banks before
+      // targetBank are never touched. Slices beyond the reachable banks
+      // (e.g. 70 slices with targetBank=A → first 64 fill A+B+C+D, slices
+      // 65-70 stay in the registry without pad assignment) are silently
+      // left in the registry — per Marek's explicit decision.
+      //
+      // The createProgram flag continues to gate WHETHER any pad-
+      // assignment writes happen at all (current semantics; not changed
+      // in this pass). When ON, distribution proceeds; when OFF, only the
+      // sample registry is updated.
+      let padAssignments = state.padAssignments;
+      if (createProgram) {
+        const bankOrder: PadBank[] = ["A", "B", "C", "D"];
+        const startIdx = Math.max(0, bankOrder.indexOf(targetBank));
+        const reachableBanks = bankOrder.slice(startIdx);
+        const maxSlots = reachableBanks.length * 16;
+        const slotCount = Math.min(sliceSamples.length, maxSlots);
+
+        // Build per-bank assignment maps first, then apply once per bank.
+        // Avoids rebuilding padAssignments inside an inner loop.
+        const perBank: Partial<Record<PadBank, Map<number, string>>> = {};
+        for (let i = 0; i < slotCount; i += 1) {
+          const bank = reachableBanks[Math.floor(i / 16)];
+          const padIdx = i % 16;
+          if (!perBank[bank]) perBank[bank] = new Map();
+          perBank[bank]!.set(padIdx, sliceSamples[i].name);
+        }
+
+        padAssignments = { ...state.padAssignments };
+        for (const bank of reachableBanks) {
+          const padMap = perBank[bank];
+          if (!padMap) continue;
+          padAssignments = {
+            ...padAssignments,
+            [bank]: padAssignments[bank].map((pad, idx) =>
+              padMap.has(idx) ? { ...pad, assignment: padMap.get(idx)! } : pad,
+            ),
+          };
+        }
+      }
+
       return {
         recordedSamples: [
-          ...retainedSamples.map((item, index) =>
+          ...retainedSamples.map((item) =>
             item.id === sample.id
               ? { ...item, editState, keptSlices: sliceSamples.map((slice) => slice.id) }
               : item,
@@ -8188,6 +8226,11 @@ async function renderSongOffline(state: AppState, opts: RenderSongOptions = {}):
   // master gain so the offline output reflects everything live playback hears.
   const offlineFx = new FxEngine();
   const fxMasterIn = offlineFx.ensureReady(ctx);
+  // Preload AudioWorklet processors (BitCrusher, more coming in FX upgrade
+  // sub-phases B/C) onto the OfflineAudioContext BEFORE configuring the FX
+  // graph from state. Without this, a bus using BITCRUSHER would silently
+  // construct as passthrough and the export would lose the effect.
+  await offlineFx.preloadWorklets(ctx);
   configureOfflineFxFromState(offlineFx, state);
 
   const master = ctx.createGain();

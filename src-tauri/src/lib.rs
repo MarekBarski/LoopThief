@@ -226,6 +226,31 @@ fn audio_restart_engine(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ===== Release-only WebView2 devtools lockdown =====
+    // Tauri's `tauri/devtools` cargo feature (now absent from Cargo.toml)
+    // controlled only the JS-side `window.open_devtools()` API. The WebView2
+    // runtime has its OWN devtools binding (F12, Ctrl+Shift+I, right-click
+    // → Inspect) that's independent of Tauri features and of the
+    // `tauri.conf.json` `devtools` field in some WebView2 versions. The
+    // only reliable way to disable them in release builds without breaking
+    // dev is to pass a launch flag to WebView2 itself via the
+    // `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` env var, which WebView2 reads
+    // BEFORE creating the browser process.
+    //
+    // `cfg(not(debug_assertions))` means this only fires in release builds
+    // (`cargo build --release` / `npm run tauri build`). Dev builds
+    // (`cargo run` / `npm run tauri dev`) skip this entirely, so F12 +
+    // right-click Inspect still work for development.
+    #[cfg(all(not(debug_assertions), target_os = "windows"))]
+    {
+        // SAFETY: called before any other thread is spawned by Tauri; the
+        // environment is single-threaded at this point.
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-features=DeveloperTools",
+        );
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

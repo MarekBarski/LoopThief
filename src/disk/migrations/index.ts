@@ -68,6 +68,97 @@ const MIGRATIONS: Migration[] = [
       return { ...m, schemaVersion: 3 };
     },
   },
+  // v3 → v4: Session 27 FX upgrade. New AudioWorklet-backed Reverb (FDN),
+  // Flanger (Hermite), Chorus (multi-voice stereo), BitCrusher (proper
+  // worklet), new Phaser effect. Delay gains tape voice (drive + tone),
+  // ping-pong mode, tempo sync. Migration fills new parameter keys with
+  // EFFECT_DEFAULTS for each effect type, maps legacy keys:
+  //   BITCRUSHER.sampleRateReduction → srReduce (same division semantic)
+  //   DELAY.lpCut                    → tone (same LP-cutoff semantic)
+  // Old keys are KEPT in the params object so re-saving an upgraded project
+  // and loading it in an older build doesn't crash — the runtime chains
+  // prefer the new key but read legacy as fallback.
+  {
+    from: 3,
+    to: 4,
+    apply: (m) => {
+      if (m.type !== "project") return { ...m, schemaVersion: 4 };
+
+      // Per-effect default fillers. Mirrors EFFECT_DEFAULTS in fxEngine.ts
+      // — duplicated here so the migration doesn't import the FX engine
+      // (which would pull AudioContext + worklet code into the loader).
+      const fillEffectParams = (effect: string | null, params: Record<string, unknown>): Record<string, unknown> => {
+        if (!effect) return params;
+        const next = { ...params };
+        const defaults: Record<string, Record<string, number>> = {
+          REVERB: {
+            size: 70, damping: 50, diffusion: 70, wetDry: 100,
+            preDelay: 20, hpCut: 100, lpCut: 8000,
+          },
+          DELAY: {
+            timeMs: 250, sync: 0, mode: 0, feedback: 30, wetDry: 30,
+            tone: 8000, drive: 0, hpCut: 100, lpCut: 8000,
+          },
+          FLANGER: { rate: 0.5, depth: 50, feedback: 30, manual: 25, wetDry: 50 },
+          CHORUS: { rate: 1, depth: 30, voices: 4, width: 50, mix: 50 },
+          BITCRUSHER: { bits: 12, srReduce: 4, drive: 0, wetDry: 100 },
+          PHASER: { rate: 0.5, depth: 70, stages: 6, feedback: 30, wetDry: 50 },
+          EQ: {
+            lowFreq: 100, lowGain: 0, lowQ: 0.7,
+            lowMidFreq: 400, lowMidGain: 0, lowMidQ: 1,
+            highMidFreq: 2000, highMidGain: 0, highMidQ: 1,
+            highFreq: 8000, highGain: 0, highQ: 0.7,
+          },
+          COMPRESSOR: {
+            threshold: -20, ratio: 4, attack: 5, release: 50, makeupGain: 0,
+          },
+        };
+        const eff = defaults[effect];
+        if (!eff) return next;
+        for (const [k, v] of Object.entries(eff)) {
+          if (next[k] === undefined) next[k] = v;
+        }
+        // Specific legacy → new key mappings (preserve legacy in params too).
+        if (effect === "BITCRUSHER" && typeof next.sampleRateReduction === "number" && next.srReduce === undefined) {
+          next.srReduce = next.sampleRateReduction;
+        }
+        if (effect === "DELAY" && typeof next.lpCut === "number" && next.tone === undefined) {
+          next.tone = next.lpCut;
+        }
+        return next;
+      };
+
+      const v3Project = m as typeof m & { fxBuses?: unknown };
+      const oldBuses = Array.isArray(v3Project.fxBuses) ? (v3Project.fxBuses as Array<Record<string, unknown>>) : [];
+      const newBuses = oldBuses.map((bus) => {
+        const blockA = (bus.blockA as Record<string, unknown>) ?? { effect: null, params: {} };
+        const blockB = (bus.blockB as Record<string, unknown>) ?? { effect: null, params: {} };
+        return {
+          ...bus,
+          blockA: {
+            ...blockA,
+            params: fillEffectParams(
+              (blockA.effect as string | null) ?? null,
+              (blockA.params as Record<string, unknown>) ?? {},
+            ),
+          },
+          blockB: {
+            ...blockB,
+            params: fillEffectParams(
+              (blockB.effect as string | null) ?? null,
+              (blockB.params as Record<string, unknown>) ?? {},
+            ),
+          },
+        };
+      });
+
+      return {
+        ...m,
+        schemaVersion: 4,
+        fxBuses: newBuses,
+      };
+    },
+  },
 ];
 
 export function applyMigrations(input: AnyManifest): AnyManifest {

@@ -1312,8 +1312,8 @@ export function BarEditorScreen() {
 // FX SCREEN — 4 FX buses + master EQ/Comp (MPC5000 routing model)
 // ============================================================================
 
-const FX_EFFECT_CYCLE: Array<null | "REVERB" | "DELAY" | "EQ" | "FLANGER" | "CHORUS" | "BITCRUSHER" | "COMPRESSOR"> = [
-  null, "REVERB", "DELAY", "EQ", "FLANGER", "CHORUS", "BITCRUSHER", "COMPRESSOR",
+const FX_EFFECT_CYCLE: Array<null | "REVERB" | "DELAY" | "EQ" | "FLANGER" | "CHORUS" | "BITCRUSHER" | "COMPRESSOR" | "PHASER"> = [
+  null, "REVERB", "DELAY", "EQ", "FLANGER", "CHORUS", "BITCRUSHER", "COMPRESSOR", "PHASER",
 ];
 
 const FX_EFFECT_LABEL: Record<string, string> = {
@@ -1323,6 +1323,7 @@ const FX_EFFECT_LABEL: Record<string, string> = {
   FLANGER: "FLANGER",
   CHORUS: "CHORUS",
   BITCRUSHER: "BITCRUSH",
+  PHASER: "PHASER",
   COMPRESSOR: "COMP",
 };
 
@@ -1338,23 +1339,50 @@ type FxParamSpec = {
   allowDecimal?: boolean;
   allowNegative?: boolean;
   format?: (v: number) => string;
+  /** When set, the param is treated as a discrete enum: PREV/NEXT cycle
+   *  through this list, typed input snaps to the nearest entry. Used for
+   *  musical division-style params (e.g. BitCrusher SR REDUCE). */
+  enumValues?: readonly number[];
 };
 
 const EFFECT_PARAM_KEYS: Record<string, FxParamSpec[]> = {
   REVERB: [
     { key: "size", label: "SIZE", step: 1, min: 0, max: 100 },
     { key: "damping", label: "DAMP", step: 1, min: 0, max: 100 },
+    { key: "diffusion", label: "DIFFUSE", step: 1, min: 0, max: 100 },
     { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
-    { key: "preDelay", label: "PREDELAY", step: 1, min: 0, max: 1000, format: (v) => `${v}ms` },
+    { key: "preDelay", label: "PREDELAY", step: 1, min: 0, max: 200, format: (v) => `${v}ms` },
     { key: "hpCut", label: "HP CUT", step: 50, min: 20, max: 20000, format: (v) => `${v}Hz` },
     { key: "lpCut", label: "LP CUT", step: 100, min: 20, max: 20000, format: (v) => `${v}Hz` },
   ],
   DELAY: [
+    {
+      key: "mode",
+      label: "MODE",
+      step: 1,
+      min: 0,
+      max: 2,
+      enumValues: [0, 1, 2] as const,
+      format: (v) => (v === 2 ? "PING-PONG" : v === 1 ? "STEREO" : "MONO"),
+    },
+    {
+      key: "sync",
+      label: "SYNC",
+      step: 1,
+      min: 0,
+      max: 6,
+      enumValues: [0, 1, 2, 3, 4, 5, 6] as const,
+      format: (v) => {
+        const labels = ["FREE", "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32"];
+        return labels[v] ?? "FREE";
+      },
+    },
     { key: "timeMs", label: "TIME", step: 10, min: 1, max: 2000, format: (v) => `${v}ms` },
     { key: "feedback", label: "FEEDBACK", step: 1, min: 0, max: 95 },
+    { key: "tone", label: "TONE", step: 200, min: 200, max: 20000, format: (v) => `${v}Hz` },
+    { key: "drive", label: "DRIVE", step: 1, min: 0, max: 100, format: (v) => `${v}%` },
     { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
     { key: "hpCut", label: "HP CUT", step: 50, min: 20, max: 20000, format: (v) => `${v}Hz` },
-    { key: "lpCut", label: "LP CUT", step: 100, min: 20, max: 20000, format: (v) => `${v}Hz` },
   ],
   EQ: [
     { key: "lowGain", label: "LOW GAIN", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
@@ -1369,17 +1397,36 @@ const EFFECT_PARAM_KEYS: Record<string, FxParamSpec[]> = {
   FLANGER: [
     { key: "rate", label: "RATE", step: 0.1, min: 0.05, max: 10, allowDecimal: true, format: (v) => `${v.toFixed(1)}Hz` },
     { key: "depth", label: "DEPTH", step: 1, min: 0, max: 100 },
-    { key: "feedback", label: "FEEDBACK", step: 1, min: 0, max: 95 },
+    { key: "manual", label: "MANUAL", step: 1, min: 0, max: 100, format: (v) => `${v}%` },
+    { key: "feedback", label: "FEEDBACK", step: 1, min: -95, max: 95, allowNegative: true },
     { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
   ],
   CHORUS: [
-    { key: "rate", label: "RATE", step: 0.1, min: 0.05, max: 10, allowDecimal: true, format: (v) => `${v.toFixed(1)}Hz` },
+    { key: "rate", label: "RATE", step: 0.1, min: 0.05, max: 5, allowDecimal: true, format: (v) => `${v.toFixed(1)}Hz` },
     { key: "depth", label: "DEPTH", step: 1, min: 0, max: 100 },
+    {
+      key: "voices",
+      label: "VOICES",
+      step: 1,
+      min: 2,
+      max: 4,
+      enumValues: [2, 3, 4] as const,
+    },
+    { key: "width", label: "WIDTH", step: 1, min: 0, max: 100 },
     { key: "mix", label: "MIX", step: 1, min: 0, max: 100 },
   ],
   BITCRUSHER: [
     { key: "bits", label: "BITS", step: 1, min: 1, max: 16 },
-    { key: "sampleRateReduction", label: "SR REDUCE", step: 1, min: 1, max: 32, format: (v) => `1/${v}` },
+    {
+      key: "srReduce",
+      label: "SR REDUCE",
+      step: 1, // unused when enumValues set; PREV/NEXT cycles the enum instead
+      min: 1,
+      max: 64,
+      enumValues: [1, 2, 4, 8, 16, 32, 64] as const,
+      format: (v) => `1/${v}`,
+    },
+    { key: "drive", label: "DRIVE", step: 1, min: 0, max: 100, format: (v) => `${v}%` },
     { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
   ],
   COMPRESSOR: [
@@ -1388,6 +1435,20 @@ const EFFECT_PARAM_KEYS: Record<string, FxParamSpec[]> = {
     { key: "attack", label: "ATTACK", step: 1, min: 0, max: 1000, format: (v) => `${v}ms` },
     { key: "release", label: "RELEASE", step: 5, min: 1, max: 1000, format: (v) => `${v}ms` },
     { key: "makeupGain", label: "MAKEUP", step: 0.5, min: -24, max: 24, allowDecimal: true, allowNegative: true, format: (v) => `${v.toFixed(1)}dB` },
+  ],
+  PHASER: [
+    { key: "rate", label: "RATE", step: 0.1, min: 0.05, max: 10, allowDecimal: true, format: (v) => `${v.toFixed(1)}Hz` },
+    { key: "depth", label: "DEPTH", step: 1, min: 0, max: 100 },
+    {
+      key: "stages",
+      label: "STAGES",
+      step: 1,
+      min: 2,
+      max: 8,
+      enumValues: [2, 4, 6, 8] as const,
+    },
+    { key: "feedback", label: "FEEDBACK", step: 1, min: 0, max: 95 },
+    { key: "wetDry", label: "WET/DRY", step: 1, min: 0, max: 100 },
   ],
 };
 
@@ -1632,15 +1693,45 @@ export function FxScreen() {
             {selection.kind === "bus-block" && selectedBus && selectedBlock ? (
               selectedBlock.effect ? (
                 EFFECT_PARAM_KEYS[selectedBlock.effect].map((spec) => {
-                  const { key, label, step, min, max, allowDecimal, allowNegative, format } = spec;
+                  const { key, label, step, min, max, allowDecimal, allowNegative, format, enumValues } = spec;
                   const value = selectedBlock.params[key] ?? 0;
+                  // Enum-mode PREV/NEXT: cycle through the discrete list
+                  // instead of nudging by step. Typed commit (if allowed)
+                  // snaps to the nearest entry.
+                  const enumCycle = (direction: 1 | -1) => {
+                    if (!enumValues) return;
+                    const idx = enumValues.indexOf(value);
+                    const len = enumValues.length;
+                    const nextIdx = idx >= 0
+                      ? (idx + direction + len) % len
+                      : direction === 1 ? 0 : len - 1;
+                    setFxBusBlockParam(selectedBus.id, selection.block, key, enumValues[nextIdx]);
+                  };
+                  const snapToEnum = (raw: number): number => {
+                    if (!enumValues) return raw;
+                    let best = enumValues[0];
+                    let bestDist = Math.abs(raw - best);
+                    for (const ev of enumValues) {
+                      const d = Math.abs(raw - ev);
+                      if (d < bestDist) { best = ev; bestDist = d; }
+                    }
+                    return best;
+                  };
                   return (
                     <ArrowRow
                       key={key}
                       label={label}
                       value={format ? format(value) : String(value)}
-                      onPrev={() => adjustFxBusBlockParam(selectedBus.id, selection.block, key, -step)}
-                      onNext={() => adjustFxBusBlockParam(selectedBus.id, selection.block, key, step)}
+                      onPrev={() =>
+                        enumValues
+                          ? enumCycle(-1)
+                          : adjustFxBusBlockParam(selectedBus.id, selection.block, key, -step)
+                      }
+                      onNext={() =>
+                        enumValues
+                          ? enumCycle(1)
+                          : adjustFxBusBlockParam(selectedBus.id, selection.block, key, step)
+                      }
                       editable={{
                         numericValue: value,
                         format,
@@ -1648,7 +1739,13 @@ export function FxScreen() {
                         max,
                         allowDecimal,
                         allowNegative,
-                        onCommit: (v) => setFxBusBlockParam(selectedBus.id, selection.block, key, v),
+                        onCommit: (v) =>
+                          setFxBusBlockParam(
+                            selectedBus.id,
+                            selection.block,
+                            key,
+                            enumValues ? snapToEnum(v) : v,
+                          ),
                       }}
                     />
                   );

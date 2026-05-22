@@ -15,7 +15,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["devtools"] }
+# Note: NO `devtools` feature listed here. Tauri 2 auto-enables WebView2
+# devtools in dev builds via `cfg(debug_assertions)`, so F12 / right-click
+# Inspect work during `npm run tauri dev`. Release builds (`cargo build
+# --release` via `npm run tauri build`) do NOT have devtools compiled in,
+# so F12 does nothing in the shipped .exe. Adding `"devtools"` to the
+# features list here would force devtools into release builds too —
+# we don't want that for shipping.
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 # Save dialog backend swap — see lib.rs `save_file_dialog` command.

@@ -1,8 +1,16 @@
 // FX engine — 4 FX buses + master EQ/Compressor, MPC5000 routing model.
 //
-// Phase 1a scope: full bus + master graph skeleton, Reverb effect implemented.
-// Other 6 effect types (DELAY/EQ/FLANGER/CHORUS/BITCRUSHER/COMPRESSOR) accept
-// state but currently route as passthrough — they will be implemented in Phase 1b.
+// Phase 1 + 2 history: full bus + master graph, all 7 effects implemented.
+// Session 27 FX upgrade (sub-phase A onwards) — moving DSP-heavy effects
+// onto AudioWorklet processors for quality. Tracked per effect:
+//   - REVERB     — to be upgraded (FDN worklet)            [sub-phase B]
+//   - DELAY      — to be upgraded (tape sat + ping-pong)   [sub-phase C]
+//   - EQ         — unchanged (Biquad chain is fine)
+//   - FLANGER    — to be upgraded (Hermite worklet)        [sub-phase B]
+//   - CHORUS     — to be upgraded (multi-voice worklet)    [sub-phase B]
+//   - BITCRUSHER — UPGRADED to AudioWorklet                [sub-phase A]
+//   - COMPRESSOR — explicitly unchanged (Marek decision)
+//   - PHASER     — NEW, AudioWorklet                       [sub-phase C]
 //
 // Routing rules (per MPC5000):
 //   - DIRECT ON  (default) = SEND mode: voice dry + voice × sendLevel through bus
@@ -14,6 +22,19 @@
 // already-playing voices (because the bus effect node is shared across voices),
 // but direct/sendLevel changes only affect future voices.
 
+import { ensureWorklet, isWorkletLoaded } from "./worklets/registry";
+
+// AudioWorklet processor sources live in `public/worklets/`. Vite copies the
+// public/ tree to dist root unmodified — files keep their literal paths so
+// `audioWorklet.addModule(<absolute URL>)` works in dev, build, and Tauri
+// (which serves dist/ as the webview root). `?url` import in src/ would
+// inline small files as data URLs which the worklet API can't load.
+const bitcrusherWorkletUrl = "/worklets/bitcrusher.worklet.js";
+const fdnReverbWorkletUrl = "/worklets/fdn-reverb.worklet.js";
+const hermiteFlangerWorkletUrl = "/worklets/hermite-flanger.worklet.js";
+const multiChorusWorkletUrl = "/worklets/multi-chorus.worklet.js";
+const phaserWorkletUrl = "/worklets/phaser.worklet.js";
+
 export type BusId = 1 | 2 | 3 | 4;
 
 export type EffectType =
@@ -23,7 +44,8 @@ export type EffectType =
   | "FLANGER"
   | "CHORUS"
   | "BITCRUSHER"
-  | "COMPRESSOR";
+  | "COMPRESSOR"
+  | "PHASER";
 
 export type EffectParamMap = Record<string, number>;
 
@@ -31,19 +53,24 @@ export type EffectParamMap = Record<string, number>;
 // Param values are in MPC-style 0..100 unless physical units are required (Hz, ms, dB, ratio).
 export const EFFECT_DEFAULTS: Record<EffectType, EffectParamMap> = {
   REVERB: {
-    size: 70,        // 0..100  → IR duration 0.1..3.5s
-    damping: 50,     // 0..100  → wet-path lowpass aggressiveness
-    wetDry: 100,     // 0..100  → 100 = wet-only (typical SEND); reduce for INSERT mix
+    size: 70,        // 0..100  → FDN delay-line length scale
+    damping: 50,     // 0..100  → per-line one-pole LP cutoff aggressiveness
+    diffusion: 70,   // 0..100  → 4-stage allpass coefficient (smooths early refs)
+    wetDry: 100,     // 0..100  → dry/wet crossfade
     preDelay: 20,    // 0..200 ms
     hpCut: 100,      // 20..2000 Hz HP on wet path
     lpCut: 8000,     // 2000..20000 Hz LP on wet path
   },
   DELAY: {
-    timeMs: 250,     // 1..2000 ms
+    timeMs: 250,     // 1..2000 ms (used in FREE mode)
+    sync: 0,         // 0 = FREE; 1..6 = musical divisions (UI enum)
+    mode: 0,         // 0 = MONO, 1 = STEREO, 2 = PING-PONG
     feedback: 30,    // 0..95
     wetDry: 30,      // 0..100
-    hpCut: 100,
-    lpCut: 8000,
+    tone: 8000,      // 200..20000 Hz LP cutoff inside feedback loop (tape voice)
+    drive: 0,        // 0..100  → tanh-saturation in feedback loop
+    hpCut: 100,      // legacy, kept for back-compat with old saves
+    lpCut: 8000,     // legacy, equivalent to `tone` post-migration
   },
   EQ: {
     lowFreq: 100, lowGain: 0, lowQ: 0.7,
@@ -54,17 +81,30 @@ export const EFFECT_DEFAULTS: Record<EffectType, EffectParamMap> = {
   FLANGER: {
     rate: 0.5,       // Hz
     depth: 50,       // 0..100
-    feedback: 30,    // 0..95
+    feedback: 30,    // -95..95 (signed; UI shows 0..95 + invert toggle? for now positive only)
+    manual: 25,      // 0..100 → center delay 0.5..20 ms
     wetDry: 50,
   },
   CHORUS: {
     rate: 1,         // Hz
     depth: 30,       // 0..100
+    voices: 4,       // 2 / 3 / 4 (UI enum)
+    width: 50,       // 0..100 → stereo spread
     mix: 50,         // 0..100
   },
   BITCRUSHER: {
-    bits: 8,         // 1..16
-    sampleRateReduction: 4,  // 1..32 — keep every Nth sample
+    // Musical UI / precise internal:
+    //   bits      — quantizer precision (1..16)
+    //   srReduce  — division of context sample rate (UI enum 1, 2, 4, 8, 16,
+    //               32, 64). Worklet receives ctx.sampleRate / srReduce as
+    //               its sampleRateHz AudioParam. SP-1200 was exactly 26040
+    //               Hz; with division math at 48 kHz the closest is 1/2
+    //               (24 kHz). Acceptable tradeoff for rate-agnostic UI.
+    //   drive     — 0..100 % gain into the quantizer (extra grit)
+    //   wetDry    — 0..100 % crossfade
+    bits: 12,
+    srReduce: 4,
+    drive: 0,
     wetDry: 100,
   },
   COMPRESSOR: {
@@ -73,6 +113,13 @@ export const EFFECT_DEFAULTS: Record<EffectType, EffectParamMap> = {
     attack: 5,       // ms
     release: 50,     // ms
     makeupGain: 0,   // dB
+  },
+  PHASER: {
+    rate: 0.5,       // Hz
+    depth: 70,       // 0..100 → sweep range scale
+    stages: 6,       // 2 / 4 / 6 / 8 (UI enum)
+    feedback: 30,    // 0..95
+    wetDry: 50,
   },
 };
 
@@ -149,6 +196,22 @@ export class FxEngine {
     this.buildMasterChain();
     this.buildBusSlots();
     return this.masterInput!;
+  }
+
+  /**
+   * Preload AudioWorklet processors onto the given context. Must be awaited
+   * before any worklet-backed effect is constructed on this context.
+   * Callers: samplerEngine at boot, configureOfflineFxFromState at WAV render.
+   * Idempotent — already-loaded worklets are skipped via the registry.
+   */
+  async preloadWorklets(context: BaseAudioContext): Promise<void> {
+    await Promise.all([
+      ensureWorklet(context, "bitcrusher-processor", bitcrusherWorkletUrl),
+      ensureWorklet(context, "fdn-reverb-processor", fdnReverbWorkletUrl),
+      ensureWorklet(context, "hermite-flanger-processor", hermiteFlangerWorkletUrl),
+      ensureWorklet(context, "multi-chorus-processor", multiChorusWorkletUrl),
+      ensureWorklet(context, "phaser-processor", phaserWorkletUrl),
+    ]);
   }
 
   private buildMasterChain() {
@@ -461,61 +524,85 @@ export class FxEngine {
       case "CHORUS": return this.createChorusChain(params);
       case "BITCRUSHER": return this.createBitCrusherChain(params);
       case "COMPRESSOR": return this.createCompressorChain(params);
+      case "PHASER": return this.createPhaserChain(params);
       default: return null;
     }
   }
 
-  // ----- Reverb -----
-  // Procedural reverb using a synthesized impulse response (exp-decay noise) in a ConvolverNode.
+  // ----- Reverb (FDN — Feedback Delay Network worklet) -----
+  // Replaced ConvolverNode + synthesised IR with the fdn-reverb-processor
+  // worklet (8 delay lines, Hadamard 8×8 feedback, per-line damping, 4-stage
+  // allpass diffusion). All real-time controllable — ROOM SIZE scales delay
+  // lengths, DAMPING moves per-line LP cutoffs, DIFFUSION scales the allpass
+  // coefficient.
+  //
   // Signal flow:
-  //   input → dryGain ─────────────────────────────────────────→ output
-  //         └→ preDelay → HP → LP → convolver → wetGain ────────→ output
+  //   input → dryGain ─────────────────────────────────────────────→ output
+  //         └→ preDelay → HP → LP → fdnNode → wetGain ──────────────→ output
+  //
+  // Pre-delay + HP + LP stay as outboard WebAudio nodes (no reason to move
+  // them inside the worklet — BiquadFilter and DelayNode are professional-
+  // grade as-is).
   private createReverbChain(initial: EffectParamMap): EffectChain | null {
     const ctx = this.context;
     if (!ctx) return null;
+    if (!isWorkletLoaded(ctx, "fdn-reverb-processor")) {
+      console.warn("[fxEngine] fdn-reverb-processor not loaded; passthrough");
+      return passthroughChain(ctx);
+    }
 
     const input = ctx.createGain();
     const output = ctx.createGain();
     const dryGain = ctx.createGain();
     const wetGain = ctx.createGain();
-    const preDelay = ctx.createDelay(1); // up to 1s
+    const preDelay = ctx.createDelay(1);
     const hp = ctx.createBiquadFilter();
     const lp = ctx.createBiquadFilter();
-    const convolver = ctx.createConvolver();
-
     hp.type = "highpass";
     lp.type = "lowpass";
 
-    // Build initial IR + apply params
-    const applyAll = (p: EffectParamMap) => {
-      preDelay.delayTime.value = Math.max(0, Math.min(1, (p.preDelay ?? 0) / 1000));
+    const node = new AudioWorkletNode(ctx, "fdn-reverb-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+
+    const roomSizeParam = node.parameters.get("roomSize");
+    const dampingParam = node.parameters.get("damping");
+    const diffusionParam = node.parameters.get("diffusion");
+
+    const apply = (p: EffectParamMap) => {
+      preDelay.delayTime.value = Math.max(0, Math.min(1, (p.preDelay ?? 20) / 1000));
       hp.frequency.value = Math.max(20, Math.min(20000, p.hpCut ?? 100));
       lp.frequency.value = Math.max(20, Math.min(20000, p.lpCut ?? 8000));
+      if (roomSizeParam) roomSizeParam.value = Math.max(0, Math.min(1, (p.size ?? 70) / 100));
+      if (dampingParam) dampingParam.value = Math.max(0, Math.min(1, (p.damping ?? 50) / 100));
+      if (diffusionParam) diffusionParam.value = Math.max(0, Math.min(1, (p.diffusion ?? 70) / 100));
       const wet = Math.max(0, Math.min(1, (p.wetDry ?? 100) / 100));
       wetGain.gain.value = wet;
       dryGain.gain.value = 1 - wet;
-      convolver.buffer = generateReverbImpulse(ctx, p.size ?? 70, p.damping ?? 50);
     };
-    applyAll(initial);
+    apply(initial);
 
-    // Wire
     input.connect(dryGain).connect(output);
-    input.connect(preDelay).connect(hp).connect(lp).connect(convolver).connect(wetGain).connect(output);
+    input.connect(preDelay).connect(hp).connect(lp).connect(node).connect(wetGain).connect(output);
 
     return {
       input,
       output,
-      setParam: (key: string, value: number) => {
+      setParam: (key, value) => {
         switch (key) {
           case "size":
+            if (roomSizeParam) roomSizeParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.size = value;
+            break;
           case "damping":
-            // Regenerate IR
-            convolver.buffer = generateReverbImpulse(
-              ctx,
-              key === "size" ? value : (initial.size ?? 70),
-              key === "damping" ? value : (initial.damping ?? 50),
-            );
-            initial[key] = value;
+            if (dampingParam) dampingParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.damping = value;
+            break;
+          case "diffusion":
+            if (diffusionParam) diffusionParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.diffusion = value;
             break;
           case "preDelay":
             preDelay.delayTime.value = Math.max(0, Math.min(1, value / 1000));
@@ -540,59 +627,210 @@ export class FxEngine {
         }
       },
       dispose: () => {
-        try { input.disconnect(); } catch { /* noop */ }
-        try { output.disconnect(); } catch { /* noop */ }
-        try { preDelay.disconnect(); } catch { /* noop */ }
-        try { hp.disconnect(); } catch { /* noop */ }
-        try { lp.disconnect(); } catch { /* noop */ }
-        try { convolver.disconnect(); } catch { /* noop */ }
-        try { dryGain.disconnect(); } catch { /* noop */ }
-        try { wetGain.disconnect(); } catch { /* noop */ }
+        [input, output, dryGain, wetGain, preDelay, hp, lp, node].forEach((n) => {
+          try { (n as AudioNode).disconnect(); } catch { /* noop */ }
+        });
       },
     };
   }
 
-  // ----- Delay (mono ping with feedback loop) -----
-  // Signal flow:
-  //   input → dryGain ────────────────────────────────────────────────────→ output
-  //         └→ HP → LP → delay → wetGain ─────────────────────────────────→ output
-  //                          └→ feedbackGain ─→ back into delay input
+  // ----- Delay (tape voice + ping-pong + tempo sync) -----
+  // Pure WebAudio — DelayNode + WaveShaper (tanh saturation) + BiquadFilter
+  // (LP "tone") inside the feedback loop give the tape/BBD repeat character.
+  // PING-PONG uses two delay lines panned hard L/R with cross-feedback.
+  //
+  // Topology (MONO / STEREO):
+  //   input → HP → delayMain → wetGain → output
+  //                   ↓
+  //                 saturate → tone → feedbackGain ─→ back into delayMain
+  //
+  // Topology (PING-PONG):
+  //   inputL → delayL → panL → wetGain
+  //   delayL.out → saturate → tone → fbGain → delayR
+  //   inputR → delayR → panR → wetGain
+  //   delayR.out → saturate → tone → fbGain → delayL
+  //   (Cross-feedback creates the L→R→L bouncing repeats.)
+  //
+  // SYNC enum:
+  //   0 = FREE (uses timeMs verbatim)
+  //   1 = 1/4, 2 = 1/8, 3 = 1/8T, 4 = 1/16, 5 = 1/16T, 6 = 1/32
+  // Live BPM tracking is NOT implemented in this pass — SYNC reads BPM via
+  // a static getter passed from the store on setParam("sync", ...). Tempo
+  // changes do not auto-update active delays. User re-selects SYNC after
+  // BPM change. Documented in SESSION_LOG.
+  //
+  // DRIVE: 0..100% scales the WaveShaper input level. The tanh curve does
+  // the saturation; cranking drive pushes deeper into compression/softer
+  // clip, perfect for tape-style "darkening" repeats.
   private createDelayChain(initial: EffectParamMap): EffectChain | null {
     const ctx = this.context;
     if (!ctx) return null;
+
     const input = ctx.createGain();
     const output = ctx.createGain();
     const dryGain = ctx.createGain();
     const wetGain = ctx.createGain();
-    const delay = ctx.createDelay(2.5);
     const hp = ctx.createBiquadFilter();
-    const lp = ctx.createBiquadFilter();
-    const feedback = ctx.createGain();
     hp.type = "highpass";
-    lp.type = "lowpass";
+
+    // Two delay lines — used together for PING-PONG, only `delayMain` in
+    // MONO/STEREO. delayR built lazy semantics: always created, just wired
+    // differently per mode.
+    const delayMain = ctx.createDelay(2.5);
+    const delayR = ctx.createDelay(2.5);
+    const fbMain = ctx.createGain();
+    const fbR = ctx.createGain();
+    const satMain = ctx.createWaveShaper();
+    const satR = ctx.createWaveShaper();
+    const toneMain = ctx.createBiquadFilter();
+    const toneR = ctx.createBiquadFilter();
+    toneMain.type = "lowpass";
+    toneR.type = "lowpass";
+    const panL = ctx.createStereoPanner();
+    const panR = ctx.createStereoPanner();
+    panL.pan.value = -1;
+    panR.pan.value = +1;
+
+    const driveInput = ctx.createGain();
+    const driveInputR = ctx.createGain();
+
+    // tanh saturation curve. Steeper curve = more clipping. Drive scales
+    // input, so the curve itself stays constant; we adjust driveInput gain.
+    const buildTanhCurve = () => {
+      const n = 4096;
+      const curve = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * 2 - 1;
+        curve[i] = Math.tanh(x * 1.5);
+      }
+      return curve;
+    };
+    satMain.curve = buildTanhCurve();
+    satR.curve = buildTanhCurve();
+
+    // Track current mode so rewiring can clear correctly.
+    let currentMode = -1;
+    let currentBpm = 120;
+
+    const computeDelaySeconds = (timeMsValue: number, syncDiv: number): number => {
+      if (syncDiv <= 0) return Math.max(0.001, Math.min(2.5, timeMsValue / 1000));
+      // Sync divisions (beat = quarter note at currentBpm):
+      const beatSec = 60 / Math.max(20, currentBpm);
+      const map: Record<number, number> = {
+        1: beatSec,                // 1/4
+        2: beatSec / 2,            // 1/8
+        3: (beatSec * 2) / 3,      // 1/8T
+        4: beatSec / 4,            // 1/16
+        5: beatSec / 3,            // 1/16T
+        6: beatSec / 8,            // 1/32
+      };
+      return Math.max(0.001, Math.min(2.5, map[syncDiv] ?? beatSec / 2));
+    };
+
+    const rewireMode = (mode: number) => {
+      if (currentMode === mode) return;
+      // Disconnect all routing nodes so we can rebuild fresh.
+      [input, hp, delayMain, delayR, fbMain, fbR, satMain, satR, toneMain, toneR, panL, panR, driveInput, driveInputR, dryGain, wetGain]
+        .forEach((n) => { try { (n as AudioNode).disconnect(); } catch { /* noop */ } });
+
+      // Dry always goes through.
+      input.connect(dryGain).connect(output);
+
+      if (mode === 2) {
+        // PING-PONG: cross-feedback between L and R delay lines.
+        input.connect(hp);
+        hp.connect(delayMain);
+        hp.connect(delayR);
+        // L tap: delayMain → panL
+        delayMain.connect(panL).connect(wetGain);
+        // R tap: delayR → panR
+        delayR.connect(panR).connect(wetGain);
+        // Feedback paths cross-feed.
+        delayMain.connect(driveInput).connect(satMain).connect(toneMain).connect(fbMain).connect(delayR);
+        delayR.connect(driveInputR).connect(satR).connect(toneR).connect(fbR).connect(delayMain);
+      } else if (mode === 1) {
+        // STEREO: two parallel delays, NO cross-feedback.
+        input.connect(hp);
+        hp.connect(delayMain);
+        hp.connect(delayR);
+        delayMain.connect(panL).connect(wetGain);
+        delayR.connect(panR).connect(wetGain);
+        delayMain.connect(driveInput).connect(satMain).connect(toneMain).connect(fbMain).connect(delayMain);
+        delayR.connect(driveInputR).connect(satR).connect(toneR).connect(fbR).connect(delayR);
+      } else {
+        // MONO (default).
+        input.connect(hp).connect(delayMain).connect(wetGain);
+        delayMain.connect(driveInput).connect(satMain).connect(toneMain).connect(fbMain).connect(delayMain);
+      }
+      wetGain.connect(output);
+      currentMode = mode;
+    };
 
     const apply = (p: EffectParamMap) => {
-      delay.delayTime.value = Math.max(0.001, Math.min(2, (p.timeMs ?? 250) / 1000));
-      feedback.gain.value = Math.max(0, Math.min(0.95, (p.feedback ?? 30) / 100));
+      const mode = Math.max(0, Math.min(2, Math.floor(p.mode ?? 0)));
+      rewireMode(mode);
+
+      const syncDiv = Math.max(0, Math.floor(p.sync ?? 0));
+      const seconds = computeDelaySeconds(p.timeMs ?? 250, syncDiv);
+      delayMain.delayTime.value = seconds;
+      delayR.delayTime.value = mode === 2 ? seconds : seconds * 0.66;
+
+      const fb = Math.max(0, Math.min(0.95, (p.feedback ?? 30) / 100));
+      fbMain.gain.value = fb;
+      fbR.gain.value = fb;
+
       const wet = Math.max(0, Math.min(1, (p.wetDry ?? 30) / 100));
       wetGain.gain.value = wet;
       dryGain.gain.value = 1 - wet;
+
       hp.frequency.value = Math.max(20, Math.min(20000, p.hpCut ?? 100));
-      lp.frequency.value = Math.max(20, Math.min(20000, p.lpCut ?? 8000));
+      // `tone` is the new param name; old `lpCut` saves map onto it.
+      const toneCut = p.tone ?? p.lpCut ?? 8000;
+      toneMain.frequency.value = Math.max(20, Math.min(20000, toneCut));
+      toneR.frequency.value = Math.max(20, Math.min(20000, toneCut));
+
+      // DRIVE: 0..100 → input gain into tanh shaper. 0 ≈ unity (clean),
+      // 100 ≈ +12 dB so the shaper actually saturates audibly.
+      const driveGain = 1 + (p.drive ?? 0) / 100 * 3;
+      driveInput.gain.value = driveGain;
+      driveInputR.gain.value = driveGain;
     };
     apply(initial);
-
-    input.connect(dryGain).connect(output);
-    input.connect(hp).connect(lp).connect(delay).connect(wetGain).connect(output);
-    delay.connect(feedback).connect(delay);
 
     return {
       input,
       output,
       setParam: (key, value) => {
         switch (key) {
-          case "timeMs": delay.delayTime.value = Math.max(0.001, Math.min(2, value / 1000)); initial.timeMs = value; break;
-          case "feedback": feedback.gain.value = Math.max(0, Math.min(0.95, value / 100)); initial.feedback = value; break;
+          case "timeMs": {
+            initial.timeMs = value;
+            const sec = computeDelaySeconds(value, Math.floor(initial.sync ?? 0));
+            delayMain.delayTime.value = sec;
+            delayR.delayTime.value = currentMode === 2 ? sec : sec * 0.66;
+            break;
+          }
+          case "sync": {
+            initial.sync = value;
+            const sec = computeDelaySeconds(initial.timeMs ?? 250, Math.floor(value));
+            delayMain.delayTime.value = sec;
+            delayR.delayTime.value = currentMode === 2 ? sec : sec * 0.66;
+            break;
+          }
+          case "mode": {
+            initial.mode = value;
+            rewireMode(Math.max(0, Math.min(2, Math.floor(value))));
+            const sec = computeDelaySeconds(initial.timeMs ?? 250, Math.floor(initial.sync ?? 0));
+            delayMain.delayTime.value = sec;
+            delayR.delayTime.value = currentMode === 2 ? sec : sec * 0.66;
+            break;
+          }
+          case "feedback": {
+            const fb = Math.max(0, Math.min(0.95, value / 100));
+            fbMain.gain.value = fb;
+            fbR.gain.value = fb;
+            initial.feedback = value;
+            break;
+          }
           case "wetDry": {
             const w = Math.max(0, Math.min(1, value / 100));
             wetGain.gain.value = w;
@@ -600,15 +838,44 @@ export class FxEngine {
             initial.wetDry = value;
             break;
           }
-          case "hpCut": hp.frequency.value = Math.max(20, Math.min(20000, value)); initial.hpCut = value; break;
-          case "lpCut": lp.frequency.value = Math.max(20, Math.min(20000, value)); initial.lpCut = value; break;
+          case "hpCut":
+            hp.frequency.value = Math.max(20, Math.min(20000, value));
+            initial.hpCut = value;
+            break;
+          case "tone":
+          case "lpCut": {
+            const cut = Math.max(20, Math.min(20000, value));
+            toneMain.frequency.value = cut;
+            toneR.frequency.value = cut;
+            initial.tone = value;
+            initial.lpCut = value;
+            break;
+          }
+          case "drive": {
+            const dg = 1 + value / 100 * 3;
+            driveInput.gain.value = dg;
+            driveInputR.gain.value = dg;
+            initial.drive = value;
+            break;
+          }
+          case "bpm":
+            // Module-level call from store.setBpm walks active delays and
+            // pokes this so SYNC mode delays auto-update on BPM change.
+            // Not currently wired (no walker yet); accept the param for
+            // forward compat. Recompute time using new BPM.
+            currentBpm = value;
+            if ((initial.sync ?? 0) > 0) {
+              const sec = computeDelaySeconds(initial.timeMs ?? 250, Math.floor(initial.sync ?? 0));
+              delayMain.delayTime.value = sec;
+              delayR.delayTime.value = currentMode === 2 ? sec : sec * 0.66;
+            }
+            break;
           default: break;
         }
       },
       dispose: () => {
-        [input, output, dryGain, wetGain, delay, hp, lp, feedback].forEach((n) => {
-          try { n.disconnect(); } catch { /* noop */ }
-        });
+        [input, output, dryGain, wetGain, hp, delayMain, delayR, fbMain, fbR, satMain, satR, toneMain, toneR, panL, panR, driveInput, driveInputR]
+          .forEach((n) => { try { (n as AudioNode).disconnect(); } catch { /* noop */ } });
       },
     };
   }
@@ -651,103 +918,43 @@ export class FxEngine {
     };
   }
 
-  // ----- Flanger (short modulated delay + feedback) -----
+  // ----- Flanger (Hermite-interpolated worklet) -----
+  // Modulated delay with fractional readout via 4-point cubic Hermite
+  // interpolation. The naive WebAudio DelayNode + LFO approach sounds
+  // metallic because its underlying interpolation is linear — Hermite
+  // smooths the spectrum across the modulation sweep.
   private createFlangerChain(initial: EffectParamMap): EffectChain | null {
     const ctx = this.context;
     if (!ctx) return null;
+    if (!isWorkletLoaded(ctx, "hermite-flanger-processor")) {
+      console.warn("[fxEngine] hermite-flanger-processor not loaded; passthrough");
+      return passthroughChain(ctx);
+    }
+
     const input = ctx.createGain();
     const output = ctx.createGain();
-    const dryGain = ctx.createGain();
-    const wetGain = ctx.createGain();
-    const delay = ctx.createDelay(0.02);
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-    const feedback = ctx.createGain();
+    const node = new AudioWorkletNode(ctx, "hermite-flanger-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
 
-    const baseDelay = 0.005; // 5ms
-    delay.delayTime.value = baseDelay;
-    lfo.type = "sine";
+    const rateParam = node.parameters.get("rate");
+    const depthParam = node.parameters.get("depth");
+    const feedbackParam = node.parameters.get("feedback");
+    const manualParam = node.parameters.get("manual");
+    const mixParam = node.parameters.get("mix");
 
     const apply = (p: EffectParamMap) => {
-      lfo.frequency.value = Math.max(0.05, Math.min(10, p.rate ?? 0.5));
-      lfoGain.gain.value = Math.max(0, Math.min(0.0045, (p.depth ?? 50) / 100 * 0.0045));
-      feedback.gain.value = Math.max(0, Math.min(0.95, (p.feedback ?? 30) / 100));
-      const wet = Math.max(0, Math.min(1, (p.wetDry ?? 50) / 100));
-      wetGain.gain.value = wet;
-      dryGain.gain.value = 1 - wet;
+      if (rateParam) rateParam.value = Math.max(0.01, Math.min(10, p.rate ?? 0.5));
+      if (depthParam) depthParam.value = Math.max(0, Math.min(1, (p.depth ?? 50) / 100));
+      if (feedbackParam) feedbackParam.value = Math.max(-0.95, Math.min(0.95, (p.feedback ?? 30) / 100));
+      if (manualParam) manualParam.value = Math.max(0, Math.min(1, (p.manual ?? 25) / 100));
+      if (mixParam) mixParam.value = Math.max(0, Math.min(1, (p.wetDry ?? 50) / 100));
     };
     apply(initial);
 
-    input.connect(dryGain).connect(output);
-    input.connect(delay).connect(wetGain).connect(output);
-    delay.connect(feedback).connect(delay);
-    lfo.connect(lfoGain).connect(delay.delayTime);
-    lfo.start();
-
-    return {
-      input,
-      output,
-      setParam: (key, value) => {
-        switch (key) {
-          case "rate": lfo.frequency.value = Math.max(0.05, Math.min(10, value)); initial.rate = value; break;
-          case "depth": lfoGain.gain.value = Math.max(0, Math.min(0.0045, value / 100 * 0.0045)); initial.depth = value; break;
-          case "feedback": feedback.gain.value = Math.max(0, Math.min(0.95, value / 100)); initial.feedback = value; break;
-          case "wetDry": {
-            const w = Math.max(0, Math.min(1, value / 100));
-            wetGain.gain.value = w;
-            dryGain.gain.value = 1 - w;
-            initial.wetDry = value;
-            break;
-          }
-          default: break;
-        }
-      },
-      dispose: () => {
-        try { lfo.stop(); } catch { /* noop */ }
-        [input, output, dryGain, wetGain, delay, lfo, lfoGain, feedback].forEach((n) => {
-          try { (n as AudioNode).disconnect(); } catch { /* noop */ }
-        });
-      },
-    };
-  }
-
-  // ----- Chorus (3 detuned modulated delays in parallel) -----
-  private createChorusChain(initial: EffectParamMap): EffectChain | null {
-    const ctx = this.context;
-    if (!ctx) return null;
-    const input = ctx.createGain();
-    const output = ctx.createGain();
-    const dryGain = ctx.createGain();
-    const wetGain = ctx.createGain();
-    const voices = [0, 1, 2].map((i) => {
-      const delay = ctx.createDelay(0.05);
-      const lfo = ctx.createOscillator();
-      const lfoGain = ctx.createGain();
-      delay.delayTime.value = 0.015 + i * 0.005; // 15/20/25 ms base
-      lfo.type = "sine";
-      lfo.frequency.value = 0.5 + i * 0.3;
-      lfo.connect(lfoGain).connect(delay.delayTime);
-      lfo.start();
-      return { delay, lfo, lfoGain };
-    });
-    const apply = (p: EffectParamMap) => {
-      const rate = Math.max(0.05, Math.min(10, p.rate ?? 1));
-      const depth = Math.max(0, Math.min(0.008, (p.depth ?? 30) / 100 * 0.008));
-      voices.forEach((v, i) => {
-        v.lfo.frequency.value = rate + i * 0.15;
-        v.lfoGain.gain.value = depth;
-      });
-      const wet = Math.max(0, Math.min(1, (p.mix ?? 50) / 100));
-      wetGain.gain.value = wet;
-      dryGain.gain.value = 1 - wet;
-    };
-    apply(initial);
-
-    input.connect(dryGain).connect(output);
-    voices.forEach((v) => {
-      input.connect(v.delay).connect(wetGain);
-    });
-    wetGain.connect(output);
+    input.connect(node).connect(output);
 
     return {
       input,
@@ -755,106 +962,287 @@ export class FxEngine {
       setParam: (key, value) => {
         switch (key) {
           case "rate":
-            voices.forEach((v, i) => { v.lfo.frequency.value = Math.max(0.05, Math.min(10, value + i * 0.15)); });
-            initial.rate = value; break;
-          case "depth": {
-            const d = Math.max(0, Math.min(0.008, value / 100 * 0.008));
-            voices.forEach((v) => { v.lfoGain.gain.value = d; });
-            initial.depth = value; break;
-          }
-          case "mix": {
-            const w = Math.max(0, Math.min(1, value / 100));
-            wetGain.gain.value = w;
-            dryGain.gain.value = 1 - w;
-            initial.mix = value; break;
-          }
+            if (rateParam) rateParam.value = Math.max(0.01, Math.min(10, value));
+            initial.rate = value;
+            break;
+          case "depth":
+            if (depthParam) depthParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.depth = value;
+            break;
+          case "feedback":
+            if (feedbackParam) feedbackParam.value = Math.max(-0.95, Math.min(0.95, value / 100));
+            initial.feedback = value;
+            break;
+          case "manual":
+            if (manualParam) manualParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.manual = value;
+            break;
+          case "wetDry":
+            if (mixParam) mixParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.wetDry = value;
+            break;
           default: break;
         }
       },
       dispose: () => {
-        voices.forEach((v) => {
-          try { v.lfo.stop(); } catch { /* noop */ }
-          try { v.delay.disconnect(); } catch { /* noop */ }
-          try { v.lfo.disconnect(); } catch { /* noop */ }
-          try { v.lfoGain.disconnect(); } catch { /* noop */ }
-        });
-        [input, output, dryGain, wetGain].forEach((n) => {
-          try { n.disconnect(); } catch { /* noop */ }
-        });
+        try { node.disconnect(); } catch { /* noop */ }
+        [input, output].forEach((n) => { try { n.disconnect(); } catch { /* noop */ } });
       },
     };
   }
 
-  // ----- Bit Crusher (WaveShaperNode for bit-depth reduction; sample-rate reduction via ScriptProcessor) -----
-  // Phase 1b note: ScriptProcessorNode is deprecated but trivially functional in Chrome/Edge/Firefox.
-  // AudioWorklet would require an external worklet file + module setup; deferring to Phase 2.
-  private createBitCrusherChain(initial: EffectParamMap): EffectChain | null {
+  // ----- Chorus (multi-voice stereo worklet) -----
+  // 4 phase-offset Hermite-interpolated voices share one delay buffer,
+  // panned across the stereo field by WIDTH. VOICES enum (2/3/4) controls
+  // how many are active. Lush analog-style chorus character.
+  private createChorusChain(initial: EffectParamMap): EffectChain | null {
     const ctx = this.context;
     if (!ctx) return null;
+    if (!isWorkletLoaded(ctx, "multi-chorus-processor")) {
+      console.warn("[fxEngine] multi-chorus-processor not loaded; passthrough");
+      return passthroughChain(ctx);
+    }
+
     const input = ctx.createGain();
     const output = ctx.createGain();
-    const dryGain = ctx.createGain();
-    const wetGain = ctx.createGain();
-    const shaper = ctx.createWaveShaper();
-    // ScriptProcessor for sample-rate reduction (sample-and-hold)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const proc = (ctx as unknown as { createScriptProcessor: (bufSize: number, inCh: number, outCh: number) => ScriptProcessorNode }).createScriptProcessor(512, 1, 1);
+    const node = new AudioWorkletNode(ctx, "multi-chorus-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
 
-    let holdLength = Math.max(1, Math.floor(initial.sampleRateReduction ?? 4));
-    let counter = 0;
-    let held = 0;
-    proc.onaudioprocess = (event: AudioProcessingEvent) => {
-      const inBuf = event.inputBuffer.getChannelData(0);
-      const outBuf = event.outputBuffer.getChannelData(0);
-      for (let i = 0; i < inBuf.length; i += 1) {
-        if (counter % holdLength === 0) held = inBuf[i];
-        outBuf[i] = held;
-        counter += 1;
-      }
+    const rateParam = node.parameters.get("rate");
+    const depthParam = node.parameters.get("depth");
+    const voicesParam = node.parameters.get("voices");
+    const widthParam = node.parameters.get("width");
+    const mixParam = node.parameters.get("mix");
+
+    const apply = (p: EffectParamMap) => {
+      if (rateParam) rateParam.value = Math.max(0.05, Math.min(5, p.rate ?? 1));
+      if (depthParam) depthParam.value = Math.max(0, Math.min(1, (p.depth ?? 30) / 100));
+      if (voicesParam) voicesParam.value = Math.max(2, Math.min(4, Math.round(p.voices ?? 4)));
+      if (widthParam) widthParam.value = Math.max(0, Math.min(1, (p.width ?? 50) / 100));
+      if (mixParam) mixParam.value = Math.max(0, Math.min(1, (p.mix ?? 50) / 100));
     };
+    apply(initial);
 
-    const updateCurve = (bits: number) => {
-      const steps = Math.pow(2, Math.max(1, Math.min(16, bits)));
-      const curve = new Float32Array(4096);
-      for (let i = 0; i < curve.length; i += 1) {
-        const x = (i / curve.length) * 2 - 1;
-        curve[i] = Math.round(x * steps) / steps;
-      }
-      shaper.curve = curve;
-    };
-    updateCurve(initial.bits ?? 8);
-
-    const wet = Math.max(0, Math.min(1, (initial.wetDry ?? 100) / 100));
-    wetGain.gain.value = wet;
-    dryGain.gain.value = 1 - wet;
-
-    input.connect(dryGain).connect(output);
-    input.connect(shaper).connect(proc).connect(wetGain).connect(output);
+    input.connect(node).connect(output);
 
     return {
       input,
       output,
       setParam: (key, value) => {
         switch (key) {
-          case "bits": updateCurve(value); initial.bits = value; break;
-          case "sampleRateReduction":
-            holdLength = Math.max(1, Math.floor(value));
-            initial.sampleRateReduction = value;
+          case "rate":
+            if (rateParam) rateParam.value = Math.max(0.05, Math.min(5, value));
+            initial.rate = value;
             break;
-          case "wetDry": {
-            const w = Math.max(0, Math.min(1, value / 100));
-            wetGain.gain.value = w;
-            dryGain.gain.value = 1 - w;
-            initial.wetDry = value;
+          case "depth":
+            if (depthParam) depthParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.depth = value;
             break;
-          }
+          case "voices":
+            if (voicesParam) voicesParam.value = Math.max(2, Math.min(4, Math.round(value)));
+            initial.voices = value;
+            break;
+          case "width":
+            if (widthParam) widthParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.width = value;
+            break;
+          case "mix":
+            if (mixParam) mixParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.mix = value;
+            break;
           default: break;
         }
       },
       dispose: () => {
-        try { proc.onaudioprocess = null; } catch { /* noop */ }
-        [input, output, dryGain, wetGain, shaper, proc].forEach((n) => {
-          try { (n as AudioNode).disconnect(); } catch { /* noop */ }
+        try { node.disconnect(); } catch { /* noop */ }
+        [input, output].forEach((n) => { try { n.disconnect(); } catch { /* noop */ } });
+      },
+    };
+  }
+
+  // ----- Phaser (Schroeder 1st-order allpass cascade worklet) -----
+  // N×allpass chain (2/4/6/8 stages) with shared LFO modulating cutoff,
+  // feedback path from last stage to input. Phase 90 / Small Stone style.
+  private createPhaserChain(initial: EffectParamMap): EffectChain | null {
+    const ctx = this.context;
+    if (!ctx) return null;
+    if (!isWorkletLoaded(ctx, "phaser-processor")) {
+      console.warn("[fxEngine] phaser-processor not loaded; passthrough");
+      return passthroughChain(ctx);
+    }
+
+    const input = ctx.createGain();
+    const output = ctx.createGain();
+    const node = new AudioWorkletNode(ctx, "phaser-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+
+    const rateParam = node.parameters.get("rate");
+    const depthParam = node.parameters.get("depth");
+    const stagesParam = node.parameters.get("stages");
+    const feedbackParam = node.parameters.get("feedback");
+    const mixParam = node.parameters.get("mix");
+
+    const apply = (p: EffectParamMap) => {
+      if (rateParam) rateParam.value = Math.max(0.05, Math.min(10, p.rate ?? 0.5));
+      if (depthParam) depthParam.value = Math.max(0, Math.min(1, (p.depth ?? 70) / 100));
+      if (stagesParam) stagesParam.value = Math.max(2, Math.min(8, Math.round(p.stages ?? 6)));
+      if (feedbackParam) feedbackParam.value = Math.max(0, Math.min(0.95, (p.feedback ?? 30) / 100));
+      if (mixParam) mixParam.value = Math.max(0, Math.min(1, (p.wetDry ?? 50) / 100));
+    };
+    apply(initial);
+
+    input.connect(node).connect(output);
+
+    return {
+      input,
+      output,
+      setParam: (key, value) => {
+        switch (key) {
+          case "rate":
+            if (rateParam) rateParam.value = Math.max(0.05, Math.min(10, value));
+            initial.rate = value;
+            break;
+          case "depth":
+            if (depthParam) depthParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.depth = value;
+            break;
+          case "stages":
+            if (stagesParam) stagesParam.value = Math.max(2, Math.min(8, Math.round(value)));
+            initial.stages = value;
+            break;
+          case "feedback":
+            if (feedbackParam) feedbackParam.value = Math.max(0, Math.min(0.95, value / 100));
+            initial.feedback = value;
+            break;
+          case "wetDry":
+            if (mixParam) mixParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.wetDry = value;
+            break;
+          default: break;
+        }
+      },
+      dispose: () => {
+        try { node.disconnect(); } catch { /* noop */ }
+        [input, output].forEach((n) => { try { n.disconnect(); } catch { /* noop */ } });
+      },
+    };
+  }
+
+  // ----- Bit Crusher (AudioWorklet — SP-1200 / MPC-style) -----
+  // Session 27 sub-phase A + UI fix:
+  //   - Replaced WaveShaper + ScriptProcessorNode with AudioWorkletProcessor.
+  //   - Hybrid UI / internal parameter design (Marek's call):
+  //       UI parameter `srReduce` is a division of the context sample rate.
+  //       Discrete UI enum: 1, 2, 4, 8, 16, 32, 64. Stored in state as the
+  //       division integer. The worklet's `sampleRateHz` AudioParam is
+  //       computed at instantiation / on setParam from
+  //       `ctx.sampleRate / srReduce`.
+  //   - Rationale: musicians think "amount of crushing", not Hz. 1/4 always
+  //     means "quarter rate" regardless of whether ctx is 44.1 / 48 / 88.2
+  //     / 96 kHz. Side effect: the exact SP-1200 26040 Hz is not directly
+  //     reachable at any common context rate via pure division — closest at
+  //     48 kHz is 1/2 = 24 kHz. Acceptable tradeoff for rate-agnostic UI.
+  //
+  // Back-compat for saved projects: legacy `sampleRateReduction` is mapped
+  // 1:1 onto `srReduce` (same semantic — both are integer divisions). Any
+  // raw `sampleRateHz` field in older saves is ignored (it was a Session 27
+  // transitional name that never shipped).
+  //
+  // If the worklet hasn't been loaded for this context (preloadWorklets
+  // not awaited yet), fall back to a passthrough gain so the bus doesn't
+  // die — log once so the gap is visible during dev.
+  private createBitCrusherChain(initial: EffectParamMap): EffectChain | null {
+    const ctx = this.context;
+    if (!ctx) return null;
+
+    if (!isWorkletLoaded(ctx, "bitcrusher-processor")) {
+      console.warn(
+        "[fxEngine] bitcrusher-processor not loaded for this context; using passthrough. Call preloadWorklets(ctx) before constructing bitcrusher.",
+      );
+      return passthroughChain(ctx);
+    }
+
+    const input = ctx.createGain();
+    const output = ctx.createGain();
+    const node = new AudioWorkletNode(ctx, "bitcrusher-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+
+    const computeHz = (division: number): number => {
+      const div = Math.max(1, Math.floor(division));
+      return Math.max(100, Math.min(192000, ctx.sampleRate / div));
+    };
+
+    const bitsParam = node.parameters.get("bits");
+    const sampleRateParam = node.parameters.get("sampleRateHz");
+    const driveParam = node.parameters.get("drive");
+    const mixParam = node.parameters.get("mix");
+
+    // Resolve initial srReduce — prefer new key, fall back to legacy.
+    const initialDivision = (() => {
+      if (typeof initial.srReduce === "number") return initial.srReduce;
+      if (typeof initial.sampleRateReduction === "number") return initial.sampleRateReduction;
+      return 4;
+    })();
+
+    const apply = (p: EffectParamMap) => {
+      if (bitsParam) bitsParam.value = Math.max(1, Math.min(16, p.bits ?? 12));
+      if (sampleRateParam) {
+        const div = typeof p.srReduce === "number"
+          ? p.srReduce
+          : (p.sampleRateReduction ?? initialDivision);
+        sampleRateParam.value = computeHz(div);
+      }
+      if (driveParam) driveParam.value = Math.max(0, Math.min(1, (p.drive ?? 0) / 100));
+      if (mixParam) mixParam.value = Math.max(0, Math.min(1, (p.wetDry ?? 100) / 100));
+    };
+    apply(initial);
+
+    input.connect(node).connect(output);
+
+    return {
+      input,
+      output,
+      setParam: (key, value) => {
+        switch (key) {
+          case "bits":
+            if (bitsParam) bitsParam.value = Math.max(1, Math.min(16, value));
+            initial.bits = value;
+            break;
+          case "srReduce":
+            if (sampleRateParam) sampleRateParam.value = computeHz(value);
+            initial.srReduce = value;
+            break;
+          case "sampleRateReduction":
+            // Legacy alias — same semantic as srReduce.
+            if (sampleRateParam) sampleRateParam.value = computeHz(value);
+            initial.sampleRateReduction = value;
+            initial.srReduce = value;
+            break;
+          case "drive":
+            if (driveParam) driveParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.drive = value;
+            break;
+          case "wetDry":
+            if (mixParam) mixParam.value = Math.max(0, Math.min(1, value / 100));
+            initial.wetDry = value;
+            break;
+          default:
+            break;
+        }
+      },
+      dispose: () => {
+        try { node.disconnect(); } catch { /* noop */ }
+        [input, output].forEach((n) => {
+          try { n.disconnect(); } catch { /* noop */ }
         });
       },
     };
@@ -902,6 +1290,12 @@ export class FxEngine {
   }
 }
 
+// Legacy ConvolverNode IR generator. Retained for reference / potential
+// future "IR reverb" mode (e.g. user-loaded impulse response files).
+// NOT used by the runtime — the active reverb is the FDN worklet above.
+// Session 27 sub-phase B replaced this with the FDN approach per Marek's
+// quality bar.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function generateReverbImpulse(ctx: BaseAudioContext, size: number, damping: number): AudioBuffer {
   // size 0..100 → duration 0.1..3.5 seconds
   const seconds = 0.1 + (Math.max(0, Math.min(100, size)) / 100) * 3.4;
@@ -919,6 +1313,27 @@ function generateReverbImpulse(ctx: BaseAudioContext, size: number, damping: num
     }
   }
   return buffer;
+}
+
+/**
+ * Defensive passthrough chain. Used when a worklet effect is requested but
+ * its processor module hasn't been loaded onto this context yet (i.e. the
+ * caller skipped `preloadWorklets`). The bus stays alive — audio passes
+ * unmodified through input→output — instead of throwing.
+ */
+function passthroughChain(ctx: BaseAudioContext): EffectChain {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  input.connect(output);
+  return {
+    input,
+    output,
+    setParam: () => { /* noop until upgrade */ },
+    dispose: () => {
+      try { input.disconnect(); } catch { /* noop */ }
+      try { output.disconnect(); } catch { /* noop */ }
+    },
+  };
 }
 
 export const fxEngine = new FxEngine();

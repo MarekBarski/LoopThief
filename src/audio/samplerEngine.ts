@@ -79,8 +79,12 @@ class SamplerEngine {
     try {
       this.context ??= new AudioContext();
       this.ensureMasterGain();
-      // Initialize FX graph downstream of master gain on first use.
+      // Initialize FX graph downstream of master gain on first use, then
+      // preload AudioWorklet processors (BitCrusher, plus more in upcoming
+      // FX upgrade sub-phases) so any bus that selects them constructs
+      // synchronously without falling back to passthrough.
       fxEngine.ensureReady(this.context);
+      await fxEngine.preloadWorklets(this.context);
       if (this.context.state === "suspended") await this.context.resume();
       this.setStatus("READY");
       return true;
