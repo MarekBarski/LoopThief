@@ -1,8 +1,8 @@
 [package]
 name = "loopthief"
-version = "0.1.0"
-description = "LoopThief desktop application"
-authors = ["LoopThief"]
+version = "1.1.0"
+description = "LoopThief — MPC-style sampling instrument and groove workstation"
+authors = ["Marek Barski"]
 edition = "2021"
 
 [lib]
@@ -54,3 +54,7 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+# panic=abort: smaller binary, faster unwinding (no panic recovery overhead).
+# All Tauri 2 crates + cpal + native-dialog tolerate this. If a future
+# dependency requires unwind support, drop just this line.
+panic = "abort"

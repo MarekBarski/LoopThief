@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LoopThief",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "identifier": "com.marekbarski.loopthief",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,16 +29,37 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
+    "publisher": "Marek Barski",
     "category": "Music",
-    "copyright": "© Marek Barski",
-    "shortDescription": "LoopThief — MPC-style sampler-sequencer workstation",
-    "longDescription": "LoopThief is a focused sampling instrument inspired by classic Akai MPC workflow: capture, chop, play, resample.",
+    "copyright": "Copyright © 2026 Marek Barski",
+    "shortDescription": "MPC-style sampling instrument and groove workstation",
+    "longDescription": "LoopThief is an MPC/SP-inspired sampler-sequencer workstation. Capture, chop, play, resample.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["lthief"],
+        "name": "LoopThief Project",
+        "description": "LoopThief Project File",
+        "role": "Editor",
+        "mimeType": "application/x-loopthief-project"
+      }
+    ],
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
   }
 }

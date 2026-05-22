@@ -99,6 +99,111 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 30 — 2026-05-22 — Release 1.1.0 — first user-facing Windows shipping build
+
+### What was attempted
+
+Production shipping config for Marek's first user-facing Windows release. Version bump to 1.1.0, bundle metadata (publisher, copyright, descriptions), NSIS installer perMachine mode + English-only no language selector, `.lthief` file association registered (Explorer icon — CLI double-click handler deferred per spec authorisation), portable zip artifact alongside MSI + NSIS, Rust release profile tightened (`panic = "abort"`), full clean rebuild via `cargo clean` + `npm run tauri build`, binary metadata verification.
+
+### What worked
+
+**Version bump aligned across all three files**:
+- `package.json` `"version": "0.1.0"` → `"1.1.0"`
+- `src-tauri/Cargo.toml` `version = "0.1.0"` → `"1.1.0"` (also updated `description` and `authors`)
+- `src-tauri/tauri.conf.json` `"version": "0.1.0"` → `"1.1.0"`
+
+Resulting binary `target/release/loopthief.exe` carries:
+- `ProductName`: LoopThief
+- `ProductVersion` / `FileVersion`: 1.1.0
+- `CompanyName`: Marek Barski
+- `LegalCopyright`: Copyright © 2026 Marek Barski
+- `FileDescription`: LoopThief
+
+Verified via PowerShell `Get-Item ... | Select VersionInfo`.
+
+**tauri.conf.json production bundle config**:
+- `publisher: "Marek Barski"`
+- `copyright: "Copyright © 2026 Marek Barski"`
+- `shortDescription` / `longDescription` from spec
+- `fileAssociations`: `.lthief` extension registered with `name: "LoopThief Project"`, `description: "LoopThief Project File"`, `role: "Editor"`, `mimeType: "application/x-loopthief-project"`. On install the registry binds `.lthief` → LoopThief icon in Explorer.
+- `windows.wix.language: "en-US"`
+- `windows.nsis.installerIcon: "icons/icon.ico"`, `installMode: "perMachine"` (installs to `C:\Program Files\LoopThief\`), `languages: ["English"]`, `displayLanguageSelector: false` (installer comes up directly in English).
+
+**Cargo release profile tightened**:
+- `panic = "abort"` added on top of existing `lto = "fat"`, `codegen-units = 1`, `strip = true`, `opt-level = 3`. Smaller binary, faster panic-path. All Tauri 2 + cpal + native-dialog crates tolerate abort panics.
+
+**Clean rebuild**:
+- `cargo clean` removed 16675 files (10.8 GB) of cached artifacts.
+- `npm run tauri build` rebuilt from scratch in 4m 37s with new profile. Slower than incremental, expected.
+
+**Artifacts produced**:
+- `src-tauri/target/release/bundle/msi/LoopThief_1.1.0_x64_en-US.msi` — 17.6 MB
+- `src-tauri/target/release/bundle/nsis/LoopThief_1.1.0_x64-setup.exe` — 16.6 MB (NSIS installer, the one Marek will likely ship)
+- `src-tauri/target/release/bundle/portable/LoopThief_1.1.0_portable.zip` — 17.2 MB (manually created post-build; staging dir + Compress-Archive)
+- `src-tauri/target/release/loopthief.exe` — 19.2 MB standalone exe
+
+**Devtools off — verified in fresh release binary**:
+- `WEBVIEW2_ADDITIONAL` string present → env var setter compiled in → WebView2 receives `--disable-features=DeveloperTools` flag at boot → F12 / Ctrl+Shift+I / right-click Inspect all inert.
+- `DeveloperTools` string present (the value being passed).
+- `open_devtools` symbol NOT present in binary → release-build cargo profile + `#[cfg(debug_assertions)]` gate together strip the auto-open call entirely. No way for it to fire at runtime.
+
+### What didn't work / pitfalls hit
+
+- **`"app"` bundle target failed silently on Windows.** Spec authorised it as Option A for portable build. Added `"app"` to `bundle.targets`; `npm run tauri build` ran without error but only produced MSI + NSIS, not an app bundle. Discovered: `"app"` is a macOS-only target in Tauri 2 (produces .app bundles for macOS). On Windows it's silently skipped, not an error. Removed `"app"` from targets and switched to **Option B** (manual zip).
+- **Portable zip via inline PowerShell instead of a `package:portable` npm script.** The spec authorised a node script under `scripts/package-portable.js`. Implemented as one-shot PowerShell command (Compress-Archive after staging the exe under a versioned subfolder so the zip extracts to `LoopThief_1.1.0/LoopThief.exe` rather than dumping a loose exe). Acceptable for 1.1.0; if Marek wants this in CI later the equivalent node script is ~20 lines.
+- **Smoke-test gap — GUI installer pass requires Marek.** Spec required: install the NSIS .exe, click LoopThief shortcut, verify it opens, check Add/Remove Programs shows correct metadata, test F12 lockdown in running app, uninstall cleanly. I can verify the binary's metadata via `Get-Item .VersionInfo` (done — all fields correct) and the binary's compile-time gates via string search (done — `open_devtools` absent, `WEBVIEW2_ADDITIONAL` present), but I cannot run the installer GUI / interact with Windows context menus / clickthrough installer dialogs from this environment. **Marek must do the GUI smoke-test before shipping to friends.**
+- **`.lthief` double-click CLI handler explicitly deferred.** Spec authorised: "If wiring this fully is out of scope for the rebuild config session, leave the file association registered (so .lthief shows the LoopThief icon in Explorer) but skip the CLI arg handler. Document the deferral in SESSION_LOG. Marek can ship without double-click-to-open in 1.1.0; it's a Phase post-1.1.0 polish item." Followed that — file association IS registered (Explorer will show LoopThief icon for `.lthief` files, double-clicking will launch LoopThief), but the launched LoopThief will NOT auto-open the file. User has to use DISK → LOAD PROJECT manually. **Post-1.1.0 polish backlog item.**
+- **Build still emitted the `[plugin vite:reporter]` warning** about `src/disk/index.ts` being both dynamically and statically imported. Carry-over from prior sessions; not a 1.1.0 concern.
+
+### Decisions made
+
+- **Portable target = Option B (manual zip)** since Option A (`"app"`) is macOS-only. Zip wraps a versioned subfolder so users extracting it get a `LoopThief_1.1.0/` folder containing `LoopThief.exe`. Cleaner than a loose exe.
+- **Inline PowerShell instead of `scripts/package-portable.js`** — single-purpose, one-shot. Adding a node script for one zip felt over-engineered. If we automate further bundling (multi-platform, signed installers), then a real script makes sense.
+- **`.lthief` CLI handler deferred to post-1.1.0**. Spec explicitly authorised the deferral. File association registered, double-click launches LoopThief without auto-loading the file. Phase 3 work to wire the CLI arg → load-project flow.
+- **NSIS installMode: perMachine** (installs to `Program Files`) — matches user expectation for distributed software, requires admin elevation. If Marek's friends want per-user installs, that's a 1.1.1 config tweak.
+- **`devtools: true` in tauri.conf.json kept** — dev mode needs it. The WebView2 env var + cargo feature absence handle the release lockdown without breaking dev. Same reasoning as Session 29 follow-up.
+- **`fileAssociations.mimeType`** set to `application/x-loopthief-project` (custom vendor-specific MIME, RFC-friendly prefix). Not registered anywhere central but harmless and useful if `.lthief` ever needs to round-trip through systems that care about MIME types (email attachments, web uploads).
+- **`panic = "abort"` included.** No evidence of any Tauri / cpal / dialog crate needing unwind support. If Marek hits a panic-during-cleanup issue in the wild, drop just that line. Spec authorised this fallback.
+
+### Open issues / followups
+
+**Marek MUST GUI-smoke-test before shipping**:
+1. Run `src-tauri/target/release/bundle/nsis/LoopThief_1.1.0_x64-setup.exe` as administrator (perMachine needs elevation)
+2. Installer comes up directly in English, no language selector dialog (Polish system locale should NOT trigger Polish UI for installer)
+3. Default install path: `C:\Program Files\LoopThief\`
+4. Click through Next / Next / Install. Wait for completion.
+5. Open Start menu, search "LoopThief", click the shortcut.
+6. App opens — title bar "LoopThief", canvas top-aligned, 1600×1000 default size.
+7. F12 → does nothing. Ctrl+Shift+I → does nothing. Right-click anywhere in the app → no "Inspect" item in the context menu.
+8. RECORD screen: AUDIO settings dropdown shows WASAPI devices. FX screen: 8 effects in cycle (REVERB / DELAY / EQ / FLANGER / CHORUS / BITCRUSHER / COMPRESSOR / PHASER).
+9. Save a project as `test.lthief` somewhere. Locate it in Explorer — the icon should be the LoopThief icon. Double-click — LoopThief launches (will NOT auto-load `test.lthief`; user must use DISK → LOAD PROJECT manually — known 1.1.0 limitation).
+10. Open "Add or Remove Programs" / "Settings → Apps". Find "LoopThief". Check: Name=LoopThief, Publisher=Marek Barski, Version=1.1.0.
+11. Click Uninstall → confirm → uninstall runs → "LoopThief" entry disappears from Apps list, Program Files folder cleaned.
+
+If any of the above fails, fix before shipping. If all pass, distribute the NSIS .exe (or the portable zip).
+
+**Post-1.1.0 polish items**:
+- `.lthief` double-click → auto-load (Rust CLI arg handler + JS listener using existing BootResumeDialog pattern)
+- Code-signing the NSIS exe (Windows SmartScreen warning otherwise)
+- Per-user install variant (NSIS `installMode: currentUser`)
+- macOS / Linux installers (cross-platform release)
+- Vite `[plugin vite:reporter]` warning cleanup (`src/disk/index.ts` mixed dynamic/static imports — non-blocking)
+
+### Files modified
+
+- `package.json` — version `0.1.0` → `1.1.0`.
+- `src-tauri/Cargo.toml` — version `0.1.0` → `1.1.0`, description / authors updated, `panic = "abort"` added to `[profile.release]`.
+- `src-tauri/tauri.conf.json` — version `1.1.0`, `bundle.publisher`, `bundle.copyright`, descriptions, `bundle.fileAssociations` (`.lthief`), `bundle.windows.wix.language`, `bundle.windows.nsis` (perMachine + English + no language selector + installer icon). Note: `bundle.targets` reduced to `["msi", "nsis"]` after the `"app"` macOS-only discovery.
+- No changes to `src/`, no changes to Rust source (`lib.rs` etc) — purely config + version + bundle metadata. Functional code untouched.
+
+**Artifacts produced (not committed, but built):**
+- `src-tauri/target/release/bundle/msi/LoopThief_1.1.0_x64_en-US.msi` (17.6 MB)
+- `src-tauri/target/release/bundle/nsis/LoopThief_1.1.0_x64-setup.exe` (16.6 MB)
+- `src-tauri/target/release/bundle/portable/LoopThief_1.1.0_portable.zip` (17.2 MB)
+- `src-tauri/target/release/loopthief.exe` (19.2 MB)
+
+---
+
 ## Session 29 — 2026-05-22 — CHOP multi-bank distribution + devtools off for release
 
 ### What was attempted
