@@ -7,7 +7,17 @@
 // Phase 2 will add hot device swap, monitor routing, threshold detection
 // (currently still JS-side from the browser path), and SETTINGS AUDIO UI.
 
-export { ensureCaptureRunning, listAudioDevices, startNativeRecording, stopCaptureCompletely } from "./nativeCapture";
+export {
+  ensureCaptureRunning,
+  listAudioDevices,
+  startNativeRecording,
+  stopCaptureCompletely,
+  setInputDevice,
+  setOutputDevice,
+  setMonitorMode,
+  restartEngine,
+} from "./nativeCapture";
+export { startMonitor, stopMonitor, isMonitorActive } from "./monitor";
 export type { NativeCaptureSession } from "./nativeCapture";
 export type {
   AudioConfig,

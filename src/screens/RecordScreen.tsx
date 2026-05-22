@@ -39,7 +39,9 @@ export function RecordScreen() {
     return () => window.clearInterval(interval);
   }, [isSampling, tickRecording]);
 
-  const latestWaveform = recordedSamples.at(-1)?.waveform ?? [];
+  const liveWaveform = useAppStore((state) => state.liveRecordingWaveform);
+  // While sampling, render live waveform; otherwise the last completed sample.
+  const latestWaveform = isSampling ? liveWaveform : recordedSamples.at(-1)?.waveform ?? [];
   const latestSample = recordedSamples.at(-1);
   // F5 / F6 are contextual: idle → START / SAVE (legacy), sampling → CANCEL / KEEP.
   // KEEP and SAVE are the same action — keepSampling stops the recording and

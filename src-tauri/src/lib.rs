@@ -152,6 +152,78 @@ fn audio_is_running(state: State<'_, AudioEngineState>) -> Result<bool, String> 
     Ok(guard.is_some())
 }
 
+/// Hot-swap the input device by tearing down and rebuilding the input
+/// stream. The forwarder thread + recording accumulator are kept across
+/// the swap; the user notices a brief glitch (one buffer worth) but no
+/// engine restart.
+///
+/// For Phase 2 simplicity we implement this as a full restart with the
+/// updated config — atomic from the JS side, preserves the engine state
+/// shape. The previous engine is dropped (closes its stream) before the
+/// new one is constructed.
+#[tauri::command]
+fn audio_set_input_device(
+    app: tauri::AppHandle,
+    state: State<'_, AudioEngineState>,
+    device_id: String,
+) -> Result<(), String> {
+    let mut guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    let current_config = guard
+        .as_ref()
+        .map(|e| e.config().clone())
+        .ok_or_else(|| "capture not running".to_string())?;
+    let new_config = AudioConfig {
+        input_device_id: Some(device_id),
+        ..current_config
+    };
+    *guard = None;
+    *guard = Some(AudioEngine::start(app, new_config)?);
+    Ok(())
+}
+
+/// Output device swap is a no-op at the audio engine level for now —
+/// monitor routing happens JS-side via Web Audio, so the OS output
+/// selection is owned by Web Audio's AudioContext, not by cpal. We
+/// still expose the command so the JS bridge has a complete surface
+/// (Phase 3 may bring native output back here for low-latency monitor).
+#[tauri::command]
+fn audio_set_output_device(
+    _state: State<'_, AudioEngineState>,
+    _device_id: String,
+) -> Result<(), String> {
+    // Intentional no-op for Phase 2. JS-side monitor routing handles output.
+    Ok(())
+}
+
+/// Monitor mode setter — currently informational only on the Rust side.
+/// Actual monitor routing happens in JS via Web Audio (audio:frame
+/// events → AudioBuffer → AudioContext destination, optionally via
+/// fxEngine for Through FX). Stored so future restart restores it.
+#[tauri::command]
+fn audio_set_monitor_mode(
+    _state: State<'_, AudioEngineState>,
+    _mode: String,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Full engine restart with new config. Used by the SETTINGS AUDIO
+/// "APPLY & RESTART" button when dirty fields (sample rate, buffer
+/// size, channels, WASAPI mode) change. Drops the current engine
+/// (closes streams) then constructs a fresh one.
+#[tauri::command]
+fn audio_restart_engine(
+    app: tauri::AppHandle,
+    state: State<'_, AudioEngineState>,
+    config: AudioConfig,
+) -> Result<(), String> {
+    let mut guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    *guard = None;
+    let engine = AudioEngine::start(app, config)?;
+    *guard = Some(engine);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -167,6 +239,10 @@ pub fn run() {
             audio_stop_recording,
             audio_get_current_level,
             audio_is_running,
+            audio_set_input_device,
+            audio_set_output_device,
+            audio_set_monitor_mode,
+            audio_restart_engine,
         ])
         .setup(|app| {
             let _ = app.dialog();

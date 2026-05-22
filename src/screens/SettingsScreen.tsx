@@ -8,19 +8,20 @@ import { isTauri } from "../runtime/environment";
 
 const softButtons = [
   "F1 VOL",
-  "F2 AUTOSAVE",
-  "F3 MIDI",
-  "F4 KEYS",
-  "F5 INFO",
-  "F6 SAVE",
+  "F2 AUDIO",
+  "F3 AUTOSAVE",
+  "F4 MIDI",
+  "F5 KEYS",
+  "F6 INFO",
 ] as const;
 
 const categoryByFKey: Record<string, string> = {
   "F1 VOL": "masterVolume",
-  "F2 AUTOSAVE": "autosave",
-  "F3 MIDI": "midi",
-  "F4 KEYS": "keyboard",
-  "F5 INFO": "system",
+  "F2 AUDIO": "audio",
+  "F3 AUTOSAVE": "autosave",
+  "F4 MIDI": "midi",
+  "F5 KEYS": "keyboard",
+  "F6 INFO": "system",
 };
 
 export function SettingsScreen() {
@@ -75,8 +76,15 @@ export function SettingsScreen() {
                 {category.label}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={onSave}
+              className="mt-[6px] border border-amber-300 bg-amber-200/10 px-[4%] py-[3%] text-left text-amber-100 hover:bg-amber-200/20"
+            >
+              SAVE
+            </button>
             {saveStatus && (
-              <p className="mt-[6px] text-[10px] tracking-[0.16em] text-amber-200">{saveStatus}</p>
+              <p className="text-[10px] tracking-[0.16em] text-amber-200">{saveStatus}</p>
             )}
           </section>
 
@@ -102,6 +110,7 @@ export function SettingsScreen() {
                   selectSettingIndex={selectSetting}
                 />
               )}
+              {activeCategory.id === "audio" && <AudioPanel />}
               {activeCategory.id === "midi" && <MidiPlaceholder />}
               {activeCategory.id === "keyboard" && <KeyboardReference />}
               {activeCategory.id === "system" && <SystemInfo />}
@@ -110,30 +119,35 @@ export function SettingsScreen() {
         </div>
 
         <div className="grid grid-cols-6 gap-[1.4%]">
-          {softButtons.map((button) => (
-            <button
-              key={button}
-              type="button"
-              onClick={() => {
-                if (button === "F6 SAVE") {
-                  onSave();
-                  return;
-                }
-                const target = categoryByFKey[button];
-                if (target) {
-                  setActiveSettingsCategory(target);
-                  selectSetting(0);
-                }
-              }}
-              className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] ${
-                button === "F6 SAVE"
-                  ? "bg-amber-200/10 text-amber-100"
-                  : "bg-black/25 text-[#d8e3b7]"
-              }`}
-            >
-              {button}
-            </button>
-          ))}
+          {softButtons.map((button) => {
+            // F2 AUDIO is Tauri-only; in browser mode the button is greyed
+            // out (the AUDIO category itself reads as a placeholder there).
+            const isAudio = button === "F2 AUDIO";
+            const audioDisabled = isAudio && !isTauri();
+            const isActive = categoryByFKey[button] === activeCategoryId;
+            return (
+              <button
+                key={button}
+                type="button"
+                disabled={audioDisabled}
+                onClick={() => {
+                  const target = categoryByFKey[button];
+                  if (target) {
+                    setActiveSettingsCategory(target);
+                    selectSetting(0);
+                  }
+                }}
+                title={audioDisabled ? "Available in desktop app only" : undefined}
+                className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isActive
+                    ? "bg-amber-200/15 text-amber-100"
+                    : "bg-black/25 text-[#d8e3b7]"
+                }`}
+              >
+                {button}
+              </button>
+            );
+          })}
         </div>
       </div>
     </ScreenFrame>
@@ -576,6 +590,217 @@ function SystemInfo() {
           <span className="truncate text-[#eef6d8]">{value}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ============================================================
+// AUDIO panel — Tauri-only (cpal/WASAPI). 8 fields + APPLY button.
+// Dirty tracking: hot-swap fields (Input / Output / Monitor) apply
+// immediately; dirty fields (Sample Rate / Buffer Size / Bit Depth /
+// Channels / WASAPI Mode) wait for APPLY & RESTART.
+// ============================================================
+function AudioPanel() {
+  const audioConfig = useAppStore((s) => s.audioConfig);
+  const appliedAudioConfig = useAppStore((s) => s.appliedAudioConfig);
+  const audioDevices = useAppStore((s) => s.audioDevices);
+  const audioBitDepth = useAppStore((s) => s.audioBitDepth);
+  const audioStatusMessage = useAppStore((s) => s.audioStatusMessage);
+  const refreshAudioDevices = useAppStore((s) => s.refreshAudioDevices);
+  const setAudioInputDevice = useAppStore((s) => s.setAudioInputDevice);
+  const setAudioOutputDevice = useAppStore((s) => s.setAudioOutputDevice);
+  const setAudioMonitorMode = useAppStore((s) => s.setAudioMonitorMode);
+  const setAudioSampleRate = useAppStore((s) => s.setAudioSampleRate);
+  const setAudioBufferSize = useAppStore((s) => s.setAudioBufferSize);
+  const setAudioChannels = useAppStore((s) => s.setAudioChannels);
+  const setAudioWasapiMode = useAppStore((s) => s.setAudioWasapiMode);
+  const setAudioBitDepth = useAppStore((s) => s.setAudioBitDepth);
+  const applyAudioSettings = useAppStore((s) => s.applyAudioSettings);
+  const [applying, setApplying] = useState(false);
+
+  useEffect(() => {
+    if (isTauri()) void refreshAudioDevices();
+  }, [refreshAudioDevices]);
+
+  if (!isTauri()) {
+    return (
+      <div className="grid content-start gap-[8px] text-[clamp(10px,0.78vw,12px)] tracking-[0.14em] text-[#91a477]">
+        <p className="text-amber-200">AUDIO settings available in desktop app only.</p>
+        <p className="text-[#d8e3b7]">Browser dev mode uses getDisplayMedia / getUserMedia fallback.</p>
+      </div>
+    );
+  }
+
+  // Dirty if any of the restart-required fields differs from applied.
+  const dirty =
+    audioConfig.sampleRate !== appliedAudioConfig.sampleRate ||
+    audioConfig.bufferSize !== appliedAudioConfig.bufferSize ||
+    audioConfig.channels !== appliedAudioConfig.channels ||
+    audioConfig.wasapiMode !== appliedAudioConfig.wasapiMode;
+
+  const inputs = audioDevices.filter((d) => d.kind === "input" || d.kind === "loopback");
+  const outputs = audioDevices.filter((d) => d.kind === "output");
+  const monitorLocked = (audioConfig.inputDeviceId ?? "").startsWith("loopback::");
+  const isWindows = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("win");
+
+  const handleApply = async () => {
+    setApplying(true);
+    try {
+      await applyAudioSettings();
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+      <AudioRow label="INPUT DEVICE">
+        <select
+          value={audioConfig.inputDeviceId ?? ""}
+          onChange={(e) => void setAudioInputDevice(e.target.value)}
+          className="min-w-0 truncate border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+        >
+          {inputs.length === 0 && <option value="">(no devices)</option>}
+          {inputs.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.kind === "loopback" ? d.name : d.name}{d.isDefault ? " ★" : ""}
+            </option>
+          ))}
+        </select>
+      </AudioRow>
+
+      <AudioRow label="OUTPUT DEVICE">
+        <select
+          value={audioConfig.outputDeviceId ?? ""}
+          onChange={(e) => void setAudioOutputDevice(e.target.value)}
+          className="min-w-0 truncate border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+        >
+          <option value="">(system default)</option>
+          {outputs.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}{d.isDefault ? " ★" : ""}
+            </option>
+          ))}
+        </select>
+      </AudioRow>
+
+      <AudioRow label="SAMPLE RATE" dirty={audioConfig.sampleRate !== appliedAudioConfig.sampleRate}>
+        <select
+          value={audioConfig.sampleRate}
+          onChange={(e) => setAudioSampleRate(Number(e.target.value))}
+          className="border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+        >
+          <option value={44100}>44.1 kHz</option>
+          <option value={48000}>48 kHz</option>
+          <option value={88200}>88.2 kHz</option>
+          <option value={96000}>96 kHz</option>
+        </select>
+      </AudioRow>
+
+      <AudioRow label="BUFFER SIZE" dirty={audioConfig.bufferSize !== appliedAudioConfig.bufferSize}>
+        <select
+          value={audioConfig.bufferSize}
+          onChange={(e) => setAudioBufferSize(Number(e.target.value))}
+          className="border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+        >
+          <option value={64}>64 samples</option>
+          <option value={128}>128 samples</option>
+          <option value={256}>256 samples</option>
+          <option value={512}>512 samples</option>
+          <option value={1024}>1024 samples</option>
+        </select>
+      </AudioRow>
+
+      <AudioRow label="BIT DEPTH">
+        <select
+          value={audioBitDepth}
+          onChange={(e) => setAudioBitDepth(Number(e.target.value) as 16 | 24 | 32)}
+          className="border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+        >
+          <option value={16}>16-bit (classic)</option>
+          <option value={24}>24-bit</option>
+          <option value={32}>32-bit float</option>
+        </select>
+      </AudioRow>
+
+      <AudioRow label="CHANNELS" dirty={audioConfig.channels !== appliedAudioConfig.channels}>
+        <select
+          value={audioConfig.channels}
+          onChange={(e) => setAudioChannels(Number(e.target.value) as 1 | 2)}
+          className="border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+        >
+          <option value={1}>Mono</option>
+          <option value={2}>Stereo</option>
+        </select>
+      </AudioRow>
+
+      {isWindows && (
+        <AudioRow label="WASAPI MODE" dirty={audioConfig.wasapiMode !== appliedAudioConfig.wasapiMode}>
+          <select
+            value={audioConfig.wasapiMode}
+            onChange={(e) => setAudioWasapiMode(e.target.value as "shared" | "exclusive")}
+            className="border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300"
+          >
+            <option value="shared">Shared</option>
+            <option value="exclusive">Exclusive</option>
+          </select>
+        </AudioRow>
+      )}
+
+      <AudioRow label="MONITOR" locked={monitorLocked} lockedReason="Locked off for loopback input">
+        <select
+          value={monitorLocked ? "off" : audioConfig.monitorMode}
+          onChange={(e) => void setAudioMonitorMode(e.target.value as "off" | "direct" | "throughfx")}
+          disabled={monitorLocked}
+          className="border border-[#46533b] bg-black/40 px-[6px] py-[3px] text-[#eef6d8] outline-none focus:border-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <option value="off">Off</option>
+          <option value="direct">Direct</option>
+          <option value="throughfx">Through FX</option>
+        </select>
+      </AudioRow>
+
+      {dirty && (
+        <button
+          type="button"
+          onClick={() => void handleApply()}
+          disabled={applying}
+          className="mt-[6px] border border-amber-300 bg-amber-200/10 px-[10px] py-[8px] text-left text-amber-100 hover:bg-amber-200/20 disabled:opacity-50"
+        >
+          {applying ? "RESTARTING…" : "APPLY & RESTART AUDIO"}
+        </button>
+      )}
+
+      {audioStatusMessage && (
+        <p className="mt-[4px] text-[10px] tracking-[0.16em] text-amber-200">{audioStatusMessage}</p>
+      )}
+    </div>
+  );
+}
+
+function AudioRow({
+  label,
+  dirty,
+  locked,
+  lockedReason,
+  children,
+}: {
+  label: string;
+  dirty?: boolean;
+  locked?: boolean;
+  lockedReason?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[120px_1fr] items-center gap-[10px] border border-[#46533b] bg-black/15 px-[10px] py-[5px]">
+      <span className="flex items-center gap-[6px] text-[#91a477]">
+        {label}
+        {dirty && <span className="text-amber-300" title="Restart required">●</span>}
+        {locked && lockedReason && (
+          <span className="text-[9px] text-[#46533b]" title={lockedReason}>(locked)</span>
+        )}
+      </span>
+      {children}
     </div>
   );
 }

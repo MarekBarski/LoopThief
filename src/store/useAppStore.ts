@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { ScreenId } from "../types/navigation";
 import { startRecordingCapture, type RecordingInputSource, type UnifiedCaptureSession } from "../audio/recordingCapture";
-import { startNativeRecording } from "../audio/native";
+import { startNativeRecording, defaultAudioConfig as defaultAudioConfigInternal } from "../audio/native";
 import { samplerEngine } from "../audio/samplerEngine";
 import {
   EFFECT_DEFAULTS,
@@ -289,6 +289,25 @@ type AppState = {
   dismissBootResume: () => Promise<void>;
   loadLatestAutosave: () => Promise<{ ok: boolean; message: string }>;
   hasAutosaveEntry: () => Promise<boolean>;
+  // -------- Phase 2 audio config (Tauri native capture) --------
+  audioConfig: import("../audio/native").AudioConfig;
+  appliedAudioConfig: import("../audio/native").AudioConfig;
+  audioDevices: import("../audio/native").AudioDevice[];
+  audioBitDepth: 16 | 24 | 32;
+  audioStatusMessage: string;
+  /** Rolling waveform bars (0..1) accumulated from audio:frame events
+   *  during native recording. Cleared on start/stop. ~128 bars max. */
+  liveRecordingWaveform: number[];
+  refreshAudioDevices: () => Promise<void>;
+  setAudioInputDevice: (id: string) => Promise<void>;
+  setAudioOutputDevice: (id: string) => Promise<void>;
+  setAudioMonitorMode: (mode: "off" | "direct" | "throughfx") => Promise<void>;
+  setAudioSampleRate: (rate: number) => void;
+  setAudioBufferSize: (size: number) => void;
+  setAudioChannels: (channels: 1 | 2) => void;
+  setAudioWasapiMode: (mode: "shared" | "exclusive") => void;
+  setAudioBitDepth: (depth: 16 | 24 | 32) => void;
+  applyAudioSettings: () => Promise<{ ok: boolean; message: string }>;
   setActiveScreen: (screen: ScreenId) => void;
   togglePlay: () => void;
   stopPlayback: () => void;
@@ -1074,6 +1093,118 @@ export const useAppStore = create<AppState>((set, get) => ({
   bootResumeOpen: false,
   bootResumeStatus: "IDLE",
   bootResumeMessage: "",
+  audioConfig: defaultAudioConfigInternal(),
+  appliedAudioConfig: defaultAudioConfigInternal(),
+  audioDevices: [],
+  audioBitDepth: 16,
+  audioStatusMessage: "",
+  liveRecordingWaveform: [],
+  refreshAudioDevices: async () => {
+    if (!isTauri()) return;
+    try {
+      const native = await import("../audio/native");
+      const devices = await native.listAudioDevices();
+      set({ audioDevices: devices });
+    } catch (err) {
+      set({ audioStatusMessage: err instanceof Error ? err.message : "Device list failed" });
+    }
+  },
+  setAudioInputDevice: async (id: string) => {
+    const next = { ...get().audioConfig, inputDeviceId: id };
+    set({ audioConfig: next });
+    if (!isTauri()) return;
+    try {
+      const native = await import("../audio/native");
+      await native.setInputDevice(id);
+      // Hot-swap counts as applied — keeps dirty flag accurate.
+      set((s) => ({
+        appliedAudioConfig: { ...s.appliedAudioConfig, inputDeviceId: id },
+        audioStatusMessage: "Input device switched",
+      }));
+      // Loopback input forces monitor off.
+      if (id.startsWith("loopback::")) {
+        await get().setAudioMonitorMode("off");
+      }
+    } catch (err) {
+      set({ audioStatusMessage: err instanceof Error ? err.message : "Input swap failed" });
+    }
+  },
+  setAudioOutputDevice: async (id: string) => {
+    const next = { ...get().audioConfig, outputDeviceId: id };
+    set({ audioConfig: next });
+    if (!isTauri()) return;
+    try {
+      const native = await import("../audio/native");
+      await native.setOutputDevice(id);
+      set((s) => ({
+        appliedAudioConfig: { ...s.appliedAudioConfig, outputDeviceId: id },
+        audioStatusMessage: "Output device switched",
+      }));
+    } catch (err) {
+      set({ audioStatusMessage: err instanceof Error ? err.message : "Output swap failed" });
+    }
+  },
+  setAudioMonitorMode: async (mode) => {
+    const next = { ...get().audioConfig, monitorMode: mode };
+    set({ audioConfig: next });
+    if (!isTauri()) return;
+    try {
+      const native = await import("../audio/native");
+      await native.setMonitorMode(mode);
+      // Toggle JS-side monitor playback. Through FX routes via fxEngine's
+      // master input (the same node sampler voices use); Direct goes to
+      // AudioContext.destination. Off detaches the listener entirely.
+      if (mode === "off") {
+        await native.stopMonitor();
+      } else {
+        let fxMasterInput: AudioNode | null = null;
+        if (mode === "throughfx") {
+          try {
+            const { fxEngine } = await import("../audio/fxEngine");
+            fxMasterInput = fxEngine.getMasterInput();
+          } catch {
+            fxMasterInput = null;
+          }
+        }
+        await native.startMonitor(mode, fxMasterInput);
+      }
+      set((s) => ({
+        appliedAudioConfig: { ...s.appliedAudioConfig, monitorMode: mode },
+        audioStatusMessage: mode === "off" ? "Monitor off" : `Monitor ${mode}`,
+      }));
+    } catch (err) {
+      set({ audioStatusMessage: err instanceof Error ? err.message : "Monitor swap failed" });
+    }
+  },
+  setAudioSampleRate: (rate: number) =>
+    set((s) => ({ audioConfig: { ...s.audioConfig, sampleRate: rate } })),
+  setAudioBufferSize: (size: number) =>
+    set((s) => ({ audioConfig: { ...s.audioConfig, bufferSize: size } })),
+  setAudioChannels: (channels: 1 | 2) =>
+    set((s) => ({ audioConfig: { ...s.audioConfig, channels } })),
+  setAudioWasapiMode: (mode: "shared" | "exclusive") =>
+    set((s) => ({ audioConfig: { ...s.audioConfig, wasapiMode: mode } })),
+  setAudioBitDepth: (depth: 16 | 24 | 32) => set({ audioBitDepth: depth }),
+  applyAudioSettings: async () => {
+    if (!isTauri()) {
+      // Browser mode — bit depth still persists but nothing to restart.
+      set((s) => ({ appliedAudioConfig: { ...s.audioConfig } }));
+      return { ok: true, message: "Browser mode — settings saved" };
+    }
+    try {
+      const native = await import("../audio/native");
+      await native.restartEngine(get().audioConfig);
+      set((s) => ({
+        appliedAudioConfig: { ...s.audioConfig },
+        audioStatusMessage: "Audio engine restarted",
+      }));
+      return { ok: true, message: "Audio engine restarted" };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Restart failed";
+      set({ audioStatusMessage: msg });
+      return { ok: false, message: msg };
+    }
+  },
   requestAppQuit: () => {
     const state = get();
     // Block quit while transport / sampling is active. User must STOP first.
@@ -1452,11 +1583,48 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isTauri()) {
       void (async () => {
         try {
+          // Reset live waveform at start of recording.
+          set({ liveRecordingWaveform: [] });
+          // Threshold gating. dBFS → linear (Math.pow(10, dB/20)).
+          // Tauri-only for Phase 2 — browser path threshold is Phase 3.
+          const thresholdSetting = state.threshold;
+          const thresholdLinear =
+            thresholdSetting === "OFF" || typeof thresholdSetting !== "number"
+              ? undefined
+              : Math.pow(10, thresholdSetting / 20);
           const native = await startNativeRecording({
             onLevel,
-            // Per-frame waveform updates are Phase 2; for now we just want
-            // the final AudioBuffer back from stop(). The Rust side still
-            // emits audio:frame events — they're cheap to ignore.
+            threshold: thresholdLinear,
+            onThresholdArmed: () => {
+              set({ importMessage: "WAITING FOR LEVEL..." });
+            },
+            onThresholdTriggered: () => {
+              set({ importMessage: "RECORDING SYSTEM AUDIO" });
+            },
+            onFrame: (payload) => {
+              // Downsample each chunk into a small number of bars
+              // (max abs per segment), append to rolling waveform.
+              const samples = payload.samples;
+              if (samples.length === 0) return;
+              const barsPerChunk = 4;
+              const segLen = Math.max(1, Math.floor(samples.length / barsPerChunk));
+              const newBars: number[] = [];
+              for (let b = 0; b < barsPerChunk; b++) {
+                let peak = 0;
+                const start = b * segLen;
+                const end = Math.min(samples.length, start + segLen);
+                for (let i = start; i < end; i++) {
+                  const v = Math.abs(samples[i]);
+                  if (v > peak) peak = v;
+                }
+                newBars.push(Math.min(1, peak));
+              }
+              set((s) => {
+                const next = s.liveRecordingWaveform.concat(newBars);
+                const trimmed = next.length > 128 ? next.slice(next.length - 128) : next;
+                return { liveRecordingWaveform: trimmed };
+              });
+            },
           });
           activeRecordingCapture = {
             stop: () => native.stop(),
@@ -7920,6 +8088,11 @@ function createSettingsCategories(): SettingsCategory[] {
       settings: [
         { key: "masterVolume", label: "MASTER VOL", kind: "numeric", min: 0, max: 200, step: 5 },
       ],
+    },
+    {
+      id: "audio",
+      label: "AUDIO",
+      settings: [],
     },
     {
       id: "autosave",

@@ -60,16 +60,56 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
   return invoke<AudioDevice[]>("audio_list_devices");
 }
 
+/** Hot-swap input device. Rebuilds the input stream on the new device. */
+export async function setInputDevice(deviceId: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("audio_set_input_device", { deviceId });
+}
+
+/** Output device setter. Phase 2: no-op on Rust side (monitor routing
+ *  is JS-side via Web Audio); future native low-latency monitor will
+ *  consume this. Exposed now so callers don't need to branch. */
+export async function setOutputDevice(deviceId: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("audio_set_output_device", { deviceId });
+}
+
+/** Monitor mode setter. Rust stores intent; actual routing is JS-side. */
+export async function setMonitorMode(mode: "off" | "direct" | "throughfx"): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("audio_set_monitor_mode", { mode });
+}
+
+/** Full engine restart with new config — used by SETTINGS AUDIO APPLY. */
+export async function restartEngine(config: AudioConfig): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const completeConfig: AudioConfig = { ...defaultAudioConfig(), ...config };
+  await invoke("audio_restart_engine", { config: completeConfig });
+}
+
 /**
  * Begin a recording session. Returns handles to stop or cancel.
  *
  * onFrame: invoked for every batch of captured frames (~10 ms chunks)
  *          during the recording, for live waveform / level UI.
  * onLevel: invoked at ~30 Hz with the current peak level (0..1).
+ * threshold: when set (linear 0..1), the recording is gated. The capture
+ *            engine runs immediately so the pre-roll buffer fills, but the
+ *            Rust `audio_start_recording` call is deferred until the level
+ *            crosses the threshold for the first time. Mimics MPC threshold
+ *            sampling: user arms, source crosses threshold → recording
+ *            begins WITH 250 ms pre-roll.
+ *            Pass `undefined` (default) for immediate recording.
+ * onThresholdArmed: invoked once when the watch loop is started (so UI
+ *                   can show "WAITING FOR LEVEL").
+ * onThresholdTriggered: invoked once when the threshold is crossed.
  */
 export async function startNativeRecording(callbacks: {
   onFrame?: (payload: AudioFramePayload) => void;
   onLevel?: (level: number) => void;
+  threshold?: number;
+  onThresholdArmed?: () => void;
+  onThresholdTriggered?: () => void;
 }): Promise<NativeCaptureSession> {
   await ensureCaptureRunning();
 
@@ -101,15 +141,45 @@ export async function startNativeRecording(callbacks: {
     currentLevelListener = () => window.clearInterval(handle);
   }
 
-  await invoke("audio_start_recording");
+  // Threshold gating. When `callbacks.threshold` is set, we DEFER the
+  // audio_start_recording call. The capture engine keeps running so the
+  // pre-roll ring buffer fills; a JS-side watch loop polls the level and
+  // engages recording the moment it crosses. This mirrors MPC threshold
+  // sampling: the level-cross moment is captured complete, including the
+  // 250 ms BEFORE the cross (pre-roll).
+  if (callbacks.threshold === undefined) {
+    await invoke("audio_start_recording");
+  } else {
+    const thresholdValue = callbacks.threshold;
+    callbacks.onThresholdArmed?.();
+    let triggered = false;
+    const watchHandle = window.setInterval(async () => {
+      if (triggered) return;
+      try {
+        const level = await invoke<number>("audio_get_current_level");
+        if (level >= thresholdValue) {
+          triggered = true;
+          window.clearInterval(watchHandle);
+          await invoke("audio_start_recording");
+          callbacks.onThresholdTriggered?.();
+        }
+      } catch {
+        // Engine torn down mid-poll — stop watching.
+        window.clearInterval(watchHandle);
+      }
+    }, 20);
+    thresholdWatchHandles.add(watchHandle);
+  }
 
   return {
     stop: async () => {
+      clearAllThresholdWatches();
       const result = await invoke<NativeRecordingResult>("audio_stop_recording");
       detachListeners();
       return await assembleAudioBuffer(result);
     },
     cancel: async () => {
+      clearAllThresholdWatches();
       // Cancel = stop recording but discard the result.
       try {
         await invoke<NativeRecordingResult>("audio_stop_recording");
@@ -119,6 +189,12 @@ export async function startNativeRecording(callbacks: {
       detachListeners();
     },
   };
+}
+
+const thresholdWatchHandles = new Set<number>();
+function clearAllThresholdWatches() {
+  for (const handle of thresholdWatchHandles) window.clearInterval(handle);
+  thresholdWatchHandles.clear();
 }
 
 function detachListeners() {

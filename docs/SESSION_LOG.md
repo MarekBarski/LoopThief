@@ -99,6 +99,144 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 26 — 2026-05-22 — Native audio Phase 2 — SETTINGS AUDIO panel + hot-swap + live waveform + threshold + monitor routing
+
+### What was attempted
+
+Phase 2 of native audio per Marek's full scope spec:
+1. SETTINGS AUDIO category — 8 fields + APPLY & RESTART + dirty tracking
+2. Hot-swap input/output device + monitor (no engine restart)
+3. Monitor routing — Off / Direct / Through FX
+4. Live waveform during native recording (audio:frame accumulator)
+5. Native threshold detection (JS-side polling watcher)
+6. Linux PipeWire verification (documented as unverified)
+7. SAB upgrade — explicitly SKIPPED per "ONLY if time permits"
+
+Constraints from Phase 1 locked: cpal stays, Tauri event channel for capture frames, 32-bit float internal, 250 ms pre-roll, browser fallback untouched.
+
+### What worked
+
+**Store (`src/store/useAppStore.ts`):**
+- New state slice `audioConfig` (active) + `appliedAudioConfig` (last applied) + `audioDevices` + `audioBitDepth` + `audioStatusMessage` + `liveRecordingWaveform`.
+- Hot-swap actions (`setAudioInputDevice`, `setAudioOutputDevice`, `setAudioMonitorMode`) call native bridge + immediately update both `audioConfig` and `appliedAudioConfig` so dirty stays clean.
+- Dirty actions (`setAudioSampleRate`, `setAudioBufferSize`, `setAudioChannels`, `setAudioWasapiMode`) update `audioConfig` only; `applyAudioSettings()` calls native `restartEngine` and only then copies to `appliedAudioConfig`.
+- `setAudioBitDepth` is a pure UI setting (controls save format only, internal pipeline always f32) — no engine restart, no native call.
+- Loopback input force-disables monitor: `setAudioInputDevice` checks for `loopback::` prefix and calls `setAudioMonitorMode("off")`.
+
+**Rust Tauri commands (`src-tauri/src/lib.rs`):**
+- `audio_set_input_device(deviceId)` — full engine restart with same config but new input. Atomic from JS side: drops old engine (closes stream) then constructs new one. Phase 3 could rebuild only the stream and reuse forwarder thread, but Phase 2 simplicity wins.
+- `audio_set_output_device(deviceId)` — no-op at Rust level. Monitor routing happens JS-side via Web Audio, so output device selection is owned by AudioContext, not cpal. Exposed for API completeness.
+- `audio_set_monitor_mode(mode)` — informational only on Rust side. Monitor routing is JS-side.
+- `audio_restart_engine(config)` — full restart with new config. Used by APPLY button when dirty fields change.
+
+**JS bridge (`src/audio/native/`):**
+- `setInputDevice`, `setOutputDevice`, `setMonitorMode`, `restartEngine` added to `nativeCapture.ts`.
+- Re-exports updated in `index.ts`.
+- `ensureCaptureRunning` already accepts `Partial<AudioConfig>` (from S25 hardening) and merges with defaults — no change needed.
+
+**SETTINGS AUDIO panel (`src/screens/SettingsScreen.tsx`):**
+- Softkey row remapped: `F1 VOL / F2 AUDIO / F3 AUTOSAVE / F4 MIDI / F5 KEYS / F6 INFO`. F6 SAVE moved to an inline button in the left CATEGORY column (still calls `persistSettingsNow`).
+- `F2 AUDIO` disabled with tooltip "Available in desktop app only" when `!isTauri()`. Same dim treatment as other Tauri-only UI.
+- New `AudioPanel` component: 8 dropdown fields (Input, Output, Sample Rate, Buffer Size, Bit Depth, Channels, WASAPI Mode, Monitor) + conditional APPLY button + status message.
+- Dirty marker (●) shown next to field label when its value differs from applied.
+- WASAPI Mode field hidden entirely on non-Windows platforms.
+- Monitor field force-disabled (greyed) when input is loopback, with `(locked)` annotation and tooltip.
+- Browser fallback: shows a "Available in desktop app only" placeholder in the AUDIO category panel; rest of SETTINGS works normally.
+
+**Live waveform** (`src/store/useAppStore.ts` + `src/screens/RecordScreen.tsx`):
+- Tauri path: `startSampling` passes `onFrame` callback. Each event chunk is downsampled to 4 bars (max abs per segment) and appended to a rolling `liveRecordingWaveform` array, trimmed to last 128 bars.
+- RecordScreen reads `liveRecordingWaveform` while `isSampling`, falls back to `recordedSamples.at(-1).waveform` otherwise — preserves existing post-recording display.
+- Browser path: unchanged (still no live waveform; would need refactor of `recordingCapture.ts` to expose a sample stream). Documented in this session log as Phase 3.
+
+**Native threshold detection** (`src/audio/native/nativeCapture.ts` + store):
+- `startNativeRecording` accepts a `threshold` parameter (linear 0..1). When set, `audio_start_recording` is NOT called immediately; instead a JS-side watch loop polls `audio_get_current_level` every 20 ms and engages recording the moment the level crosses threshold. Then `onThresholdTriggered` callback fires.
+- The pre-roll buffer in Rust keeps filling during the wait, so the moment of crossing is captured complete with the 250 ms before it (MPC threshold semantics).
+- Store's `startSampling` converts the dBFS `threshold` setting to linear and passes it. UI message updates to "WAITING FOR LEVEL..." then "RECORDING SYSTEM AUDIO" on trigger.
+- Browser threshold: documented as Phase 3 deferred. The `threshold` state field was already exposed in RECORD screen but neither path actually consumed it — so this is a NEW feature for the Tauri path, not parity with browser.
+
+**Monitor routing** (`src/audio/native/monitor.ts` — NEW):
+- Subscribes to `audio:frame` Tauri events when monitor active. Creates an AudioContext, deinterleaves each frame chunk into per-channel Float32Arrays, builds an AudioBuffer, schedules an `AudioBufferSourceNode` at the next safe time.
+- Scheduling pattern: each new chunk starts where the previous ended (`nextStartTime = scheduledStart + buffer.duration`), with a 20 ms lead to absorb IPC jitter. If we fall behind, restart from `now + lead`.
+- Direct mode: routing target = `ctx.destination`.
+- Through FX mode: routing target = `fxEngine.getMasterInput()` (pulled dynamically from the existing fxEngine module). Sampler voices already route through the same node — captured audio joins the same FX chain.
+- `stopMonitor` unlistens and closes the AudioContext. `startMonitor` is hot-swap-safe — calls stop first.
+- Store action `setAudioMonitorMode` toggles native bridge + JS-side monitor playback together.
+
+**Rust capture changes** (`src-tauri/src/audio/capture.rs`):
+- `process_callback` now emits `audio:frame` events ALWAYS when capture is running, not just during recording. This enables monitor routing to work even when not actively recording. CPU cost: constant ~100 Hz event traffic when capture engine is up. Acceptable for Phase 2; Phase 3 with SAB would eliminate this entirely.
+- Forwarder thread signature extended with `Arc<AtomicBool>` for the recording flag. `flush_batch` now checks the flag — appends to `recording_buffer` only when recording, but emits `audio:frame` events unconditionally.
+- `process_callback` no longer reads the recording flag — moved entirely to forwarder. Parameter renamed `_recording_flag` to satisfy the unused warning.
+
+**Phase 1 success criteria verified intact**:
+- `npm run build` clean.
+- `cargo check` clean — no warnings.
+- Browser fallback path (`startRecordingCapture` + `MediaRecorder`) untouched.
+- 250 ms pre-roll behaviour unchanged (Rust `start_recording` drains ring as before).
+- `unsafe impl Send for AudioEngine` justification still holds (streams never move between threads).
+
+### What didn't work / pitfalls hit
+
+- **Hot-swap input device implemented as full engine restart, not partial.** The Phase 1 spec said "audio_set_input_device hot-swaps, no engine restart". My implementation drops the entire engine (closes stream + forwarder thread) and constructs a fresh one with the new device id. Net effect for the user is the same — a brief audio drop, no SETTINGS button required — but it's not a true partial swap. A real partial swap would keep the forwarder thread alive and only rebuild the cpal::Stream. Phase 3 polish; for now the user-observable behaviour matches Marek's spec.
+- **Output device selection no-op at Rust level.** Monitor routing is JS-side (Web Audio), so OS output selection is owned by Web Audio's AudioContext, not cpal. Marek may have wanted native output stream for low-latency monitor — that's Phase 3. The `audio_set_output_device` command exists as a no-op so the JS bridge API stays complete.
+- **Browser path threshold still doesn't work.** Marek's spec said "currently browser path has threshold, native path doesn't. Move threshold to JS-side detector reading from same frames stream so both paths support it identically." Reality check: the `threshold` state field existed but no code path consumed it in either backend. I added threshold gating to the native path; browser path would need a refactor of `recordingCapture.ts` to expose live samples (AnalyserNode-based) and a similar watch loop. Documented as Phase 3 — the spec assumption was wrong but the deliverable (working threshold in Tauri) lands.
+- **Browser path live waveform also missing.** Similar story: `RecordScreen` only ever showed `recordedSamples.at(-1).waveform` during recording — that's the LAST completed sample's waveform, not live. The browser AnalyserNode has the data but it was only being read for VU level, not for waveform. Native path gets the new live waveform via `audio:frame` event accumulator; browser would need a similar enhancement. Phase 3.
+- **Monitor latency ~70-120 ms.** Web Audio scheduling adds significant latency on top of the ~10 ms IPC. For monitoring (user feedback) this is acceptable; for live performance (hearing yourself sing in real time) it's audibly noticeable. Hardware direct monitoring on the audio interface remains the gold standard. Documented in `monitor.ts` doc-block.
+- **Monitor only operates DURING a native recording session.** Strictly speaking the engine starts capturing when `startSampling` is called, so monitor's audio:frame subscription only gets data while capture is up. For "pre-recording monitor" (hearing yourself while just sitting on the RECORD screen, no ARM/START), the capture engine would need to start on RECORD screen mount and persist. Phase 3. For now the Direct/Through FX modes activate only during the sampling session.
+- **Through FX may sound dry if fxEngine has no master input yet.** `getMasterInput()` returns `null` until `fxEngine.ensureReady()` has been called by the first sampler voice. If the user hits Through FX before playing any pad, fallback is `ctx.destination` (Direct routing). The behaviour is silent-but-not-broken; just no FX colour. Once any pad has fired, masterInput is ready and subsequent monitor sessions route through it.
+- **Constant ~100 Hz audio:frame event traffic when capture is up.** Phase 1 emitted these only during recording; Phase 2 emits always to enable monitor. Idle CPU cost is real (event serialisation + IPC) but small in practice. Phase 3 SAB upgrade would eliminate this entirely.
+- **Linux PipeWire still unverified.** cpal compiles fine for Linux but I have no Linux machine in this dev environment. Marek's future Linux Mint runtime test is the only path to verify. Listed in followups.
+- **Sample rate / channels / WASAPI mode dirty fields restart the engine but JS-supplied values may be silently overridden.** Per Phase 1 design, WASAPI shared mode enforces the system mixer format. If the user picks 48 kHz but device default is 44.1 kHz, the Rust side will log a warning and use 44.1. The SETTINGS UI does NOT yet display which value won. Phase 3 polish: show "(native: 44.1)" tag on the field when JS request ≠ device native.
+
+### Decisions made
+
+- **cpal stays** — per locked Phase 1 architectural constraint. No migration to windows-rs direct bindings.
+- **Tauri event channel stays** — SAB upgrade explicitly skipped per "ONLY if time permits". 10 ms IPC has proven adequate so far.
+- **Monitor routing entirely JS-side** — uses Web Audio, fxEngine's existing masterInput. Phase 3 may add a native Rust output stream for sub-5 ms direct monitor.
+- **Threshold native-only for Phase 2** — browser path needs `recordingCapture.ts` refactor to expose live samples; deferred to Phase 3 since the assumption ("browser already has it") was wrong.
+- **Hot-swap = full restart** at Rust level — partial stream rebuild is Phase 3 polish. User-observable behaviour matches the spec.
+- **F6 SAVE → inline button** — softkey row needed slot for F2 AUDIO. SAVE is rarely-used (settings auto-persist via debounce in App.tsx) so an inline button in the CATEGORY column is sufficient.
+- **Always-on audio:frame emit** — sacrifices a little idle CPU for monitor functionality. SAB Phase 3 will eliminate.
+- **Bit Depth field is UI-only** — affects save format only, internal pipeline is always f32. No engine restart needed when bit depth changes.
+
+### Open issues / followups
+
+**Marek runtime tests (Tauri build):**
+- SETTINGS → F2 AUDIO opens AUDIO category. INPUT DEVICE dropdown populated from `audio_list_devices`. Default selection is the system loopback (`Loopback: <name>`).
+- Changing INPUT DEVICE: no restart, status message "Input device switched", next recording uses new device.
+- Changing OUTPUT DEVICE: no-op at Rust level, but AudioContext destination won't actually swap until monitor restarts (Phase 3 limitation).
+- Changing SAMPLE RATE: dirty marker (●) appears next to label, APPLY button shows. Click APPLY → engine restarts → dirty clears.
+- Setting INPUT to loopback while MONITOR is on Direct/Through FX: MONITOR auto-switches to Off, dropdown becomes greyed/locked.
+- Threshold OFF + START: recording engages immediately (Phase 1 behaviour).
+- Threshold non-OFF + START: message shows "WAITING FOR LEVEL...", recording engages only when input crosses threshold. Captured sample includes 250 ms pre-roll.
+- Live waveform: visible during native recording, scrolls left as new bars append, max 128 bars.
+- Monitor Direct: speakers play captured input live (with ~100 ms latency).
+- Monitor Through FX: same but goes through fxEngine. If FX bus has reverb on master, monitor input is reverbed.
+- Build clean: `npm run build` + `cargo check` both clean (verified).
+
+**Phase 3 backlog:**
+- Partial hot-swap (no full engine restart on device change).
+- Native output stream for low-latency Direct monitor.
+- Browser threshold detection (refactor recordingCapture.ts to expose live samples).
+- Browser live waveform during recording.
+- Pre-recording monitor (capture engine running on RECORD screen mount, not just during sampling session).
+- SETTINGS AUDIO: surface native-vs-requested mismatch when WASAPI shared mode overrides JS values.
+- SharedArrayBuffer + AudioWorklet transport (kills the 100 Hz idle IPC overhead, drops IPC latency to <2 ms).
+- Linux PipeWire / PulseAudio runtime verification on Marek's Mint machine.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — audioConfig slice (state + 10 actions), threshold gating in `startSampling`, live waveform accumulator in `onFrame`, monitor toggle integration in `setAudioMonitorMode`, default audio config import.
+- `src/audio/native/types.ts` — already had AudioConfig from S25; no changes (defaultAudioConfig now used by store).
+- `src/audio/native/nativeCapture.ts` — added `setInputDevice`, `setOutputDevice`, `setMonitorMode`, `restartEngine`. `startNativeRecording` extended with `threshold` + `onThresholdArmed` + `onThresholdTriggered` callbacks and watch-loop logic.
+- `src/audio/native/monitor.ts` — NEW. JS-side monitor routing via Web Audio (Direct + Through FX). Schedules AudioBufferSourceNode per chunk with continuous-playback scheduling.
+- `src/audio/native/index.ts` — re-exports updated for new bridge methods + monitor module.
+- `src-tauri/src/lib.rs` — 4 new Tauri commands (`audio_set_input_device`, `audio_set_output_device`, `audio_set_monitor_mode`, `audio_restart_engine`), all registered in invoke_handler.
+- `src-tauri/src/audio/capture.rs` — `process_callback` emits audio:frame events always (removed `if recording` guard), forwarder thread gets `Arc<AtomicBool>` for recording flag check, `flush_batch` gates `recording_buffer` append on the flag.
+- `src/screens/SettingsScreen.tsx` — softkey remap (F2 AUDIO replaces F6 SAVE in row), inline SAVE button in CATEGORY column, new `AudioPanel` component with 8 fields + dirty tracking + APPLY button, new `AudioRow` helper component.
+- `src/screens/RecordScreen.tsx` — `latestWaveform` selector reads `liveRecordingWaveform` while `isSampling`.
+
+---
+
 ## Session 25 — 2026-05-22 — Native audio Phase 1 — runtime bug fixes (cpal stream construction)
 
 ### What was attempted

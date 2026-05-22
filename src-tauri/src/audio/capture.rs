@@ -199,10 +199,12 @@ impl AudioEngine {
             .map_err(|e| format!("stream.play: {e}"))?;
         eprintln!("[audio] stream.play OK — capture is running");
 
-        // Forwarder thread: drains the channel into the recording
-        // accumulator + emits Tauri events. Lives until event_tx is
-        // dropped (engine shutdown).
+        // Forwarder thread: drains the channel, emits audio:frame events
+        // ALWAYS (so JS-side monitor can play frames even when not
+        // recording), and appends to the recording accumulator ONLY when
+        // the recording_flag is set. Lives until event_tx is dropped.
         let recording_buffer_fwd = Arc::clone(&recording_buffer);
+        let recording_flag_fwd = Arc::clone(&recording_flag);
         let app_handle_fwd = app_handle.clone();
         let channels_fwd = channels;
         let sample_rate_fwd = sample_rate;
@@ -210,6 +212,7 @@ impl AudioEngine {
             forwarder_loop(
                 event_rx,
                 recording_buffer_fwd,
+                recording_flag_fwd,
                 app_handle_fwd,
                 sample_rate_fwd,
                 channels_fwd,
@@ -303,13 +306,20 @@ fn process_callback(
     data: &Data,
     sample_format: SampleFormat,
     producer: &mut ringbuf::HeapProd<f32>,
-    recording_flag: &AtomicBool,
+    _recording_flag: &AtomicBool,
     peak_level: &AtomicU32,
     event_tx: &crossbeam_channel::Sender<Vec<f32>>,
 ) {
-    let recording = recording_flag.load(Ordering::Relaxed);
+    // recording_flag is no longer read here; the forwarder thread checks
+    // it before appending to the recording_buffer. Kept in the signature
+    // for callers that may need to short-circuit in the future.
     let mut peak = 0f32;
 
+    // Phase 2: audio:frame events are emitted ALWAYS when capture is
+    // running, not just during recording. This enables monitor routing
+    // (JS-side Web Audio playback of captured frames). The recording
+    // accumulator gate stays in the forwarder thread — it checks the
+    // recording_flag at append time.
     match sample_format {
         SampleFormat::F32 => {
             let samples = match data.as_slice::<f32>() {
@@ -323,20 +333,14 @@ fn process_callback(
                     peak = a;
                 }
             }
-            if recording {
-                let _ = event_tx.try_send(samples.to_vec());
-            }
+            let _ = event_tx.try_send(samples.to_vec());
         }
         SampleFormat::I16 => {
             let samples = match data.as_slice::<i16>() {
                 Some(s) => s,
                 None => return,
             };
-            let mut converted: Vec<f32> = if recording {
-                Vec::with_capacity(samples.len())
-            } else {
-                Vec::new()
-            };
+            let mut converted: Vec<f32> = Vec::with_capacity(samples.len());
             for &s in samples {
                 let f = s as f32 / 32_768.0;
                 let _ = producer.try_push(f);
@@ -344,24 +348,16 @@ fn process_callback(
                 if a > peak {
                     peak = a;
                 }
-                if recording {
-                    converted.push(f);
-                }
+                converted.push(f);
             }
-            if recording {
-                let _ = event_tx.try_send(converted);
-            }
+            let _ = event_tx.try_send(converted);
         }
         SampleFormat::U16 => {
             let samples = match data.as_slice::<u16>() {
                 Some(s) => s,
                 None => return,
             };
-            let mut converted: Vec<f32> = if recording {
-                Vec::with_capacity(samples.len())
-            } else {
-                Vec::new()
-            };
+            let mut converted: Vec<f32> = Vec::with_capacity(samples.len());
             for &s in samples {
                 let f = (s as f32 - 32_768.0) / 32_768.0;
                 let _ = producer.try_push(f);
@@ -369,24 +365,16 @@ fn process_callback(
                 if a > peak {
                     peak = a;
                 }
-                if recording {
-                    converted.push(f);
-                }
+                converted.push(f);
             }
-            if recording {
-                let _ = event_tx.try_send(converted);
-            }
+            let _ = event_tx.try_send(converted);
         }
         SampleFormat::I32 => {
             let samples = match data.as_slice::<i32>() {
                 Some(s) => s,
                 None => return,
             };
-            let mut converted: Vec<f32> = if recording {
-                Vec::with_capacity(samples.len())
-            } else {
-                Vec::new()
-            };
+            let mut converted: Vec<f32> = Vec::with_capacity(samples.len());
             for &s in samples {
                 let f = s as f32 / 2_147_483_648.0;
                 let _ = producer.try_push(f);
@@ -394,13 +382,9 @@ fn process_callback(
                 if a > peak {
                     peak = a;
                 }
-                if recording {
-                    converted.push(f);
-                }
+                converted.push(f);
             }
-            if recording {
-                let _ = event_tx.try_send(converted);
-            }
+            let _ = event_tx.try_send(converted);
         }
         other => {
             static WARNED: AtomicBool = AtomicBool::new(false);
@@ -436,6 +420,7 @@ fn update_peak(peak_level: &AtomicU32, new_peak: f32) {
 fn forwarder_loop(
     rx: crossbeam_channel::Receiver<Vec<f32>>,
     recording_buffer: Arc<Mutex<Vec<f32>>>,
+    recording_flag: Arc<AtomicBool>,
     app_handle: AppHandle,
     sample_rate: u32,
     channels: u16,
@@ -447,23 +432,42 @@ fn forwarder_loop(
     while let Ok(chunk) = rx.recv() {
         batch.extend_from_slice(&chunk);
         if batch.len() >= batch_target {
-            flush_batch(&mut batch, &recording_buffer, &app_handle, sample_rate, channels);
+            flush_batch(
+                &mut batch,
+                &recording_buffer,
+                &recording_flag,
+                &app_handle,
+                sample_rate,
+                channels,
+            );
         }
     }
     if !batch.is_empty() {
-        flush_batch(&mut batch, &recording_buffer, &app_handle, sample_rate, channels);
+        flush_batch(
+            &mut batch,
+            &recording_buffer,
+            &recording_flag,
+            &app_handle,
+            sample_rate,
+            channels,
+        );
     }
 }
 
 fn flush_batch(
     batch: &mut Vec<f32>,
     recording_buffer: &Arc<Mutex<Vec<f32>>>,
+    recording_flag: &AtomicBool,
     app_handle: &AppHandle,
     sample_rate: u32,
     channels: u16,
 ) {
-    if let Ok(mut buf) = recording_buffer.lock() {
-        buf.extend_from_slice(batch);
+    // Recording accumulator only fills when the recording flag is set.
+    // Monitor / live-waveform paths get the events unconditionally.
+    if recording_flag.load(Ordering::Relaxed) {
+        if let Ok(mut buf) = recording_buffer.lock() {
+            buf.extend_from_slice(batch);
+        }
     }
     let payload = AudioFramePayload {
         samples: std::mem::take(batch),
