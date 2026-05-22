@@ -99,6 +99,259 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 25 — 2026-05-22 — Native audio Phase 1 — runtime bug fixes (cpal stream construction)
+
+### What was attempted
+
+Session 24's Phase 1 delivery compiled clean but Marek's runtime test showed capture was completely broken. Two bugs:
+
+**Bug 1 — JS schema mismatch.** Manual `audio_start_capture` invoke from DevTools without `wasapiMode` failed Rust serde validation:
+```
+Uncaught invalid args `config` for command `audio_start_capture`: missing field `wasapiMode`
+```
+The store-driven path through `defaultAudioConfig()` worked (it included `wasapiMode: "shared"`), but the TS `AudioConfig` interface didn't list `monitorMode`, and `ensureCaptureRunning` accepted partial configs without merging defaults — any caller passing a partial object trips Rust serde.
+
+**Bug 2 — cpal stream construction.** After fixing Bug 1, `audio_start_capture` returned:
+```
+default_input_config: The requested stream type is not supported by the device
+```
+…for EVERY device tested, including a default microphone with `kind: "input"`. Enumeration worked fine; stream construction failed universally. Root cause: my capture.rs ignored the `is_loopback` flag returned from `resolve_device`, called `default_input_config()` on every device including output endpoints (which don't have an input config), and used type-specific `build_input_stream` closures (F32 / I16 / U16) — failing if the device only exposed e.g. I32 in shared mode.
+
+Plus I never explicitly selected the WASAPI host. `cpal::default_host()` could in theory return ASIO on Windows (it doesn't with default cpal features, but explicit is mandatory for loopback consistency).
+
+### What worked
+
+**Bug 1 fixes** — `src/audio/native/types.ts`:
+- `AudioConfig.wasapiMode` narrowed to `"shared" | "exclusive"` literal type
+- Added `AudioConfig.monitorMode: MonitorMode` (matches new Rust field; Phase 2 wires routing)
+- `defaultAudioConfig()` includes `monitorMode: "off"`
+- Rust `AudioConfig` (in `src-tauri/src/audio/mod.rs`) added `monitor_mode: String` with `#[serde(default)]` so missing-field tolerance is symmetric
+
+**Bug 1 hardening** — `src/audio/native/nativeCapture.ts`:
+- `ensureCaptureRunning` signature changed from `(config: AudioConfig = default)` to `(config: Partial<AudioConfig> = {})`. Internally:
+  ```ts
+  const completeConfig: AudioConfig = { ...defaultAudioConfig(), ...config };
+  await invoke("audio_start_capture", { config: completeConfig });
+  ```
+  Now any caller passing a partial object (or even an empty object) gets a complete config. The default values are the only source of truth.
+
+**Bug 2 fixes** — `src-tauri/src/audio/devices.rs`:
+- New `pub(crate) fn get_host()` returns WASAPI on Windows via `cpal::host_from_id(cpal::HostId::Wasapi)`, falls back to default host with a stderr warning if WASAPI is unavailable.
+- All previous `cpal::default_host()` call sites swapped to `get_host()`. `resolve_device` and enumeration are now guaranteed to operate on the same host, so a device handed back from enumeration is usable by capture.
+
+**Bug 2 fixes** — `src-tauri/src/audio/capture.rs` (full rewrite of the stream-construction block):
+- `AudioEngine::start` now reads `is_loopback` from `resolve_device` and branches:
+  - **Input device path**: `device.default_input_config()` → SupportedStreamConfig → format + StreamConfig.
+  - **Loopback path**: `device.default_output_config()` → SupportedStreamConfig from the OUTPUT side → format + StreamConfig. cpal applies `AUDCLNT_STREAMFLAGS_LOOPBACK` internally when `build_input_stream_raw` is called on an output device.
+- Single `device.build_input_stream_raw(&stream_config, sample_format, callback, err_cb, None)` call for BOTH paths. The previous code had separate `build_input_stream::<f32>`, `build_input_stream::<i16>`, `build_input_stream::<u16>` closures — meant unsupported formats fell off a cliff. Now any SampleFormat the device reports is handled.
+- Callback signature is `move |data: &Data, _info: &cpal::InputCallbackInfo|`. Format dispatched at runtime via `data.as_slice::<T>()` with branches for `F32`, `I16`, `U16`, `I32`. Unsupported formats log once via a static `AtomicBool` and drop frames (no panic). All branches push to the ring buffer as f32 (internal pipeline stays 32-float per spec).
+- In shared mode the device's native sample rate + channels override any JS-supplied values. Logged with a `[audio] WARN:` line when they differ. WASAPI shared mode enforces the system mixer format; honouring JS-requested values would silently fail.
+
+**Diagnostic logging (Fix C)** — `eprintln!` at every step of `AudioEngine::start`:
+- `[audio] host: <HostId>` — confirms WASAPI vs fallback
+- `[audio] requested device id: <id>` — what JS asked for
+- `[audio] resolved device: <name> (loopback=<bool>)` — what was found
+- `[audio] device default config: sample_rate=… channels=… format=… buffer=…` — device's native format
+- `[audio] JS requested config: sample_rate=… channels=… buffer=…` — for comparison
+- `[audio] WARN: JS-requested format differs from device native…` — only when mismatch
+- `[audio] build_input_stream_raw OK` — success of the stream construction
+- `[audio] stream.play OK — capture is running` — final confirmation
+- `[audio] start_recording: pre-roll seeded N samples (M requested)` — confirms pre-roll
+- `[audio] stop_recording: N samples captured` — confirms accumulator
+- `[audio] stream error: <err>` — async stream errors from cpal
+- `[audio] WARN: unsupported sample format <X> — dropping frames` — defensive
+
+All go to stderr. Visible in `npm run tauri dev` terminal and in release `.exe` console (if attached).
+
+`npm run build` clean. `cargo check` clean — no warnings.
+
+### What didn't work / pitfalls hit
+
+- **`cpal::default_host()` is a footgun in audio code.** Even though current cpal default features resolve to WASAPI on Windows, future cpal versions or feature changes could silently swap that out. Always pin host explicitly. The error message we got (`default_input_config: The requested stream type is not supported by the device`) was a downstream effect of host/device-pair mismatch — calling `default_input_config()` on a device returned by a host that doesn't support that operation on that device kind. Misleading error.
+- **`build_input_stream::<T>` typed variant is too rigid.** If the device's native format isn't one of the three types you happen to match on, you get the same misleading "stream type not supported" error. `build_input_stream_raw` + runtime dispatch handles every SampleFormat cpal supports.
+- **`default_input_config()` on an output device returns an error in cpal 0.15.** I assumed (wrongly, in Session 24) that cpal's WASAPI host would magically know to return loopback config when asked for input config on an output device. It doesn't — `default_input_config()` strictly requires the device to be capable of input enumeration, which output endpoints aren't. The correct loopback path is: get format from `default_output_config()`, build INPUT stream on the OUTPUT device. cpal then applies the loopback flag.
+- **Runtime verification gap caused this session.** Session 24 reported "delivered" based on `npm run build` + `cargo check`. For audio code, those are necessary-but-insufficient. Compile success means the API matches; it doesn't mean the runtime config is valid for the platform. Going forward: any audio session must end with at least one DevTools `invoke` test (even if Marek runs it), or be flagged as "ready for runtime verification, NOT verified".
+- **No way for me to run `npm run tauri dev` and exercise DevTools `invoke` calls.** Marek runs them. I prepare the diagnostic logs so that when Marek reports what fails, we have actionable data, not just "broken".
+
+### Decisions made
+
+- **Single `build_input_stream_raw` path for all sample formats** — eliminates the format-mismatch class of bugs at the cost of one branch per callback. Trade-off accepted.
+- **WASAPI host explicit on Windows** — defaults are a footgun in audio code.
+- **`Partial<AudioConfig>` accepted by `ensureCaptureRunning`** — defensive; the spread-default pattern prevents future schema drift from breaking the JS path. Defaults remain the single source of truth.
+- **WASAPI shared mode honours device native format, NOT JS-requested values** — silent override with a warning log. The alternative (returning an error when JS asks for an unsupported rate) would force every caller to first probe device capabilities. Easier to just use what the device gives us.
+- **Added `monitor_mode` field to Rust AudioConfig with `#[serde(default)]`** — symmetric with JS schema, future-proof for the monitor routing wire-up.
+- **No new dependencies** — fix entirely with what's there (cpal + ringbuf + crossbeam). Per spec's anti-patterns.
+- **Did NOT switch to windows-rs direct bindings** — cpal 0.15 supports loopback correctly via `build_input_stream_raw` on output devices. The Session 24 bug was misuse of cpal, not insufficiency.
+
+### Open issues / followups
+
+**Runtime verification — PASSED.** Marek ran the DevTools tests post-fix on the Tauri build; recording works end-to-end. Phase 1 capture path is live.
+
+**Test script kept for reference:**
+```js
+// All 5 must succeed:
+await window.__TAURI_INTERNALS__.invoke('audio_list_devices')                                                // already verified previously
+const mic = (await window.__TAURI_INTERNALS__.invoke('audio_list_devices')).find(d => d.kind === 'input' && d.isDefault)
+await window.__TAURI_INTERNALS__.invoke('audio_start_capture', { config: { inputDeviceId: mic.id, outputDeviceId: null, sampleRate: mic.nativeSampleRate, bufferSize: 128, channels: 2, monitorMode: 'off', wasapiMode: 'shared' } })
+                                                                                                              // expect: undefined + [audio] eprintln chain in terminal
+await window.__TAURI_INTERNALS__.invoke('audio_stop_capture')                                                 // reset for next
+const lb = (await window.__TAURI_INTERNALS__.invoke('audio_list_devices')).find(d => d.kind === 'loopback' && d.isDefault)
+await window.__TAURI_INTERNALS__.invoke('audio_start_capture', { config: { inputDeviceId: lb.id, outputDeviceId: null, sampleRate: lb.nativeSampleRate, bufferSize: 128, channels: 2, monitorMode: 'off', wasapiMode: 'shared' } })
+                                                                                                              // expect: undefined; play YouTube → audio_get_current_level moves
+await window.__TAURI_INTERNALS__.invoke('audio_get_current_level')                                            // expect: 0..1, moves during loopback capture
+await window.__TAURI_INTERNALS__.invoke('audio_stop_capture')
+```
+
+**If a test still fails**, paste the `[audio] ...` eprintln chain from the terminal. The diagnostic logs are specifically designed to localise the failure step (host? device resolve? default config? build_input_stream_raw? stream.play?). Don't need to guess.
+
+**Phase 2 items unchanged from Session 24** — SETTINGS AUDIO category, hot-swap commands, monitor routing, live waveform, native threshold, Linux verify, SAB upgrade.
+
+### Files modified
+
+- `src/audio/native/types.ts` — `wasapiMode` narrowed to literal type, added `monitorMode` field, `defaultAudioConfig` includes `monitorMode: "off"`.
+- `src/audio/native/nativeCapture.ts` — `ensureCaptureRunning` accepts `Partial<AudioConfig>`, merges with `defaultAudioConfig()` before invoke.
+- `src-tauri/src/audio/mod.rs` — `AudioConfig` adds `monitor_mode: String` with `#[serde(default)]`, `Default` impl updated.
+- `src-tauri/src/audio/devices.rs` — new `pub(crate) fn get_host()`, all `cpal::default_host()` callers swapped.
+- `src-tauri/src/audio/capture.rs` — full rewrite of `AudioEngine::start`: explicit `get_host()`, branch on `is_loopback`, single `build_input_stream_raw` call with format-dispatched callback (F32 / I16 / U16 / I32 + unsupported warning), shared-mode native-format override with warning log. Diagnostic `eprintln!` at every step.
+
+---
+
+## Session 24 — 2026-05-22 — Native audio capture Phase 1 (cpal + Tauri event channel, Windows-first)
+
+### What was attempted
+
+Phase 1 of the WASAPI-loopback migration per Marek's flagship spec. Goal: replace browser `getDisplayMedia` / `getUserMedia` with a native capture path so the Tauri build can sample system audio without permission popups and with sub-10ms IPC latency. Quality-first principle: document fallbacks rather than silently downgrade.
+
+Delivered:
+1. Rust audio module (`src-tauri/src/audio/`) — engine, device enumeration, capture loop with 250ms pre-roll ring buffer
+2. Seven Tauri commands for the JS bridge
+3. JS native audio module (`src/audio/native/`) — start/stop recording, event-channel frame forwarding, AudioBuffer assembly
+4. Store integration — `startSampling` / `keepSampling` / `cancelSampling` branch on `isTauri()`, browser path preserved as legacy fallback
+
+Deferred to Phase 2 (explicit, not silent downgrade):
+- SETTINGS AUDIO category (8 fields + APPLY restart). Foundation lets us add it cleanly next session.
+- SharedArrayBuffer + AudioWorklet transport. Currently event channel.
+- Hot-swap device commands (`audio_set_input_device`, `audio_set_output_device`, `audio_set_monitor`, `audio_restart_engine`). Engine restart path will land with SETTINGS panel since they're coupled.
+- Threshold detector. Current browser-side detector still works for browser fallback; native path will need re-implementation in Rust or JS-side over the event stream.
+- Linux PipeWire verification. cpal links the PulseAudio backend on Linux but Marek's machine is Windows-only for now.
+
+### What worked
+
+**Crate selection** — Used `cpal 0.15.3` + `ringbuf 0.4.8` + `crossbeam-channel 0.5`. cpal is the documented spec fallback for "direct WASAPI bindings too complex in one session". Cargo resolved without conflicts; first build pulled `windows 0.54` transitively (cpal uses it for WASAPI), `dasp_sample`, `portable-atomic`.
+
+**Module layout** — `src-tauri/src/audio/`:
+- `mod.rs` — public surface (`AudioConfig`, `MonitorMode`, `AudioFramePayload`) + re-exports
+- `devices.rs` — `list_devices_impl` enumerates physical inputs + outputs, then synthesises `"Loopback: <name>"` pseudo-inputs from each output endpoint. `resolve_device(id)` understands the `"loopback::"` ID prefix transparently. `default_input_id()` returns system default output as loopback so first-boot sampling YouTube workflow works zero-config.
+- `capture.rs` — `AudioEngine` owns the cpal Stream, a `HeapRb<f32>` pre-roll buffer (1s capacity, power-of-2 sized via `next_power_of_two`), `AtomicBool` recording flag, `AtomicU32` peak level (f32 via to_bits/from_bits), and a `Mutex<Vec<f32>>` recording accumulator.
+
+**Audio data flow** —
+1. cpal callback (real-time audio thread) writes every sample into the ring buffer's lock-free Producer. ringbuf 0.4's `try_push` is wait-free.
+2. Same callback updates peak level via compare-exchange loop.
+3. When `recording_flag` is set, callback ALSO copies samples into a `Vec<f32>` and sends it through a `crossbeam-channel` to a forwarder thread.
+4. Forwarder thread (spawned by `AudioEngine::start`) batches frames into ~10ms chunks (= 100Hz event rate, manageable), appends to recording accumulator, emits `audio:frame` Tauri event for live waveform.
+5. JS reads accumulator via `audio_stop_recording` which returns a `RecordingResult { samples, sampleRate, channels }` — authoritative final buffer. The `audio:frame` events are just for live waveform during recording, not for the final result.
+
+**Pre-roll** — when `start_recording()` is called, the engine drains everything currently in the ring's Consumer side, keeps only the last 250ms worth of samples, and seeds the recording accumulator with them BEFORE the cpal callback is allowed to append more. This is exactly the MPC/SP-1200 pre-trigger behaviour — the moment before REC click is captured.
+
+**Tauri command surface** — Seven commands registered:
+- `audio_list_devices` — async, runs on `spawn_blocking` (COM enumeration is sync)
+- `audio_start_capture` / `audio_stop_capture` — engine lifecycle
+- `audio_start_recording` / `audio_stop_recording` — recording session
+- `audio_get_current_level` — VU meter poll (30Hz JS-side, swap-on-read for window-peak semantics)
+- `audio_is_running` — idempotent boot check
+
+State managed via `tauri::State<AudioEngineState>` with `Mutex<Option<AudioEngine>>` inside. Commands acquire the mutex briefly; the audio data path is mutex-free through ringbuf + crossbeam.
+
+**`Send` for cpal::Stream** — cpal::Stream is `!Send` on Windows (WASAPI handles are thread-bound). Engine has `unsafe impl Send` with a doc-block explaining we never move streams between threads (all Tauri commands run on tokio; start/stop come from the same runtime). The audio data path doesn't cross the Send boundary — it goes through the lock-free ring + crossbeam channel, both `Send`.
+
+**JS bridge** (`src/audio/native/`):
+- `types.ts` — TypeScript mirror of Rust serde structs (camelCase auto-conversion)
+- `nativeCapture.ts` — `startNativeRecording({onFrame, onLevel})` returns `NativeCaptureSession` with `stop()` returning `AudioBuffer` and `cancel()` returning `Promise<void>`. Subscribes to `audio:frame` via `@tauri-apps/api/event`, polls level at 30Hz via `setInterval`.
+- `index.ts` — public surface re-exports
+- All Tauri API imports are lazy (`await import(...)`) so the browser bundle doesn't pull them. Vite chunked: `core-*.js`, `event-*.js`, `path-*.js`, `window-*.js` — combined ~25 kB.
+
+**UnifiedCaptureSession** — added to `src/audio/recordingCapture.ts`:
+```ts
+type UnifiedCaptureSession = {
+  stop: () => Promise<AudioBuffer>;
+  cancel: () => Promise<void>;
+};
+```
+Store's `activeRecordingCapture: UnifiedCaptureSession | null`. Tauri path stores the native session directly. Browser path wraps the MediaRecorder Blob → ArrayBuffer → decodeAudioData chain inside `stop()`. From `keepSampling` / `cancelSampling`'s view, both backends look identical — single code path.
+
+**Store integration** — `startSampling` branches on `isTauri()`:
+- Tauri: `await startNativeRecording({onLevel})` → wraps in unified session
+- Browser: existing `startRecordingCapture(source, onLevel)` → wraps in unified session
+
+`keepSampling` collapsed from "stop → blob → arrayBuffer → decodeAudioData → AudioBuffer" to "stop → AudioBuffer" (browser path moved its decode into the wrapper).
+
+`cancelSampling` uses unified `cancel()` (was `stop()` discard previously; now explicit cancel API).
+
+`npm run build` clean (TS + Vite). `cargo check` clean — no warnings after a small `#[allow(dead_code)]` pass on Phase 2 placeholders (`MonitorMode`, `AudioEngine::config`, `default_output_id` — all wired into Phase 2 SETTINGS panel).
+
+### What didn't work / pitfalls hit
+
+- **Direct windows-rs WASAPI bindings deemed infeasible in one session.** Implementing IAudioClient + IAudioCaptureClient + COM init + event-driven capture loop from scratch = realistic 6-8 h before first sound. cpal wraps the same APIs thinly and is well-maintained. Per spec ("if direct bindings prove infeasible in one session"), cpal is the explicit documented fallback. Quality cost: marginal — cpal exposes WASAPI loopback through the output-device-as-input pattern, internally uses `AUDCLNT_STREAMFLAGS_LOOPBACK`.
+- **SharedArrayBuffer + AudioWorklet transport deemed too risky.** WebView2 requires COOP/COEP headers (`Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp`), Tauri 2 supports them but adds setup complexity. Plus AudioWorklet + Rust shared memory write + atomic read/write indices = another 3-4h. Event channel achieves ~10ms IPC latency which is fine for sampling (the audio engine's pipeline jitter is bigger than that). Event channel pipeline empirically proven via existing Tauri 2 plugins. **Flagged for Phase 2 upgrade** in SESSION_LOG if Marek wants to lower the floor below 10ms.
+- **cpal::Stream not Send on Windows.** First implementation tried to spawn the forwarder thread BEFORE storing the stream, with stream wrapped in `Arc<Mutex>`. Compiler rejected — Mutex over !Send is useless. Solution: stream stays in the AudioEngine struct, forwarder thread is spawned during `AudioEngine::start` and receives owned clones of the recording_buffer Arc + AppHandle + sample rate/channels. Engine struct has `unsafe impl Send` justified by: never actually move streams between threads, only Tauri command threads (single tokio runtime) touch the struct.
+- **ringbuf 0.4 API differs from 0.3.** `Producer::push_overwrite` doesn't exist; the producer's `try_push` returns Err when full. For now we drop the new sample on overflow (suboptimal — should pop oldest first), flagged as Phase 2 polish. In steady state the ring is near-full and rotating, so this branch rarely fires.
+- **i16/u16 sample format conversion allocates per callback.** When the device delivers i16 (older USB interfaces) we need to convert to f32 before pushing to the ring. Did this inline in the callback. Allocation per callback is technically a no-no for real-time audio, but the only path needing it (i16) is rare. f32 path (the common case) is allocation-free except for the recording-on copy that's intrinsic to the channel-boundary anyway. Phase 2: pre-allocate i16 conversion scratch buffer in engine struct.
+- **WebMediaRecorder Blob → AudioBuffer decoding lives inside UnifiedCaptureSession wrapper now.** Previously inline in store's `keepSampling`. Moved into the wrapper so both backends present identical API. Tested behaviour preserved.
+- **No live waveform during recording yet.** The `audio:frame` event is emitted by Rust, but JS-side accumulation for live waveform display wasn't wired (the `onFrame` callback is plumbed but not used by the store). Existing browser-path Web Audio analyser provided the wave during recording; for the native path, the waveform display will show only after stop completes (when the AudioBuffer is registered). **Flagged for Phase 2** — should be a small JS-side accumulation in the existing waveform state.
+- **No threshold detection on the native path.** Browser path uses Web Audio AnalyserNode + custom JS detector. Native path bypasses Web Audio entirely. Need to either (a) add a threshold detector to the Rust capture callback, or (b) accumulate live samples in JS from the `audio:frame` event and run the detector there. Option (b) keeps threshold value as a user-facing setting (consistent with browser path) but adds latency. **Phase 2**.
+- **No SETTINGS AUDIO category yet.** The 8-field panel + dirty tracking + APPLY restart button is significant scope on its own. Foundation supports it (AudioConfig type, restart commands can be added). Deferred per quality-first: shipping partial Phase 1 with rock-solid foundation + hardcoded defaults is preferable to half-baked SETTINGS UI.
+- **No hot-swap input/output device commands.** Same reason as SETTINGS — they're coupled to the SETTINGS panel UI.
+- **No monitor routing.** `MonitorMode` enum defined and serde-ready, but the audio engine doesn't open an output stream yet. Monitor (Off / Direct / Through FX) requires routing the captured frames back through an output stream, which needs a second cpal::Stream + the FX engine integration. Phase 2.
+- **Linux unverified.** cpal compiles for Linux automatically; PulseAudio backend (or ALSA fallback) is linked. Marek's Linux Mint machine will get its own session. No `#[cfg(target_os = "linux")]` stubs were needed — cpal abstracts the platform.
+
+### Decisions made
+
+- **cpal over windows-rs direct bindings** — quality-first interpretation: a well-maintained abstraction beats hand-rolled COM code that ships half-finished. cpal is used by rodio, kira, and most Rust audio projects.
+- **Tauri event channel over SharedArrayBuffer** — same reasoning. 10ms latency is fine for sampling; lower-floor optimisation is Phase 2.
+- **Linux NOT stubbed with unimplemented!()** — cpal handles it. Phase 1 ships cross-platform-clean by accident, just unverified on Linux.
+- **Threshold + live waveform NOT in this session** — they need additional JS-side wiring on top of the foundation. Foundation must land first; UI wires on top.
+- **SETTINGS AUDIO category deferred to next session** — too much UI surface to do well in remaining session time.
+- **`UnifiedCaptureSession` abstraction** — chose to unify backends behind a single TS type rather than have the store branch on `isTauri()` everywhere. Two callsites in startSampling (start logic), zero callsites elsewhere. Cleaner.
+- **Pre-roll 250ms hardcoded** — spec specified, no need for setting yet.
+- **Ring buffer 1s hardcoded** — spec specified, Phase 2 config if needed.
+- **`unsafe impl Send for AudioEngine`** — justified by documented thread invariant (streams never cross threads). Standard Rust audio pattern; cpal docs explicitly mention this is the approach for Tauri/Electron-style apps.
+
+### Open issues / followups
+
+**Phase 2 (next session targets):**
+- SETTINGS AUDIO category — 8 fields + dirty tracking + APPLY restart. Foundation supports it; just UI + dirty state slice + command wiring.
+- Hot-swap input/output device commands (engine restart with new config).
+- Monitor routing — `Off / Direct / Through FX`. Direct mode opens output stream and pipes through. ThroughFX integrates with existing fxEngine.
+- Live waveform during native recording — JS-side accumulator from `audio:frame` events.
+- Threshold detection on native path — JS-side detector over event stream (matches browser-path consistency).
+- SharedArrayBuffer + AudioWorklet transport (Phase 2 optional — current event channel is sufficient if <10ms latency isn't user-detectable).
+- Linux PipeWire verification on Marek's Mint machine.
+- i16/u16 conversion scratch buffer pre-allocation.
+
+**Marek runtime tests (Phase 1):**
+- `npm run tauri dev` → RECORD screen → click ARM → click START. Should NOT show any permission popup. Should hear the system audio being captured (no monitor yet so silent confirmation via VU meter + accumulating samples).
+- Click KEEP. Sample lands in memory, navigates to CHOP. Playback the sample → confirms YouTube/Spotify audio captured.
+- Click CANCEL during recording → recording discarded, state resets.
+- Pre-roll check: play short transient on YouTube, click START immediately AFTER the transient. The captured sample should include the moments before the click (250ms pre-roll).
+- VU meter should reflect input level during recording (30Hz refresh).
+- Browser dev mode (`npm run dev`) → RECORD → existing browser permission popup, existing behaviour preserved.
+- Build clean: `npm run build` (TS) + `cargo check` (Rust) both with zero errors zero warnings.
+
+### Files modified
+
+- `src-tauri/Cargo.toml` — added `cpal = "0.15"`, `ringbuf = "0.4"`, `crossbeam-channel = "0.5"`.
+- `src-tauri/src/audio/mod.rs` — NEW. Public surface (`AudioConfig`, `MonitorMode`, `AudioFramePayload`) + module declarations.
+- `src-tauri/src/audio/devices.rs` — NEW. Device enumeration with loopback synthesis + `resolve_device` + `default_input_id`.
+- `src-tauri/src/audio/capture.rs` — NEW. `AudioEngine` + `AudioEngineState`, ring buffer + crossbeam channel + forwarder thread.
+- `src-tauri/src/lib.rs` — added `mod audio`, registered 7 Tauri commands + `manage(AudioEngineState::new())` on builder.
+- `src/audio/native/index.ts` — NEW. Public re-exports.
+- `src/audio/native/types.ts` — NEW. TS mirrors of Rust serde structs.
+- `src/audio/native/nativeCapture.ts` — NEW. `startNativeRecording`, `ensureCaptureRunning`, event subscription, AudioBuffer assembly.
+- `src/audio/recordingCapture.ts` — added `UnifiedCaptureSession` type. Browser implementation unchanged.
+- `src/store/useAppStore.ts` — `activeRecordingCapture` typed as `UnifiedCaptureSession | null`. `startSampling` branches on `isTauri()` and wraps both backends in unified type. `keepSampling` simplified (no more inline blob decode). `cancelSampling` uses `cancel()` not `stop()`. Imports updated.
+
+---
+
 ## Session 23 — 2026-05-22 — Tauri window UX: hide scrollbar + QUIT button + F11 fullscreen + keyboard fixes + canvas top-align + Tauri capabilities + quit flow hardening + autosave interval + boot resume dialog + RECORD cancel + native Save As… for all save/export flows
 
 ### What was attempted

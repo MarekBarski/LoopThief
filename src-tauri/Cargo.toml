@@ -24,6 +24,21 @@ tauri-plugin-fs = "2"
 # Still using tauri-plugin-dialog for the OPEN flow (instant either way).
 native-dialog = "0.7"
 
+# ===== Native audio capture (WASAPI on Windows, PipeWire on Linux) =====
+# Phase 1 of the WASAPI-loopback migration. Replaces browser
+# getDisplayMedia/getUserMedia for the Tauri build so users can sample
+# system audio without permission popups + with sub-10ms latency.
+#
+# Why cpal (not direct windows-rs WASAPI): cpal is the documented fallback
+# in the Phase 1 spec for "direct bindings too complex for one session".
+# Direct WASAPI = 6-8 h of COM + IAudioClient + IAudioCaptureClient setup
+# before first sound. cpal wraps WASAPI thinly with loopback support on
+# Windows (output-device-as-input pattern) and PulseAudio/PipeWire on Linux.
+# Quality cost is marginal — cpal is used by rodio, kira, etc.
+cpal = "0.15"
+ringbuf = "0.4"
+crossbeam-channel = "0.5"
+
 # Full release-build optimisation. Slower compile (~2-3× vs default)
 # but smaller / faster runtime. Marek's hypothesis: this may shrink the
 # 3 s dialog-open lag if any of the cost lives in non-LTO'd plugin code.

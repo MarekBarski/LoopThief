@@ -5,6 +5,23 @@ export type ActiveRecordingCapture = {
   cancel: () => void;
 };
 
+/**
+ * Unified capture session abstraction. Used by the store to drive both the
+ * browser (MediaRecorder → Blob) and the native (cpal/WASAPI → AudioBuffer)
+ * paths through one type. Native already returns AudioBuffer directly;
+ * browser wraps decode inside `stop()`.
+ */
+export type UnifiedCaptureSession = {
+  stop: () => Promise<AudioBuffer>;
+  cancel: () => Promise<void>;
+  /**
+   * Native sessions know their sample rate / channels up front. Browser
+   * sessions discover it during decode; the field is optional and only
+   * filled when meaningful.
+   */
+  sampleRate?: number;
+};
+
 export async function startRecordingCapture(
   source: RecordingInputSource,
   onLevel: (level: number) => void,

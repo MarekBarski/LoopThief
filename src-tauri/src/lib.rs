@@ -1,7 +1,11 @@
 use serde::Deserialize;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_fs::FsExt;
+
+mod audio;
+
+use audio::{AudioConfig, AudioDevice, AudioEngine, AudioEngineState};
 
 // ---------------------------------------------------------------------------
 // Custom save dialog command — replaces tauri-plugin-dialog's `save()` for
@@ -73,12 +77,97 @@ async fn save_file_dialog(
     .map_err(|e| format!("join error: {e}"))?
 }
 
+// ---------------------------------------------------------------------------
+// Native audio capture commands. Phase 1 (cpal backend + event-channel
+// transport). See src-tauri/src/audio/ for implementation.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn audio_list_devices() -> Result<Vec<AudioDevice>, String> {
+    // cpal device enumeration is blocking on Windows (it iterates COM
+    // endpoints). Run on a blocking thread so we don't stall tokio.
+    tauri::async_runtime::spawn_blocking(audio::list_devices_impl)
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
+#[tauri::command]
+fn audio_start_capture(
+    app: tauri::AppHandle,
+    state: State<'_, AudioEngineState>,
+    config: AudioConfig,
+) -> Result<(), String> {
+    let mut guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    if guard.is_some() {
+        return Err("capture already running".to_string());
+    }
+    let engine = AudioEngine::start(app, config)?;
+    *guard = Some(engine);
+    Ok(())
+}
+
+#[tauri::command]
+fn audio_stop_capture(state: State<'_, AudioEngineState>) -> Result<(), String> {
+    let mut guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    *guard = None; // dropping closes streams
+    Ok(())
+}
+
+#[tauri::command]
+fn audio_start_recording(state: State<'_, AudioEngineState>) -> Result<(), String> {
+    let guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    let engine = guard.as_ref().ok_or_else(|| "capture not running".to_string())?;
+    engine.start_recording()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingResult {
+    samples: Vec<f32>,
+    sample_rate: u32,
+    channels: u16,
+}
+
+#[tauri::command]
+fn audio_stop_recording(state: State<'_, AudioEngineState>) -> Result<RecordingResult, String> {
+    let guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    let engine = guard.as_ref().ok_or_else(|| "capture not running".to_string())?;
+    let samples = engine.stop_recording()?;
+    Ok(RecordingResult {
+        samples,
+        sample_rate: engine.sample_rate(),
+        channels: engine.channels(),
+    })
+}
+
+#[tauri::command]
+fn audio_get_current_level(state: State<'_, AudioEngineState>) -> Result<f32, String> {
+    let guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    Ok(guard.as_ref().map(|e| e.current_level()).unwrap_or(0.0))
+}
+
+#[tauri::command]
+fn audio_is_running(state: State<'_, AudioEngineState>) -> Result<bool, String> {
+    let guard = state.engine.lock().map_err(|e| format!("engine lock: {e}"))?;
+    Ok(guard.is_some())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![save_file_dialog])
+        .manage(AudioEngineState::new())
+        .invoke_handler(tauri::generate_handler![
+            save_file_dialog,
+            audio_list_devices,
+            audio_start_capture,
+            audio_stop_capture,
+            audio_start_recording,
+            audio_stop_recording,
+            audio_get_current_level,
+            audio_is_running,
+        ])
         .setup(|app| {
             let _ = app.dialog();
             let _ = app.fs();

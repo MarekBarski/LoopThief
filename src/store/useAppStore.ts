@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ScreenId } from "../types/navigation";
-import { startRecordingCapture, type ActiveRecordingCapture, type RecordingInputSource } from "../audio/recordingCapture";
+import { startRecordingCapture, type RecordingInputSource, type UnifiedCaptureSession } from "../audio/recordingCapture";
+import { startNativeRecording } from "../audio/native";
 import { samplerEngine } from "../audio/samplerEngine";
 import {
   EFFECT_DEFAULTS,
@@ -831,7 +832,7 @@ type SettingsValues = {
 };
 
 let eventIdCounter = 0;
-let activeRecordingCapture: ActiveRecordingCapture | null = null;
+let activeRecordingCapture: UnifiedCaptureSession | null = null;
 // Module-scoped blob handed in by App.tsx during boot-resume detection.
 // Kept off the React store because Blobs are large + not serialisable.
 let bootResumeBlob: Blob | null = null;
@@ -1187,8 +1188,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const capture = activeRecordingCapture;
     activeRecordingCapture = null;
     if (capture) {
-      // Fire-and-forget — discard the recording; we don't care about the result.
-      void capture.stop().catch(() => undefined);
+      // Fire-and-forget cancel — discard the recording. UnifiedCaptureSession
+      // exposes cancel() (returns Promise<void>) for both backends.
+      void capture.cancel().catch(() => undefined);
     }
     set({
       isSampling: false,
@@ -1441,9 +1443,55 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!state.isSamplingArmed || state.isSampling) return;
     set({ importStatus: "LOADING", importMessage: `OPENING ${state.inputSource}` });
     const gain = dbToGain(state.inputGain);
-    void startRecordingCapture(state.inputSource, (inputLevel) => useAppStore.setState({ inputLevel: clamp(inputLevel * gain, 0, 1) }))
+    const onLevel = (inputLevel: number) =>
+      useAppStore.setState({ inputLevel: clamp(inputLevel * gain, 0, 1) });
+
+    // Branch: Tauri runs through cpal/WASAPI (no permission popups, system
+    // audio loopback by default, ~5-10ms IPC latency). Browser keeps the
+    // legacy getDisplayMedia/getUserMedia path as documented fallback.
+    if (isTauri()) {
+      void (async () => {
+        try {
+          const native = await startNativeRecording({
+            onLevel,
+            // Per-frame waveform updates are Phase 2; for now we just want
+            // the final AudioBuffer back from stop(). The Rust side still
+            // emits audio:frame events — they're cheap to ignore.
+          });
+          activeRecordingCapture = {
+            stop: () => native.stop(),
+            cancel: () => native.cancel(),
+          };
+          set({
+            isSampling: true,
+            isSamplingArmed: false,
+            recordingMs: 0,
+            sampleLength: "00:00.000",
+            importStatus: "READY",
+            importMessage: "RECORDING SYSTEM AUDIO",
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message.toUpperCase() : "CAPTURE FAILED";
+          set({ isSampling: false, isSamplingArmed: false, inputLevel: 0, importStatus: "ERROR", importMessage: message });
+        }
+      })();
+      return;
+    }
+
+    // Browser fallback — getDisplayMedia / getUserMedia → MediaRecorder
+    // → Blob. Wrapped in UnifiedCaptureSession so keepSampling stays
+    // identical regardless of backend.
+    void startRecordingCapture(state.inputSource, onLevel)
       .then((capture) => {
-        activeRecordingCapture = capture;
+        activeRecordingCapture = {
+          stop: async () => {
+            const blob = await capture.stop();
+            const data = await blob.arrayBuffer();
+            const buffer = await samplerEngine.decodeAudioData(data);
+            return buffer;
+          },
+          cancel: async () => capture.cancel(),
+        };
         set({
           isSampling: true,
           isSamplingArmed: false,
@@ -1468,9 +1516,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     set({ importStatus: "LOADING", importMessage: "DECODING RECORDING" });
-    void capture.stop()
-      .then((blob) => blob.arrayBuffer())
-      .then((data) => samplerEngine.decodeAudioData(data))
+    // capture.stop() returns AudioBuffer in both Tauri and browser paths
+    // (browser path wraps decodeAudioData inside the unified stop()).
+    void capture
+      .stop()
       .then((buffer) => {
         applyBufferGain(buffer, get().inputGain);
         const sample = createImportedSample(get().sampleName, buffer);
