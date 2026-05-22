@@ -1,60 +1,59 @@
 import { writeAutosave } from "./autosaveDb";
 
-const DEBOUNCE_MS = 10_000;
+// Interval-based autosave.
+//
+// Previously this scheduler ran a 10 s debounce on every `projectVersion`
+// change. The current SETTINGS panel exposes `AUTO SAVE` (on/off) and
+// `INTERVAL SEC`, so we run a fixed-interval write loop driven by those
+// values. Activity-aware skip (playback / record / sampling) is handled by
+// the `shouldSkip` callback so the host can decide what counts as "busy".
+//
+// Lifecycle: start / stop / restart from App.tsx based on settings changes.
+// Manual flush still available for save-on-quit scenarios.
 
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let idleHandle: number | null = null;
+let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let inflight = false;
 
-function scheduleIdle(callback: () => void) {
-  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
-  if (typeof ric === "function") {
-    idleHandle = ric(callback, { timeout: 2000 });
-    return;
+async function runOnce(
+  produceBlob: () => Promise<Blob>,
+  shouldSkip: () => boolean,
+): Promise<void> {
+  if (inflight) return;
+  if (shouldSkip()) return;
+  inflight = true;
+  try {
+    const blob = await produceBlob();
+    await writeAutosave(blob);
+  } catch (error) {
+    console.warn("[loopthief] autosave failed", error);
+  } finally {
+    inflight = false;
   }
-  idleHandle = window.setTimeout(callback, 50) as unknown as number;
 }
 
-function cancelIdle() {
-  if (idleHandle === null) return;
-  const cic = (window as unknown as { cancelIdleCallback?: (handle: number) => void }).cancelIdleCallback;
-  if (typeof cic === "function") {
-    cic(idleHandle);
-  } else {
-    window.clearTimeout(idleHandle);
-  }
-  idleHandle = null;
+export function startAutosaveInterval(
+  produceBlob: () => Promise<Blob>,
+  intervalSec: number,
+  shouldSkip: () => boolean,
+): void {
+  stopAutosaveInterval();
+  const ms = Math.max(15, intervalSec) * 1000;
+  intervalHandle = setInterval(() => {
+    void runOnce(produceBlob, shouldSkip);
+  }, ms);
 }
 
-export function scheduleAutosave(produceBlob: () => Promise<Blob>) {
-  if (debounceTimer !== null) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
+export function stopAutosaveInterval(): void {
+  if (intervalHandle !== null) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
   }
-  cancelIdle();
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null;
-    scheduleIdle(() => {
-      idleHandle = null;
-      if (inflight) return;
-      inflight = true;
-      produceBlob()
-        .then((blob) => writeAutosave(blob))
-        .catch((error) => {
-          console.warn("[loopthief] autosave failed", error);
-        })
-        .finally(() => {
-          inflight = false;
-        });
-    });
-  }, DEBOUNCE_MS);
+}
+
+export function isAutosaveRunning(): boolean {
+  return intervalHandle !== null;
 }
 
 export function flushAutosave(produceBlob: () => Promise<Blob>): Promise<void> {
-  if (debounceTimer !== null) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
-  }
-  cancelIdle();
   return produceBlob().then((blob) => writeAutosave(blob));
 }

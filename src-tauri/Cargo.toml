@@ -15,4 +15,20 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+# Save dialog backend swap — see lib.rs `save_file_dialog` command.
+# tauri-plugin-dialog's rfd-based IFileSaveDialog path has a ~2-3 s lag in
+# release builds; native-dialog uses a lighter path that opens instantly.
+# Still using tauri-plugin-dialog for the OPEN flow (instant either way).
+native-dialog = "0.7"
+
+# Full release-build optimisation. Slower compile (~2-3× vs default)
+# but smaller / faster runtime. Marek's hypothesis: this may shrink the
+# 3 s dialog-open lag if any of the cost lives in non-LTO'd plugin code.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

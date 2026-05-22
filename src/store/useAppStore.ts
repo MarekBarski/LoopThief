@@ -26,7 +26,7 @@ import {
 import metronomeSampleUrl from "../../assets/Samples/Metronome.wav?url";
 import {
   loadFromBlob,
-  saveBlobAs,
+  saveBlobAsync,
   serializeAll,
   serializeProject,
   serializeSeq,
@@ -43,6 +43,7 @@ import {
   type MidiMessage,
 } from "../midi";
 import { noteToPad, padToNote, padIdToIndex } from "../midi/mapping";
+import { isTauri } from "../runtime/environment";
 
 export type PadBank = "A" | "B" | "C" | "D";
 type TimeSignature = "2/4" | "3/4" | "4/4" | "5/4" | "6/4" | "6/8" | "7/8" | "9/8" | "12/8";
@@ -266,6 +267,27 @@ type AppState = {
   triggeredPads: Record<string, boolean>;
   flashingButtons: Record<string, boolean>;
   tapHistory: number[];
+  quitDialogOpen: boolean;
+  quitStep: "CONFIRM" | "SAVE_FORM";
+  quitStatus: "IDLE" | "SAVING" | "ERROR";
+  quitErrorMessage: string;
+  quitSaveFilename: string;
+  requestAppQuit: () => void;
+  cancelAppQuit: () => void;
+  confirmAppQuit: () => Promise<void>;
+  beginSaveAndQuit: () => void;
+  backToQuitConfirm: () => void;
+  setQuitSaveFilename: (name: string) => void;
+  saveAsAndQuit: (filename: string) => Promise<void>;
+  cancelSampling: () => void;
+  bootResumeOpen: boolean;
+  bootResumeStatus: "IDLE" | "LOADING" | "ERROR";
+  bootResumeMessage: string;
+  setBootResumeBlob: (blob: Blob) => void;
+  acceptBootResume: () => Promise<void>;
+  dismissBootResume: () => Promise<void>;
+  loadLatestAutosave: () => Promise<{ ok: boolean; message: string }>;
+  hasAutosaveEntry: () => Promise<boolean>;
   setActiveScreen: (screen: ScreenId) => void;
   togglePlay: () => void;
   stopPlayback: () => void;
@@ -506,7 +528,7 @@ type AppState = {
   previewSelectedMemorySample: () => void;
   renameSelectedMemorySample: (name: string) => void;
   deleteSelectedMemorySample: () => void;
-  exportSelectedMemorySample: () => void;
+  exportSelectedMemorySample: () => Promise<void>;
   exportSongToWav: (filename: string) => Promise<{ ok: true; filename: string } | { ok: false; reason: string }>;
   setActiveSettingsCategory: (id: string) => void;
   selectSetting: (index: number) => void;
@@ -558,7 +580,7 @@ type AppState = {
   retryEditedSample: () => void;
   previewEditedSample: () => void;
   createProjectSnapshot: () => ProjectSnapshot;
-  saveProjectFile: (name: string) => Promise<void>;
+  saveProjectFile: (name: string) => Promise<import("../disk").SaveResult>;
   saveAllFile: (name: string) => Promise<void>;
   saveSeqFile: (name: string, sequenceId?: string) => Promise<void>;
   loadFile: (file: Blob, options?: { targetSequenceId?: string }) => Promise<{ type: "project" | "all" | "seq"; name: string }>;
@@ -810,6 +832,9 @@ type SettingsValues = {
 
 let eventIdCounter = 0;
 let activeRecordingCapture: ActiveRecordingCapture | null = null;
+// Module-scoped blob handed in by App.tsx during boot-resume detection.
+// Kept off the React store because Blobs are large + not serialisable.
+let bootResumeBlob: Blob | null = null;
 let sequenceStepStartedAt = typeof performance !== "undefined" ? performance.now() : 0;
 let metronomeBufferId: string | null = null;
 let metronomeLoadPromise: Promise<string | null> | null = null;
@@ -1040,6 +1065,194 @@ export const useAppStore = create<AppState>((set, get) => ({
   triggeredPads: {},
   flashingButtons: {},
   tapHistory: [],
+  quitDialogOpen: false,
+  quitStep: "CONFIRM",
+  quitStatus: "IDLE",
+  quitErrorMessage: "",
+  quitSaveFilename: "loopthief_project",
+  bootResumeOpen: false,
+  bootResumeStatus: "IDLE",
+  bootResumeMessage: "",
+  requestAppQuit: () => {
+    const state = get();
+    // Block quit while transport / sampling is active. User must STOP first.
+    // Same path is used by QUIT button, Ctrl+Q, Alt+F4, and the Tauri title-bar X.
+    if (
+      state.isPlaying ||
+      state.isSequenceRecording ||
+      state.overdubEnabled ||
+      state.isSampling ||
+      state.isSamplingArmed
+    ) {
+      set({ lastAudioMessage: "CANNOT QUIT — STOP TRANSPORT FIRST" });
+      return;
+    }
+    set({
+      quitDialogOpen: true,
+      quitStep: "CONFIRM",
+      quitStatus: "IDLE",
+      quitErrorMessage: "",
+    });
+  },
+  cancelAppQuit: () =>
+    set({
+      quitDialogOpen: false,
+      quitStep: "CONFIRM",
+      quitStatus: "IDLE",
+      quitErrorMessage: "",
+    }),
+  confirmAppQuit: async () => {
+    try {
+      await closeApplicationWindow();
+      // If close succeeds we never reach this line — destroy() / window.close()
+      // unmounts the page. Reaching it means browser blocked the close OR
+      // Tauri lacked the destroy permission; surface as ERROR so the user sees
+      // a clear message instead of a frozen dialog.
+      set({
+        quitStatus: "ERROR",
+        quitErrorMessage: isTauri()
+          ? "Window close blocked. Check Tauri permissions."
+          : "Browser blocked close. Close the tab manually.",
+      });
+    } catch (err) {
+      set({
+        quitStatus: "ERROR",
+        quitErrorMessage: err instanceof Error ? err.message : "Close failed",
+      });
+    }
+  },
+  beginSaveAndQuit: () => {
+    // Tauri: skip the SAVE_FORM stage — the native Save As… dialog already
+    // gives the user filename + path. Browser: keep SAVE_FORM with the
+    // filename input + anchor-download flow.
+    if (isTauri()) {
+      void get().saveAsAndQuit(get().quitSaveFilename);
+      return;
+    }
+    set({ quitStep: "SAVE_FORM", quitStatus: "IDLE", quitErrorMessage: "" });
+  },
+  backToQuitConfirm: () =>
+    set({ quitStep: "CONFIRM", quitStatus: "IDLE", quitErrorMessage: "" }),
+  setQuitSaveFilename: (name: string) => set({ quitSaveFilename: name }),
+  saveAsAndQuit: async (filename: string) => {
+    const trimmed = filename.trim() || "loopthief_project";
+    set({ quitStatus: "SAVING", quitErrorMessage: "" });
+    let result: import("../disk").SaveResult;
+    try {
+      result = await Promise.race([
+        get().saveProjectFile(trimmed),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Save timeout (10s)")), 10000),
+        ),
+      ]);
+    } catch (err) {
+      set({
+        quitStatus: "ERROR",
+        quitErrorMessage: err instanceof Error ? err.message : "Save failed",
+      });
+      return;
+    }
+    if (!result.ok) {
+      if (result.reason === "cancelled") {
+        // User cancelled the native Save As… dialog (or Tauri-mode short-circuit
+        // from beginSaveAndQuit). Drop back to the CONFIRM stage so they can
+        // pick YES / NO / SAVE & QUIT again.
+        set({ quitStep: "CONFIRM", quitStatus: "IDLE", quitErrorMessage: "" });
+        return;
+      }
+      set({
+        quitStatus: "ERROR",
+        quitErrorMessage: result.reason,
+      });
+      return;
+    }
+    try {
+      await closeApplicationWindow();
+      set({
+        quitStatus: "ERROR",
+        quitErrorMessage: isTauri()
+          ? "Saved, but window close blocked. Check Tauri permissions."
+          : "Saved. Browser blocked close — close the tab manually.",
+      });
+    } catch (err) {
+      set({
+        quitStatus: "ERROR",
+        quitErrorMessage: err instanceof Error
+          ? `Saved, but close failed: ${err.message}`
+          : "Saved, but close failed",
+      });
+    }
+  },
+  cancelSampling: () => {
+    const capture = activeRecordingCapture;
+    activeRecordingCapture = null;
+    if (capture) {
+      // Fire-and-forget — discard the recording; we don't care about the result.
+      void capture.stop().catch(() => undefined);
+    }
+    set({
+      isSampling: false,
+      isSamplingArmed: false,
+      inputLevel: 0,
+      importStatus: "IDLE",
+      importMessage: "CANCELLED",
+    });
+  },
+  setBootResumeBlob: (blob: Blob) => {
+    bootResumeBlob = blob;
+    set({ bootResumeOpen: true, bootResumeStatus: "IDLE", bootResumeMessage: "" });
+  },
+  acceptBootResume: async () => {
+    const blob = bootResumeBlob;
+    if (!blob) {
+      set({ bootResumeOpen: false });
+      return;
+    }
+    set({ bootResumeStatus: "LOADING", bootResumeMessage: "Restoring…" });
+    try {
+      await get().loadFile(blob);
+      bootResumeBlob = null;
+      set({ bootResumeOpen: false, bootResumeStatus: "IDLE", bootResumeMessage: "" });
+    } catch (err) {
+      set({
+        bootResumeStatus: "ERROR",
+        bootResumeMessage: err instanceof Error ? err.message : "Restore failed",
+      });
+    }
+  },
+  dismissBootResume: async () => {
+    bootResumeBlob = null;
+    try {
+      const { clearAutosave } = await import("../disk");
+      await clearAutosave();
+    } catch {
+      /* ignore — clearing autosave is best-effort */
+    }
+    set({ bootResumeOpen: false, bootResumeStatus: "IDLE", bootResumeMessage: "" });
+  },
+  loadLatestAutosave: async () => {
+    try {
+      const { readAutosave } = await import("../disk");
+      const blob = await readAutosave();
+      if (!blob) return { ok: false, message: "No autosave found" };
+      await get().loadFile(blob);
+      return { ok: true, message: "Autosave restored" };
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : "Restore failed",
+      };
+    }
+  },
+  hasAutosaveEntry: async () => {
+    try {
+      const { readAutosave } = await import("../disk");
+      const blob = await readAutosave();
+      return blob !== null;
+    } catch {
+      return false;
+    }
+  },
   setActiveScreen: (activeScreen) => set({ activeScreen }),
   togglePlay: () => {
     void samplerEngine.ensureReady();
@@ -4420,7 +4633,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         importMessage: `DELETED ${sample.name}`,
       };
     }),
-  exportSelectedMemorySample: () => {
+  exportSelectedMemorySample: async () => {
     const state = get();
     const sample = state.recordedSamples[state.selectedDiskItemIndex];
     if (!sample) {
@@ -4434,7 +4647,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const region = getSampleRegion(sample);
     const wav = encodeWavRegion(audioRef, region.start, region.end);
-    downloadBytes(`${sample.name}.wav`, wav, "audio/wav");
+    const safeName = sample.name.replace(/\.wav$/i, "");
+    const result = await saveBlobAsync(new Blob([wav], { type: "audio/wav" }), {
+      defaultName: safeName,
+      extension: "wav",
+      filterName: "WAV Audio",
+      mimeType: "audio/wav",
+    });
+    if (!result.ok) {
+      set({
+        importStatus: result.reason === "cancelled" ? "READY" : "ERROR",
+        importMessage:
+          result.reason === "cancelled" ? "EXPORT CANCELLED" : `EXPORT FAILED: ${result.reason}`,
+      });
+      return;
+    }
     set({ importStatus: "READY", importMessage: `EXPORTED ${sample.name}` });
   },
   exportSongToWav: async (filename: string) => {
@@ -4449,7 +4676,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const bytes = encodeAudioBufferToWav(buffer);
       const safeName = (filename || "song_export").replace(/[^A-Za-z0-9._-]/g, "_");
-      downloadBytes(`${safeName}.wav`, bytes, "audio/wav");
+      const result = await saveBlobAsync(new Blob([bytes], { type: "audio/wav" }), {
+        defaultName: safeName,
+        extension: "wav",
+        filterName: "WAV Audio",
+        mimeType: "audio/wav",
+      });
+      if (!result.ok) {
+        return { ok: false as const, reason: result.reason };
+      }
       return { ok: true as const, filename: `${safeName}.wav` };
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown render error";
@@ -4648,12 +4883,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       resolveAudioBuffer: (id) => getSampleBuffer(id),
     });
     const blob = await writeProjectZip(manifest, sampleEntries);
-    saveBlobAs(blob, `${sanitized}.lthief`);
+    const result = await saveBlobAsync(blob, {
+      defaultName: sanitized,
+      extension: "lthief",
+      filterName: "LoopThief Project",
+      mimeType: "application/octet-stream",
+    });
+    if (!result.ok) {
+      set({
+        lastAudioMessage:
+          result.reason === "cancelled" ? "SAVE CANCELLED" : `SAVE FAILED: ${result.reason}`,
+      });
+      return result;
+    }
     set((current) => ({
       lastAudioMessage: `SAVED: ${sanitized}.lthief`,
       lastSavedProjectVersion: current.projectVersion,
     }));
     void (await import("../disk")).clearAutosave();
+    return result;
   },
   saveAllFile: async (name: string) => {
     const state = get();
@@ -4666,7 +4914,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       globalSettings: collectGlobalSettings(state),
     });
     const blob = await writeProjectZip(manifest, []);
-    saveBlobAs(blob, `${sanitized}.lthief-all`);
+    const result = await saveBlobAsync(blob, {
+      defaultName: sanitized,
+      extension: "lthief-all",
+      filterName: "LoopThief All Sequences",
+      mimeType: "application/octet-stream",
+    });
+    if (!result.ok) {
+      set({
+        lastAudioMessage:
+          result.reason === "cancelled" ? "SAVE CANCELLED" : `SAVE FAILED: ${result.reason}`,
+      });
+      return;
+    }
     set((current) => ({
       lastAudioMessage: `SAVED: ${sanitized}.lthief-all`,
       lastSavedProjectVersion: current.projectVersion,
@@ -4687,7 +4947,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       sequence,
     });
     const blob = await writeProjectZip(manifest, []);
-    saveBlobAs(blob, `${sanitized}.lthief-seq`);
+    const result = await saveBlobAsync(blob, {
+      defaultName: sanitized,
+      extension: "lthief-seq",
+      filterName: "LoopThief Sequence",
+      mimeType: "application/octet-stream",
+    });
+    if (!result.ok) {
+      set({
+        lastAudioMessage:
+          result.reason === "cancelled" ? "SAVE CANCELLED" : `SAVE FAILED: ${result.reason}`,
+      });
+      return;
+    }
     set((current) => ({
       lastAudioMessage: `SAVED: ${sanitized}.lthief-seq`,
       lastSavedProjectVersion: current.projectVersion,
@@ -6357,17 +6629,6 @@ function removeDiskSampleItems(folders: DiskFolder[], sampleName: string) {
     ...folder,
     items: folder.items.filter((item) => item.name !== `${sampleName}.WAV`),
   }));
-}
-
-function downloadBytes(fileName: string, bytes: ArrayBuffer, mimeType: string) {
-  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function isTrackMuted(state: AppState, trackId: string) {
@@ -8104,4 +8365,33 @@ function computeOfflineSwingTicks(state: AppState, eventStep: string): number {
   const stepIndex = Math.floor(eventTickFromBarStart / gridTicks);
   if (stepIndex % 2 === 0) return 0; // even-numbered grid positions don't shift
   return Math.round(swingAmount * gridTicks);
+}
+
+// ============================================================================
+// Application window close — Tauri-aware.
+//
+// Tauri path: destroy() skips the Rust-side CloseRequested intercept (which
+// would otherwise re-open the QUIT dialog). Requires `core:window:allow-destroy`
+// in src-tauri/capabilities/default.json — without it destroy() throws and we
+// let the error propagate so callers surface it.
+//
+// Browser path: window.close() only works for pages opened by script. For
+// pages opened manually (e.g. localhost dev tab), the browser silently
+// ignores it. We give the page a short tick to teardown and check `closed`
+// to confirm — if still open after the grace window, the caller treats it as
+// a soft failure and shows an error.
+//
+// In neither case do we throw "blocked" ourselves; throw means a real API
+// failure (permission, exception). Soft block (browser silently ignored) is
+// signalled by returning normally without the page actually unmounting.
+// ============================================================================
+async function closeApplicationWindow(): Promise<void> {
+  if (isTauri()) {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().destroy();
+    return;
+  }
+  if (typeof window !== "undefined") {
+    window.close();
+  }
 }

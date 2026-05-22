@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useLayoutStore } from "../../store/useLayoutStore";
 import { useAppStore } from "../../store/useAppStore";
+import { isTauri } from "../../runtime/environment";
 
 /**
  * Global keyboard mappings.
@@ -105,16 +106,53 @@ export function KeyboardShortcuts() {
       }
 
       // ============================================================
+      // Ctrl+Q: open QUIT dialog. Cross-platform convention. Alt+F4 is
+      // intercepted by Tauri's CloseRequested handler in Rust (see
+      // src-tauri/src/lib.rs) which emits "close-requested" → JS
+      // listener below also opens the dialog. So all three paths
+      // (QUIT button, Ctrl+Q, Alt+F4 / title-bar X) converge.
+      // ============================================================
+      if (isMeta && key === "q") {
+        event.preventDefault();
+        store.getState().requestAppQuit();
+        return;
+      }
+
+      // ============================================================
+      // F11: toggle fullscreen (Tauri only). Browser has its own native
+      // F11 fullscreen — let the OS/browser handle it there.
+      // ============================================================
+      if (event.key === "F11" && !event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey) {
+        if (isTauri()) {
+          event.preventDefault();
+          void (async () => {
+            const { getCurrentWindow } = await import("@tauri-apps/api/window");
+            const win = getCurrentWindow();
+            const isFullscreen = await win.isFullscreen();
+            await win.setFullscreen(!isFullscreen);
+          })();
+        }
+        return;
+      }
+
+      // ============================================================
       // F-keys: softkey passthrough on active screen.
       // F7 is layout-editor (handled in AppShell). F1–F6 click the
       // softkey whose label starts with "Fn ".
+      //
+      // Modifier guard: F-key + Alt/Ctrl/Shift/Meta is NOT a softkey
+      // press — it's a system shortcut (e.g. Alt+F4 = OS close). Skip
+      // softkey processing so the OS / Tauri intercept can handle it.
       // ============================================================
-      if (event.key === "F1") { event.preventDefault(); clickSoftkey(1); return; }
-      if (event.key === "F2") { event.preventDefault(); clickSoftkey(2); return; }
-      if (event.key === "F3") { event.preventDefault(); clickSoftkey(3); return; }
-      if (event.key === "F4") { event.preventDefault(); clickSoftkey(4); return; }
-      if (event.key === "F5") { event.preventDefault(); clickSoftkey(5); return; }
-      if (event.key === "F6") { event.preventDefault(); clickSoftkey(6); return; }
+      if (event.key === "F1" || event.key === "F2" || event.key === "F3" ||
+          event.key === "F4" || event.key === "F5" || event.key === "F6") {
+        if (event.altKey || event.ctrlKey || event.shiftKey || event.metaKey) {
+          return;
+        }
+        event.preventDefault();
+        clickSoftkey(Number(event.key.slice(1)));
+        return;
+      }
 
       // ============================================================
       // Dialogs / modals (screen-aware).
@@ -254,6 +292,30 @@ export function KeyboardShortcuts() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  // ============================================================
+  // Tauri "close-requested" event — fired by Rust's CloseRequested
+  // handler (prevent_close + emit) when the user clicks title-bar X
+  // or hits Alt+F4. JS converges to the same QUIT dialog as Ctrl+Q
+  // and the on-canvas QUIT button.
+  // ============================================================
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const off = await listen("close-requested", () => {
+        useAppStore.getState().requestAppQuit();
+      });
+      if (cancelled) off();
+      else unlisten = off;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
     };
   }, []);
 

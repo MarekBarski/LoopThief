@@ -2,10 +2,16 @@ export * from "./types";
 export { encodeAudioBufferToWav, decodeWavToAudioBuffer } from "./wavCodec";
 export { writeProjectZip, readProjectZip } from "./zipContainer";
 export { applyMigrations } from "./migrations";
-export { saveBlobAs } from "./saveAs";
+export { saveBlobAsync } from "./saveAs";
+export type { SaveOptions, SaveResult } from "./saveAs";
 export { loadFromBlob } from "./loader";
 export type { LoadedBundle, LoadedProject, LoadedAll, LoadedSeq, LoadedSample, LoadProgress, LoadOptions } from "./loader";
-export { scheduleAutosave, flushAutosave } from "./autosaveScheduler";
+export {
+  startAutosaveInterval,
+  stopAutosaveInterval,
+  isAutosaveRunning,
+  flushAutosave,
+} from "./autosaveScheduler";
 export { readAutosave, writeAutosave, clearAutosave } from "./autosaveDb";
 export { serializeProject } from "./serializers/project";
 export type { ProjectSerializationInput, SerializedProjectBundle, SampleSource } from "./serializers/project";

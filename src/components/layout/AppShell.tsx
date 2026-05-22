@@ -3,6 +3,9 @@ import mainPanelBg from "../../../assets/ui/panels/main_panel_bg_1920_v3.png";
 import { useLayoutStore } from "../../store/useLayoutStore";
 import { LayoutEditorOverlay } from "./LayoutEditorOverlay";
 import { LayoutElements } from "./LayoutElements";
+import { QuitButton } from "../workstation/QuitButton";
+import { QuitDialog } from "../workstation/QuitDialog";
+import { BootResumeDialog } from "../workstation/BootResumeDialog";
 import { isTauri } from "../../runtime/environment";
 
 export const CANVAS_WIDTH = 2527;
@@ -14,9 +17,10 @@ export function AppShell() {
   const setEditMode = useLayoutStore((state) => state.setEditMode);
 
   useEffect(() => {
+    // Available area = viewport minus <main>'s p-4 (16px) on both sides.
     const updateScale = () => {
-      const availableWidth = window.innerWidth - 24;
-      const availableHeight = window.innerHeight - 24;
+      const availableWidth = window.innerWidth - 32;
+      const availableHeight = window.innerHeight - 32;
       setScale(Math.min(availableWidth / CANVAS_WIDTH, availableHeight / CANVAS_HEIGHT, 1));
     };
 
@@ -47,13 +51,17 @@ export function AppShell() {
       width: CANVAS_WIDTH,
       height: CANVAS_HEIGHT,
       transform: `scale(${scale})`,
-      transformOrigin: "center center",
+      // Anchor scale to the top edge of the layout box. With `items-start` on
+      // <main>, the section's layout box sticks to the top of the viewport;
+      // top-center origin then keeps the visually-scaled canvas at the top of
+      // the box (center-center origin would float it back toward the middle).
+      transformOrigin: "top center",
     }),
     [scale],
   );
 
   return (
-    <main className="flex min-h-screen items-center justify-center overflow-hidden bg-[#050505] p-3 text-zinc-100">
+    <main className="flex min-h-screen items-start justify-center overflow-hidden bg-[#050505] p-4 text-zinc-100">
       <section
         ref={canvasRef}
         className="relative shrink-0 overflow-hidden"
@@ -65,6 +73,9 @@ export function AppShell() {
           className="pointer-events-none absolute left-0 top-0 h-full w-full select-none"
         />
         <LayoutElements />
+        <QuitButton />
+        <QuitDialog />
+        <BootResumeDialog />
         {layoutEditorEnabled && <LayoutEditorOverlay canvasRef={canvasRef} />}
       </section>
     </main>

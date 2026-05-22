@@ -23,6 +23,7 @@ export function RecordScreen() {
   const armSampling = useAppStore((state) => state.armSampling);
   const startSampling = useAppStore((state) => state.startSampling);
   const keepSampling = useAppStore((state) => state.keepSampling);
+  const cancelSampling = useAppStore((state) => state.cancelSampling);
   const cycleInputSource = useAppStore((state) => state.cycleInputSource);
   const toggleMonitor = useAppStore((state) => state.toggleMonitor);
   const cycleThreshold = useAppStore((state) => state.cycleThreshold);
@@ -40,7 +41,12 @@ export function RecordScreen() {
 
   const latestWaveform = recordedSamples.at(-1)?.waveform ?? [];
   const latestSample = recordedSamples.at(-1);
-  const softButtons = ["F1 SOURCE", "F2 THRESH", "F3 MONITOR", "F4 ARM", "F5 START", "F6 SAVE"];
+  // F5 / F6 are contextual: idle → START / SAVE (legacy), sampling → CANCEL / KEEP.
+  // KEEP and SAVE are the same action — keepSampling stops the recording and
+  // commits the buffer. CANCEL stops the recording and discards the buffer.
+  const softButtons = isSampling
+    ? ["F1 SOURCE", "F2 THRESH", "F3 MONITOR", "F4 ARM", "F5 CANCEL", "F6 KEEP"]
+    : ["F1 SOURCE", "F2 THRESH", "F3 MONITOR", "F4 ARM", "F5 START", "F6 SAVE"];
   const samplingStatus = isSampling ? "RECORDING" : isSamplingArmed ? "ARMED" : "STOPPED";
 
   return (
@@ -114,7 +120,9 @@ export function RecordScreen() {
                 if (button === "F3 MONITOR") toggleMonitor();
                 if (button === "F4 ARM") armSampling();
                 if (button === "F5 START") startSampling();
+                if (button === "F5 CANCEL") cancelSampling();
                 if (button === "F6 SAVE") keepSampling();
+                if (button === "F6 KEEP") keepSampling();
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >

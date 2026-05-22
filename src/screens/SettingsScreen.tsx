@@ -188,8 +188,46 @@ function AutosavePanel({
   onIntervalAdjust: (delta: number) => void;
   selectSettingIndex: (idx: number) => void;
 }) {
+  const hasAutosaveEntry = useAppStore((state) => state.hasAutosaveEntry);
+  const loadLatestAutosave = useAppStore((state) => state.loadLatestAutosave);
+  const [autosaveAvailable, setAutosaveAvailable] = useState<boolean | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [loadStatus, setLoadStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [loadMessage, setLoadMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void hasAutosaveEntry().then((exists) => {
+      if (!cancelled) setAutosaveAvailable(exists);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasAutosaveEntry]);
+
+  const handleLoad = async () => {
+    setLoadStatus("loading");
+    setLoadMessage("Restoring…");
+    const result = await loadLatestAutosave();
+    if (result.ok) {
+      setLoadStatus("done");
+      setLoadMessage(result.message);
+      setConfirmOpen(false);
+    } else {
+      setLoadStatus("error");
+      setLoadMessage(result.message);
+    }
+  };
+
+  const loadDisabled = autosaveAvailable === false || loadStatus === "loading";
+  const loadLabel = autosaveAvailable === false
+    ? "NO AUTOSAVE FOUND"
+    : loadStatus === "loading"
+      ? "RESTORING…"
+      : "LOAD LAST AUTOSAVE";
+
   return (
-    <div className="grid content-start gap-[14px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+    <div className="relative grid content-start gap-[14px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
       <button
         type="button"
         onClick={() => {
@@ -224,7 +262,57 @@ function AutosavePanel({
       </div>
       <p className="text-[clamp(9px,0.7vw,11px)] tracking-[0.14em] text-[#91a477]">
         When ON, project state writes to IndexedDB every INTERVAL seconds.
+        Writes are skipped while playing / recording / sampling.
       </p>
+      <button
+        type="button"
+        onClick={() => setConfirmOpen(true)}
+        disabled={loadDisabled}
+        className="border border-amber-300 bg-amber-200/10 px-[3%] py-[3%] text-left text-amber-100 hover:bg-amber-200/20 disabled:cursor-not-allowed disabled:border-[#46533b] disabled:bg-black/15 disabled:text-[#46533b]"
+      >
+        {loadLabel}
+      </button>
+      {loadStatus === "done" && (
+        <p className="text-[clamp(9px,0.7vw,11px)] text-amber-200">{loadMessage}</p>
+      )}
+      {loadStatus === "error" && (
+        <p className="text-[clamp(9px,0.7vw,11px)] text-red-300">{loadMessage}</p>
+      )}
+      {confirmOpen && (
+        <div className="absolute inset-0 z-30 grid place-items-center bg-black/65 p-[5%]">
+          <section className="w-[min(440px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
+            <p className="mb-[8px] text-[#eef6d8]">RESTORE AUTOSAVED PROJECT?</p>
+            <p className="mb-[14px] text-[10px] text-[#91a477]">Current work will be lost.</p>
+            {loadStatus === "error" && (
+              <p className="mb-[10px] text-[10px] text-red-300">{loadMessage}</p>
+            )}
+            <div className="grid grid-cols-2 gap-[8px]">
+              <button
+                type="button"
+                onClick={() => void handleLoad()}
+                disabled={loadStatus === "loading"}
+                className="border border-amber-300 bg-amber-200/10 px-[10px] py-[8px] text-amber-100 hover:bg-amber-200/20 disabled:opacity-50"
+              >
+                {loadStatus === "loading" ? "RESTORING…" : "YES"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmOpen(false);
+                  if (loadStatus === "error") {
+                    setLoadStatus("idle");
+                    setLoadMessage("");
+                  }
+                }}
+                disabled={loadStatus === "loading"}
+                className="border border-[#46533b] bg-black/25 px-[10px] py-[8px] text-[#d8e3b7] hover:border-amber-300 disabled:opacity-50"
+              >
+                NO
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -426,6 +514,15 @@ function KeyboardReference() {
         ["Enter", "Confirm value"],
         ["Esc", "Cancel / revert"],
         ["Tab", "Confirm + next field"],
+      ],
+    },
+    {
+      title: "WINDOW (Tauri only)",
+      rows: [
+        ["F11", "Toggle fullscreen"],
+        ["Ctrl+Q", "Quit"],
+        ["Alt+F4", "Quit (Windows)"],
+        ["Quit button", "Top right corner"],
       ],
     },
   ];

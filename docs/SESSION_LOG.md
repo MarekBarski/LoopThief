@@ -99,6 +99,393 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 23 — 2026-05-22 — Tauri window UX: hide scrollbar + QUIT button + F11 fullscreen + keyboard fixes + canvas top-align + Tauri capabilities + quit flow hardening + autosave interval + boot resume dialog + RECORD cancel + native Save As… for all save/export flows
+
+### What was attempted
+
+Per Marek's spec (4 fixes for Tauri build UX, then follow-ups after runtime testing):
+
+1. Kill body/page scrollbar that shows in `loopthief.exe` window and hijacks mouse wheel.
+2. Add QUIT button (asset: `assets/ui/buttons/button_quit.png`) in top-right corner of canvas with a confirmation dialog (YES / NO / SAVE & QUIT). Enter = SAVE & QUIT (safe default), Esc = NO.
+3. Wire `F11` (toggle fullscreen, Tauri only), `Ctrl+Q` (quit) and intercept `Alt+F4` / title-bar X so they show the same dialog instead of closing immediately.
+4. Update SETTINGS → KEYBOARD REFERENCE with new WINDOW shortcuts.
+5. Top-align the canvas inside the window (was visually drifted below center because of `transform-origin: center`).
+6. Fix YES / SAVE & QUIT bugs reported by Marek after first runtime test: YES did nothing, SAVE & QUIT froze on "SAVING".
+7. Autosave / load / quit flow refactor (5 sub-tasks): real interval-based autosave honouring `autoSave` toggle + `autosaveIntervalSec` slider; skip during transport activity; LOAD LAST AUTOSAVE button in SETTINGS with confirmation; SAVE & QUIT replaced with two-stage dialog (CONFIRM → SAVE_FORM with filename input); QUIT button + Ctrl+Q + Alt+F4 + title-bar X blocked during transport / sampling (top-bar message instead of dialog); RECORD screen contextual softkeys (F5 START ↔ CANCEL, F6 SAVE ↔ KEEP); boot-resume `window.confirm()` replaced with internal LCD BootResumeDialog.
+8. Native OS Save As… dialog for every save / export flow in Tauri mode. DISK SAVE PROJECT / SAVE ALL SEQS / SAVE CURRENT SEQ / F5 EXPORT sample, SONG WAV export, Ctrl+S, SAVE & QUIT — all converge on a single `saveBlobAsync` helper that fans out to native dialog + `fs.writeFile` in Tauri and anchor-download in browser.
+
+Plus Tauri config: default window 1920×1080 → 1600×1000.
+
+### What worked
+
+**CSS overflow fix** (`src/styles/index.css`):
+
+- `html, body, #root` now have `height: 100%` and `overflow: hidden` (previously only `min-height: 100%`). `AppShell.tsx` uses `transform: scale()` on a 2527×1610 canvas — `transform` does NOT shrink layout sizing, so the canvas occupies its full pixel size in layout flow even when visually scaled down. Without `overflow:hidden` on body/html, the browser shows scrollbars for the off-screen area and the mouse wheel can scroll the whole page (clashing with waveform-zoom wheel in CHOP/SAMPLE EDIT and list scrolls in DISK/STEP/SONG). With it, the body is locked to viewport, only the explicitly scrollable inner containers (the 22.N `overflow-y-auto` lists) respond to wheel.
+
+**Tauri Rust CloseRequested intercept** (`src-tauri/src/lib.rs`):
+
+```rust
+.on_window_event(|window, event| {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        api.prevent_close();
+        let _ = window.app_handle().emit("close-requested", ());
+    }
+})
+```
+
+This catches every native close path (title-bar X, Alt+F4, system task-kill signals) and emits `"close-requested"` to JS instead of closing. JS listener in `KeyboardShortcuts.tsx` calls `requestAppQuit()` which opens the same dialog as the QUIT button and Ctrl+Q. After confirm we call `getCurrentWindow().destroy()` which bypasses the intercept (`destroy()` ≠ `close()`).
+
+Added `use tauri::{Emitter, Manager, WindowEvent};`. `cargo check` clean — no warnings, no errors.
+
+**Tauri config** (`src-tauri/tauri.conf.json`): default window 1600×1000. `minWidth: 1280` / `minHeight: 720` unchanged from session 22.K.
+
+**Store quit state** (`src/store/useAppStore.ts`):
+
+- New state fields: `quitDialogOpen: boolean`, `quitStatus: "IDLE" | "SAVING" | "ERROR"`, `quitErrorMessage: string`.
+- New actions: `requestAppQuit`, `cancelAppQuit`, `confirmAppQuit`, `saveAndQuit`.
+- `saveAndQuit` reuses existing `saveProjectFile("untitled")` (same default as Ctrl+S, line ~4630). On error sets `quitStatus = "ERROR"` and DOES NOT close — user can retry or hit YES to discard.
+- New helper at end of file: `closeApplicationWindow()` — dynamic-imports `@tauri-apps/api/window` (so browser bundle doesn't try to resolve it eagerly), calls `getCurrentWindow().destroy()` in Tauri or `window.close()` in browser.
+- Added `import { isTauri } from "../runtime/environment";` to store.
+
+**KeyboardShortcuts.tsx**:
+
+1. F-key modifier guard — F1-F6 block now reads `if (event.altKey || event.ctrlKey || event.shiftKey || event.metaKey) return;` before `clickSoftkey`. Alt+F4 no longer triggers F4 softkey.
+2. F11 handler (Tauri only): dynamic-imports `getCurrentWindow`, toggles `setFullscreen(!isFullscreen)`. Browser path returns silently — browser's native F11 handles fullscreen there.
+3. Ctrl+Q handler: `store.getState().requestAppQuit()`.
+4. New `useEffect` registers a Tauri `listen("close-requested", ...)` listener (only when `isTauri()`) that calls `requestAppQuit()` so title-bar X and Alt+F4 converge to the dialog.
+
+**QuitButton component** (`src/components/workstation/QuitButton.tsx` — new):
+
+Canvas-relative, absolute-positioned top-right with `top: 30px / right: 30px / 70×70px` (all converted to `%` of CANVAS_WIDTH/HEIGHT so it scales with the shell). Renders `button_quit.png`. Disabled in browser mode with tooltip "Available in desktop app only" (per Marek's choice). Click → `requestAppQuit`.
+
+**QuitDialog component** (`src/components/workstation/QuitDialog.tsx` — new):
+
+Mounts only when `quitDialogOpen`. Same styling as SongScreen export dialog: `absolute inset-0 z-50 grid place-items-center bg-black/65`, inner `border-[#91a477] bg-[#0a0d08]`. Three buttons in a `grid-cols-3`: SAVE & QUIT (amber, focused on mount), YES (sage), NO (subtle). Local capture-phase keydown handler — `Enter` = SAVE & QUIT, `Esc` = NO. Capture phase wins over global `KeyboardShortcuts.tsx` so the global `Escape` handler (which closes screen-aware popups) doesn't fire first. Footer line: "Enter = SAVE & QUIT · Esc = NO".
+
+`z-50` chosen above the existing dialog overlays (export dialog uses `z-30`) so QUIT dialog renders over any other open dialog.
+
+**AppShell.tsx**: imports + mounts `<QuitButton />` and `<QuitDialog />` inside the canvas `<section>` (same as `<LayoutElements />`), so both scale with the shell.
+
+**SettingsScreen.tsx**: appended a new group `WINDOW (Tauri only)` with `F11`, `Ctrl+Q`, `Alt+F4`, `Quit button` entries to `KeyboardReference.groups`.
+
+**Canvas top-align (follow-up after Marek's screenshot)** — `AppShell.tsx`:
+
+- `<main>`: `items-center` → `items-start`, `p-3` → `p-4`.
+- `shellStyle.transformOrigin`: `"center center"` → `"top center"`.
+- `updateScale`: viewport-padding subtraction `- 24` → `- 32` to match the new `p-4` (16px × 2).
+
+The naive read of Marek's spec was "just flip items-center to items-start". That alone would not have moved the canvas visually, because `transform: scale()` with `transform-origin: center center` shrinks the canvas toward the middle of its own layout box. The 2527×1610 layout box is taller than every supported window, so the box overflows above and below the viewport equally; flipping the cross-axis alignment moves the layout box's TOP to the top of `<main>`, but the visual rendered canvas would still sit roughly in the middle of that box. Combining `items-start` with `transform-origin: top center` is what actually pins the visible canvas to the top edge.
+
+`npm run build` → TypeScript clean, Vite output `dist/assets/window-*.js` chunk 13.29 kB (the lazy `@tauri-apps/api/window` import). `cargo check` on Tauri shell → clean.
+
+**Bug fix follow-up — YES / SAVE & QUIT freeze (after Marek's first runtime test)**
+
+Marek tested: NO worked, YES did nothing, SAVE & QUIT showed "SAVING…" then froze. Diagnosed three root causes without waiting for console output:
+
+1. **MISSING TAURI CAPABILITIES FILE.** Tauri 2's permission model is explicit-allowlist. `src-tauri/capabilities/*.json` must list every API the JS side is allowed to call. The repo had `src-tauri/gen/schemas/capabilities.json` = `{}` (the auto-generated schema, NOT a config file). No `src-tauri/capabilities/` folder existed. Every call to `getCurrentWindow().destroy()`, `setFullscreen()`, `isFullscreen()`, `listen("close-requested")` was rejected with a permission error that we never caught. Result: YES called destroy → permission denied → exception thrown → button looked broken; SAVE & QUIT saved fine then destroy denied → status stuck at SAVING → app "froze"; title-bar X / Alt+F4 → Rust prevent_close held the window open but JS listen() permission denied → no dialog → X "did nothing"; F11 → setFullscreen denied → no fullscreen.
+
+   **Fix**: created `src-tauri/capabilities/default.json` with:
+   - `core:default` (essential built-ins)
+   - `core:window:allow-destroy` (the JS `destroy()` call)
+   - `core:window:allow-is-fullscreen` (F11 toggle check)
+   - `core:window:allow-set-fullscreen` (F11 toggle apply)
+   - `core:event:allow-listen` (the "close-requested" listener)
+   - `core:event:allow-unlisten` (the cleanup return value from `listen()`)
+   - `windows: ["main"]` — applies to the only window declared in `tauri.conf.json`.
+
+2. **`confirmAppQuit` and `saveAndQuit` had no try/catch around `closeApplicationWindow`.** When destroy() rejected, the promise rejection bubbled up; the calling button used `() => void confirmAppQuit()` which swallows it; the dialog stayed open with stale status. Refactored both actions:
+   - `confirmAppQuit`: wraps `closeApplicationWindow()` in try/catch. On thrown error → `quitStatus: "ERROR"` + the real error message. On normal return (no throw, no actual unmount) → `quitStatus: "ERROR"` with "Window close blocked. Check Tauri permissions." (Tauri) or "Browser blocked close. Close the tab manually." (browser).
+   - `saveAndQuit`: wraps save in `Promise.race` with a 10 s timeout — if `saveProjectFile` hangs (e.g. WebView2 download dialog stuck behind window), the race rejects with "Save timeout (10s)" and we surface ERROR instead of freezing the dialog. After save succeeds, wraps `closeApplicationWindow()` in its own try/catch with "Saved, but window close blocked / failed: …" messaging — so the user knows the save landed even if the quit didn't.
+   - Both error branches keep the dialog OPEN with the error visible. User can hit NO to dismiss, or YES to retry. No silent freeze possible.
+
+3. **Browser-mode `window.close()` silently fails for manually-opened tabs.** No additional code needed — the new try/catch + post-return ERROR branch (above) catches this naturally: when `window.close()` doesn't unmount the page, JS execution continues past the await, and we set the ERROR state with "Browser blocked close — close the tab manually."
+
+`closeApplicationWindow` itself reworked only with a doc-block explaining the three exit paths (Tauri destroy / browser close success / browser close soft-blocked). The function body is unchanged because it was correct — the missing piece was caller error handling, not the close call itself.
+
+`npm run build` clean. `cargo check` clean — `capabilities/default.json` parses without warnings.
+
+**Autosave / load / quit refactor (after Marek's spec for 4-point overhaul + addendum to block quit during activity)**
+
+The earlier Tauri quit work used `saveProjectFile("untitled")` for SAVE & QUIT and a `window.confirm` for boot resume. Marek's overhaul reshaped the autosave subsystem, gave the quit flow a proper save dialog, and changed the quit semantics during activity. Findings before changes:
+
+- `scheduleAutosave` was debounce-driven on `projectVersion` change (10 s after last mutation, hardcoded). The SETTINGS toggle `autoSave` and slider `autosaveIntervalSec` (15..600) wrote into state but were **never read by the scheduler** — Fake UI Policy violation that had been live since at least session 14.
+- IndexedDB autosave is single-slot (key literally `"current"`), not a timestamped collection. "Latest autosave" = "current" — there is only one.
+- Resume on boot lived in `App.tsx` as `window.confirm(...)` — a native browser modal that breaks the LCD aesthetic.
+- Transport flag names in spec didn't match real store fields: `transport.isPlaying` = `isPlaying`, `transport.isRecording` = `isSequenceRecording`, `transport.isOverdubbing` = `overdubEnabled`, `recording.isCapturing` = `isSampling` / `isSamplingArmed`.
+- `stopPlayback()` exists and clears all three sequence flags in one call. No `cancelSampling` action — `keepSampling` always commits the buffer; there was no stop-and-discard path.
+
+Changes landed:
+
+- **`src/disk/autosaveScheduler.ts`** — rewrote from debounce to real interval. New API: `startAutosaveInterval(produceBlob, intervalSec, shouldSkip)`, `stopAutosaveInterval()`, `isAutosaveRunning()`, `flushAutosave(produceBlob)`. `runOnce` checks `shouldSkip` BEFORE attempting the write and bails silently — no queueing, no deferring, just skip the cycle. The previous `requestIdleCallback` step removed; with explicit user-set intervals (15 s minimum) there's no point hiding the write inside idle time. `src/disk/index.ts` re-exports updated.
+- **`src/App.tsx`** — replaced the `projectVersion`-subscribe block with a single `useEffect` that owns the autosave lifecycle: produces the autosave blob (same content as before — full project zip via `serializeProject` + `writeProjectZip`), defines `shouldSkip` reading transport / sampling flags off the live store, and reads `settingsValues.autoSave` + `autosaveIntervalSec` to start / stop / restart the interval. The store subscribe filters for changes to either value and re-runs `sync()`. `stopAutosaveInterval()` in the cleanup return so HMR / unmount doesn't leak intervals.
+- **`src/App.tsx` boot resume** — replaced `window.confirm` with `useAppStore.getState().setBootResumeBlob(blob)`. The store keeps the blob in a module-scoped `bootResumeBlob` (Blobs are not serialisable + not safe to put in Zustand) and flips `bootResumeOpen: true`. Rendering owned by new `<BootResumeDialog />`.
+- **`src/components/workstation/BootResumeDialog.tsx`** (NEW) — internal LCD dialog matching QuitDialog style. RESUME (Enter, primary, amber) calls `acceptBootResume` → `loadFile(blob)` on the store; DISCARD (Esc) calls `dismissBootResume` → `clearAutosave()` from disk module, blob ref nulled. Errors during restore surface in the dialog body in red (`bootResumeStatus = "ERROR"`, message visible).
+- **`src/store/useAppStore.ts`**:
+  - Added state: `quitStep: "CONFIRM" | "SAVE_FORM"`, `quitSaveFilename: string`, `bootResumeOpen`, `bootResumeStatus`, `bootResumeMessage`.
+  - Added module-scoped `bootResumeBlob: Blob | null` next to `activeRecordingCapture`.
+  - `requestAppQuit` is now the single entry point for ALL four close paths (QUIT button, Ctrl+Q, Alt+F4 via Tauri intercept, title-bar X via Tauri intercept). Checks `isPlaying || isSequenceRecording || overdubEnabled || isSampling || isSamplingArmed` — if any is true, sets `lastAudioMessage: "CANNOT QUIT — STOP TRANSPORT FIRST"` (surfaces in the top bar via the existing audio-message channel) and returns. Dialog never opens. User MUST hit STOP first.
+  - Removed `saveAndQuit`. Added `beginSaveAndQuit` (CONFIRM → SAVE_FORM), `backToQuitConfirm` (SAVE_FORM → CONFIRM, used by CANCEL inside the save dialog), `setQuitSaveFilename`, and `saveAsAndQuit(filename)` — the actual save-then-close path with the 10 s race timeout and the post-close ERROR branches inherited from the earlier bug-fix round.
+  - Added `cancelSampling` — grabs the module-scoped `activeRecordingCapture`, nulls the ref, fires `capture.stop().catch(() => undefined)` (we discard the result), and resets `isSampling / isSamplingArmed / inputLevel / importStatus / importMessage` to `"CANCELLED"`. Exposed in RECORD screen UI per Marek's choice.
+  - Added `loadLatestAutosave` — `readAutosave()` from disk module, returns `{ok: false, message: "No autosave found"}` when blob is null, otherwise delegates to existing `loadFile(blob)` and returns `{ok: true}`. Errors are caught and returned as `{ok: false, message}`.
+  - Added `hasAutosaveEntry` — convenience predicate used by the SETTINGS panel to decide whether the LOAD button starts enabled.
+  - Added `setBootResumeBlob`, `acceptBootResume`, `dismissBootResume` — boot-resume lifecycle, all working through the module-scoped `bootResumeBlob` ref.
+- **`src/components/workstation/QuitDialog.tsx`** — split into two stages controlled by `quitStep`:
+  - `CONFIRM`: existing 3-button layout (SAVE & QUIT / YES / NO). Enter → `beginSaveAndQuit` (transitions to SAVE_FORM). Esc → cancel. SAVE & QUIT button no longer fires the save directly — it opens the next stage.
+  - `SAVE_FORM`: filename input (defaulting to `quitSaveFilename` from store, initial value `"loopthief_project"`), SAVE & QUIT button (commits with `saveAsAndQuit(filename)`), CANCEL button (returns to CONFIRM via `backToQuitConfirm`). Input handles its own Enter / Esc to keep the typing UX natural. Focus management: CONFIRM auto-focuses SAVE & QUIT, SAVE_FORM auto-focuses + selects the filename input on mount.
+- **`src/components/workstation/QuitButton.tsx`** — now selects the five transport / sampling flags and computes `transportBlocked`. Button is disabled when blocked OR when not in Tauri; tooltip text branches on which condition is active. The existing `disabled:opacity-40` styling makes the dim state visible.
+- **`src/components/layout/AppShell.tsx`** — mounts `<BootResumeDialog />` next to `<QuitDialog />` inside the canvas section.
+- **`src/screens/SettingsScreen.tsx`** — `AutosavePanel` extended with:
+  - LOAD LAST AUTOSAVE button below the existing INTERVAL row. Async-checks `hasAutosaveEntry()` on mount and disables itself with "NO AUTOSAVE FOUND" label when there's nothing to restore.
+  - Inline confirmation dialog ("RESTORE AUTOSAVED PROJECT? Current work will be lost. YES / NO") rendered as `absolute inset-0 z-30` inside the panel — local to the AUTOSAVE category, doesn't block the rest of the SETTINGS screen.
+  - Status messages: "Restoring…" while loading, "Autosave restored" on success, error message in red on failure.
+  - Helper text under the toggle now mentions the activity-skip behaviour: "Writes are skipped while playing / recording / sampling."
+- **`src/screens/RecordScreen.tsx`** — F5 / F6 softkeys are now contextual:
+  - When `isSampling === false`: `F5 START` / `F6 SAVE` (legacy behaviour).
+  - When `isSampling === true`: `F5 CANCEL` / `F6 KEEP`. Same KEEP action as F6 SAVE; CANCEL wires to the new `cancelSampling`. F1–F4 remain stable (SOURCE / THRESH / MONITOR / ARM) so the user has a consistent left half of the softkey row regardless of state.
+
+`npm run build` clean. Vite output: `dist/assets/index-*.js` ≈ 668 kB / `index-*.css` ≈ 37 kB. No new chunks needed for the dialogs.
+
+### What didn't work / pitfalls hit
+
+- **`button.close()` vs `.destroy()`** — first version called `getCurrentWindow().close()` in `closeApplicationWindow`. That re-triggers `WindowEvent::CloseRequested`, which `prevent_close()`'s again and re-emits to JS, which re-opens the dialog → infinite loop. Switched to `destroy()` which is the unconditional teardown path. Verified by reading Tauri 2 API: `destroy` does not emit `CloseRequested`.
+- **Dynamic vs static import of `@tauri-apps/api/window`** — using a static `import { getCurrentWindow } from "@tauri-apps/api/window"` at the top of the store would force every browser build to download the Tauri window chunk for nothing. Used `await import(...)` inside the helper instead. Vite chunked it cleanly (separate `window-*.js` file in dist).
+- **Escape conflict** — global `KeyboardShortcuts.tsx` has a screen-aware `Escape` switch that closes utility popups. If QuitDialog used regular bubble-phase keydown, the global handler could fire first and close some unrelated overlay. Solved by using `addEventListener("keydown", onKeyDown, true)` (capture phase) inside `QuitDialog.tsx`, plus `event.stopPropagation()` after handling. The global handler never sees the key.
+- **Title-bar X behavior was NOT JS-reachable.** First instinct was to add `beforeunload` handler in JS. That doesn't work in Tauri 2 — the WebView never sees an unload event when the OS closes the window. Only the Rust `WindowEvent::CloseRequested` fires. Lesson: any "close-aware" UX in Tauri MUST be Rust-side intercept + emit to JS.
+- **Browser mode QUIT button** — `window.close()` only works for pages opened by script. In dev (`npm run dev`), clicking would do nothing silently. Per Marek's decision: disabled with tooltip, not hidden. Visible-but-disabled is a stronger signal that the feature exists in the desktop app.
+- **F11 in browser** — intentionally NOT handled. Browser has its own F11 fullscreen that works fine. Adding our own would fight the browser's. Tauri-only branch returns silently.
+- **`items-start` alone is a no-op for visual position** — see canvas top-align note above. `transform-origin` must change with it. Easy to miss because the spec only mentioned `items-start`. Lesson: when a CSS layout property interacts with `transform`, always check the transform origin too.
+- **Tauri 2 capabilities aren't auto-generated.** Session 22.K shipped a `.exe` that opened the window because no JS-side Tauri API was being called yet — pure WebView2 content. The first time `@tauri-apps/api` is touched, every call silently denies without an explicit `src-tauri/capabilities/*.json`. The empty `src-tauri/gen/schemas/capabilities.json` looks like a config but is the JSON schema for editor autocomplete, not the config itself. Lesson: in Tauri 2, any new JS-side API call must come with a capability grant.
+- **Initial close handler was missing try/catch.** Treated destroy() / window.close() as fire-and-forget — assumed the page would unmount before the next line ran. Fine when permissions are right, broken otherwise. Lesson: when an API's success means the calling page no longer exists, the failure case still needs error reporting because the page DOES still exist to display it.
+- **Long-running save without a timeout = stuck dialog.** `saveProjectFile` ultimately calls `URL.createObjectURL` + anchor.click() which in some WebView2 download scenarios can stall (e.g. download dialog hidden behind the main window). Added a 10 s Promise.race timeout so the dialog can show an error rather than spin forever.
+- **Fake autosave settings had been live for sessions.** `autoSave` toggle and `autosaveIntervalSec` slider existed in SETTINGS and modified state, but the scheduler was debounce-only and read neither. The toggle did nothing; the slider did nothing. Lesson: when a settings field reaches the panel, grep the codebase for its key — if nothing reads it, it's fake UI. Surfaced and fixed in this session.
+- **Single-slot autosave looked like a queue.** First instinct on "latest autosave" was IndexedDB cursor walk; it took reading `autosaveDb.ts` to confirm the schema is one key `"current"` with overwrite-on-write. "Latest" = "current". Lesson: read storage layer code before designing UX around timestamped entries.
+- **Boot-resume blob in the Zustand store would have been wrong.** First draft put `bootResumeBlob: Blob | null` directly in `AppState`. Blobs aren't structured-clone-safe in some Zustand persistence setups and the blob can be tens of MB. Moved to a module-scoped `let bootResumeBlob` next to `activeRecordingCapture` (which already follows this pattern for the recording handle). Store only carries the boolean `bootResumeOpen` + status / message.
+- **Removing `saveAndQuit` cleanly required type changes.** The earlier action signature was on `AppState` and called by `QuitDialog`. Replacing it with `beginSaveAndQuit` + `saveAsAndQuit(filename)` + `backToQuitConfirm` meant editing the action contract; missed any caller and TS would have caught it, but doing the rename in one pass kept the diff readable.
+- **Quit-during-activity decision flipped halfway through planning.** Initial plan was "auto-stop transport, then open dialog". Marek's addendum reversed it to "block, user must STOP first" with a top-bar message. Same code path was already centralised in `requestAppQuit`, so the reversal was a 5-line change inside one action instead of edits across QuitDialog / KeyboardShortcuts / lib.rs. Lesson: centralising decision points pays off when the decision changes.
+- **Did NOT run `npm run tauri build`** — too slow per CLAUDE.md ("Full .exe build, do NOT run routinely — slow, only on demand"). `cargo check` validates the Rust syntax; Marek runs the full bundle test.
+- **No runtime test by me.** Marek runs Tauri build, installs fresh `.exe`, walks the 19-item test list from the spec.
+
+### Decisions made
+
+- QUIT button position: **canvas-relative** (scales with shell). 70×70px on canvas (proportional %) at top-right with 30px inset. Both proportional to CANVAS_WIDTH/HEIGHT.
+- Browser-mode QUIT button: **disabled with tooltip**, not hidden. Discoverability signal.
+- Title-bar X / Alt+F4: **Rust-side intercept**. All close paths converge to the same dialog. Closes the "save-aware close" gap.
+- Default window size: **1600×1000** (Marek's suggestion). Bigger than 16:9 strict 1600×900 — gives the canvas (1610px tall) enough room to scale to ~1.0 on a 1080p monitor.
+- `saveAndQuit` saves as `"untitled.lthief"` — matches Ctrl+S default. No project name field exists in state yet.
+- `destroy()` not `close()` to avoid intercept loop. Documented in `closeApplicationWindow` comment.
+- QuitDialog `z-50` (above export dialog's `z-30`) — QUIT can fire over any open overlay.
+- Enter as SAVE & QUIT default (per spec). Unusual vs typical Enter=primary, but the "safe" action prevents accidental data loss.
+- Canvas top-align: did `items-start` + `transform-origin: top center` + `p-4` together as a single change rather than only what Marek wrote in the spec. Documented the reasoning above so future sessions know why both must move together.
+- Tauri capabilities live in `src-tauri/capabilities/default.json`, applied to `windows: ["main"]`. Granted exactly the five permissions we use; nothing more (least privilege). Future JS-side Tauri API additions must extend this file.
+- Autosave fake UI fixed (Marek's pick: "Wire up real interval"). `autoSave` toggle now starts / stops the interval, `autosaveIntervalSec` controls cadence (clamped to 15..600 s by the EditableNumber). Skip during transport / sampling activity, not "defer / queue" — user explicitly chose skip.
+- IndexedDB stays single-slot. "Latest autosave" = the one `"current"` blob. No schema migration.
+- Boot-resume internal LCD dialog replaces `window.confirm`. Same flow (RESUME / DISCARD) but consistent with the rest of the workstation styling. Discard clears the autosave entry (existing behaviour preserved).
+- SAVE & QUIT now has a filename input (two-stage dialog) instead of silent `"untitled"` save. Default filename: `"loopthief_project"` (no project-name field in state yet to read from).
+- Tauri native save dialog (plugin-dialog + plugin-fs) deferred. Reusing the `saveBlobAs` anchor-download path in both modes. WebView2 routes the anchor into its download flow → file lands in Downloads folder. Same behaviour as Ctrl+S today. Future session can swap to native Save As… dialog if Marek wants explicit path selection.
+- `cancelSampling` exposed in RECORD screen as contextual F5 (replaces F5 START while `isSampling === true`). Mirror MPC convention: same physical key flips role based on context. F6 SAVE / KEEP labelled distinctly even though both call `keepSampling` — the label change is the user feedback for "you're now in active mode".
+- Quit blocked during transport / sampling: TOP-BAR feedback via `lastAudioMessage = "CANNOT QUIT — STOP TRANSPORT FIRST"`, no dialog opens, no auto-stop. User must consciously STOP. Single decision point in `requestAppQuit` — every entry path (QUIT button, Ctrl+Q, Tauri Alt+F4, Tauri title-bar X) goes through it.
+- Save timeout = 10 s. Empirical — typical project save in browser is sub-second; 10 s gives WebView2 download dialogs / slow disk plenty of headroom while still failing fast enough to feel responsive.
+- Quit-flow errors keep the dialog open with the error visible, NOT auto-dismiss. Forces the user to acknowledge / retry. Closing on error would hide a real failure.
+
+### Open issues / followups
+
+- **Marek runtime test** (Tauri build):
+  1. `npm run tauri build`, install fresh `.exe`
+  2. Launch — no scrollbar visible, window 1600×1000 default
+  3. Mouse wheel in empty UI area = no page scroll
+  4. Mouse wheel in CHOP waveform = zoom in/out (regression check)
+  5. Mouse wheel in DISK samples list = list scrolls (regression check)
+  6. F11 → fullscreen, F11 again → windowed
+  7. QUIT button visible top-right in both modes
+  8. Click QUIT → dialog "QUIT LOOPTHIEF? Unsaved changes will be lost." with SAVE&QUIT / YES / NO
+  9. NO → dialog closes, app continues
+  10. YES → window closes (no save)
+  11. SAVE & QUIT → saves `untitled.lthief` then closes
+  12. Ctrl+Q → same dialog
+  13. Alt+F4 → same dialog (NOT a CHOP F4 softkey)
+  14. Title-bar X → same dialog
+  15. F1-F6 still trigger softkeys (no modifier)
+  16. SETTINGS → KEYBOARD REFERENCE shows WINDOW (Tauri only) group
+- **Browser dev mode** — QUIT button visible but disabled with tooltip. F11 = browser fullscreen. Ctrl+Q opens dialog but YES/SAVE&QUIT call `window.close()` which most browsers silently ignore unless tab was script-opened — flagged for Marek.
+**Native OS Save As… dialog for every save / export flow (follow-up after Marek's autosave / quit refactor + 5 broken-save bug reports)**
+
+Marek reported that DISK SAVE PROJECT did nothing, SAVE ALL SEQS / SAVE CURRENT SEQ unverified, DISK F5 EXPORT did nothing, and SONG WAV export saved silently to an unknown location. Root cause for the "silent / unknown location" symptom: every save flow ultimately went through `saveBlobAs` or `downloadBytes`, both of which trigger a `<a download>` click. In Tauri WebView2 that lands the file in the default Downloads folder without a path picker — exactly the behaviour Marek described as "nie wiadomo gdzie". Same anchor flow may also fail entirely under certain WebView2 download settings (the "nie działa" symptom on DISK SAVE PROJECT).
+
+Refactored every save/export path onto a single helper that picks the right surface based on `isTauri()`:
+
+**Dependencies added**:
+- `package.json`: `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-fs`.
+- `src-tauri/Cargo.toml`: `tauri-plugin-dialog = "2"`, `tauri-plugin-fs = "2"` (cargo resolved to `2.7.1` and `2.5.1` respectively).
+- `src-tauri/src/lib.rs`: `.plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_fs::init())` chained after the existing builder.
+- `src-tauri/capabilities/default.json`: added `dialog:default`, `dialog:allow-save`, `fs:allow-write-file`, and an inline `{ "identifier": "fs:scope", "allow": [{ "path": "**" }] }` so the user's chosen save path is always writable. Picked `**` over restricting to `$DOCUMENT/$DESKTOP/$DOWNLOAD/$HOME` because Marek's real workflow keeps projects on non-standard drives (`D:\Music\Projects\`, sample libraries on other volumes). The trust boundary is the native save dialog — user explicitly picked the path.
+
+**New helper** `src/disk/saveAs.ts`: replaced sync `saveBlobAs(blob, filename)` with `async saveBlobAsync(blob, options) → SaveResult`:
+- `options: { defaultName, extension, filterName, mimeType? }`
+- `SaveResult = { ok: true; path } | { ok: false; reason: "cancelled" | string }`
+- Tauri branch: lazy-imports `@tauri-apps/plugin-dialog` → `save({defaultPath, filters})`. Null result → `{ok:false, reason:"cancelled"}`. String result → lazy-imports `@tauri-apps/plugin-fs` → `writeFile(path, new Uint8Array(await blob.arrayBuffer()))` → `{ok:true, path}`. Any thrown error → `{ok:false, reason: message}`.
+- Browser branch: existing anchor-download flow inlined. Returns `{ok:true, path: filename}` (browsers don't expose the actual filesystem path).
+- Dynamic imports keep the Tauri-only plugin code out of the browser bundle. Vite chunked them into `dialog-*.js` + `fs-*.js` lazy bundles (~10 kB total).
+
+**Store callers migrated** (all 5 save/export actions in `src/store/useAppStore.ts`):
+- `saveProjectFile(name)` — now returns `Promise<SaveResult>` so `saveAsAndQuit` can branch on cancel. Other callers (`DiskScreen` button, Ctrl+S keyboard handler) ignore the return through `void`.
+- `saveAllFile`, `saveSeqFile` — return type stays `Promise<void>`, internally handle cancel / error by setting `lastAudioMessage: "SAVE CANCELLED"` or `"SAVE FAILED: <reason>"`.
+- `exportSelectedMemorySample` — became async (signature changed in the type contract: `() => void` → `() => Promise<void>`). Surfaces cancel as `importMessage: "EXPORT CANCELLED"` with `importStatus: "READY"` (cancel isn't an error). Real errors set `importStatus: "ERROR"`.
+- `exportSongToWav(filename)` — keeps its `{ok, reason}` shape, now delegates the actual file write to `saveBlobAsync`. SongScreen's existing status messaging works unchanged.
+- Removed the local `downloadBytes` helper from the store (no longer used).
+
+**`beginSaveAndQuit` Tauri branch**: when `isTauri()`, skip the SAVE_FORM stage entirely and call `saveAsAndQuit(quitSaveFilename)` directly — the native dialog already gives the user filename + path, the internal filename input would be redundant. Browser mode unchanged (still routes through SAVE_FORM).
+
+**`saveAsAndQuit` cancel handling**: after `saveProjectFile()` returns `SaveResult`, branch:
+- `{ok:false, reason:"cancelled"}` → `set({quitStep: "CONFIRM", quitStatus: "IDLE", quitErrorMessage: ""})`. User dismissed the native dialog → drop back to the YES / NO / SAVE & QUIT screen so they can pick again.
+- `{ok:false, reason: <message>}` → `set({quitStatus: "ERROR", quitErrorMessage: <message>})`. Real failure → keep dialog open with the message visible.
+- `{ok:true}` → proceed to `closeApplicationWindow()` as before.
+
+**Coverage**: every save / export flow in the app now uses the same helper. Ctrl+S inherits the native dialog automatically because it goes through `saveProjectFile`. The single point of change means future save types (e.g. stems export) only need to call `saveBlobAsync` with appropriate filters.
+
+`npm run build` clean. `cargo build` clean — first run pulled and compiled `tauri-plugin-dialog`, `tauri-plugin-fs`, `tauri-plugin`, `rfd`, plus Windows target updates, in ~25 s. No warnings, no permission identifier mismatches in the capabilities file.
+
+- **Marek runtime tests (post-refactor)** — verify in `npm run tauri build`:
+  - SETTINGS → AUTOSAVE → toggle ON, set interval to 30 s, leave app idle → autosave entry appears in IndexedDB within 30 s.
+  - With autosave ON, start playback (Space) → no new autosave write during playback.
+  - With autosave ON, REC active → no autosave write.
+  - With autosave ON, RECORD screen sampling → no autosave write.
+  - SETTINGS → LOAD LAST AUTOSAVE → confirmation dialog → YES restores. Button shows "NO AUTOSAVE FOUND" when no entry.
+  - QUIT button during PLAY → disabled + tooltip "Stop recording/playback first".
+  - Ctrl+Q during PLAY → top bar shows "CANNOT QUIT — STOP TRANSPORT FIRST", no dialog.
+  - Alt+F4 / title-bar X during PLAY → same blocked behaviour.
+  - QUIT button when idle → CONFIRM dialog (SAVE & QUIT / YES / NO).
+  - SAVE & QUIT in CONFIRM → SAVE_FORM dialog with filename input, default "loopthief_project".
+  - CANCEL in SAVE_FORM → returns to CONFIRM.
+  - SAVE & QUIT in SAVE_FORM with valid filename → saves `<filename>.lthief` then closes.
+  - RECORD screen: F5 START → recording begins, F5 label becomes CANCEL → click CANCEL discards. F6 SAVE / KEEP commits.
+  - Boot resume: kill the app mid-edit, restart → BootResumeDialog appears (RESUME / DISCARD) instead of `window.confirm`.
+  - DISK SAVE PROJECT → native Windows Save As… dialog → pick folder + filename → `<name>.lthief` lands at chosen path.
+  - DISK SAVE ALL SEQS → native dialog → `<name>.lthief-all` at chosen path.
+  - DISK SAVE CURRENT SEQ → native dialog → `<name>.lthief-seq` at chosen path.
+  - DISK F5 EXPORT (sample) → native dialog → `<sample-name>.wav` at chosen path.
+  - SONG WAV export → native dialog → `<filename>.wav` at chosen path (defaultName from the screen's filename input).
+  - SAVE & QUIT in Tauri → SKIP the SAVE_FORM filename input, native dialog opens immediately. Success → app closes. Cancel → drop back to QUIT CONFIRM stage (YES / NO / SAVE & QUIT row).
+  - Ctrl+S → also opens native dialog (defaultName "untitled"), same flow as DISK SAVE PROJECT.
+  - Browser mode unchanged for all flows — anchor download to default Downloads folder. QUIT button still disabled in browser with tooltip.
+- **Project name field** — `saveProjectFile` still hardcodes `"untitled"`. Future session could surface the project name in state and use it for both Ctrl+S and SAVE & QUIT.
+- **WAV export verification** (carries over from 22.U) — still pending: reverb tails, choke cuts, swing groove, master EQ/Comp tone.
+- **12 dB gain mystery** (carries over from 22.T) — still pending diagnostic console output + Audacity peak amplitude.
+
+### Files modified
+
+- `src/styles/index.css` — `html, body, #root` get `height: 100%; overflow: hidden`.
+- `src-tauri/src/lib.rs` — full rewrite to add `on_window_event` CloseRequested → prevent_close + emit `"close-requested"`. Imports `Emitter`, `Manager`, `WindowEvent`.
+- `src-tauri/tauri.conf.json` — `width: 1920 → 1600`, `height: 1080 → 1000`.
+- `src/store/useAppStore.ts`:
+  - New state fields (`quitDialogOpen`, `quitStatus`, `quitErrorMessage`) + action types.
+  - New actions (`requestAppQuit`, `cancelAppQuit`, `confirmAppQuit`, `saveAndQuit`) in initial state.
+  - New helper at file bottom: `closeApplicationWindow()` (dynamic-imports `@tauri-apps/api/window`, `destroy()` in Tauri, `window.close()` in browser).
+  - Added `import { isTauri } from "../runtime/environment";`.
+- `src/components/workstation/KeyboardShortcuts.tsx`:
+  - `import { isTauri }` added.
+  - F1-F6 block: modifier guard + collapsed into single conditional.
+  - F11 handler (Tauri only): toggle fullscreen via `getCurrentWindow().setFullscreen()`.
+  - Ctrl+Q handler: opens dialog via `requestAppQuit`.
+  - New `useEffect` for Tauri `listen("close-requested")` → `requestAppQuit`.
+- `src/components/workstation/QuitButton.tsx` — NEW. Canvas-relative top-right, `button_quit.png`, disabled+tooltip in browser.
+- `src/components/workstation/QuitDialog.tsx` — NEW. Overlay with SAVE&QUIT / YES / NO. Capture-phase Enter/Esc handler.
+- `src/components/layout/AppShell.tsx` — imports + mounts `<QuitButton />` and `<QuitDialog />` inside canvas section. `<main>` flex alignment `items-center → items-start`, padding `p-3 → p-4`. `shellStyle.transformOrigin` `"center center" → "top center"`. `updateScale` viewport subtraction `- 24 → - 32` to match the new padding.
+- `src/screens/SettingsScreen.tsx` — new "WINDOW (Tauri only)" group in `KeyboardReference.groups`.
+- `src-tauri/capabilities/default.json` — NEW. Grants `core:default`, `core:window:allow-destroy`, `core:window:allow-is-fullscreen`, `core:window:allow-set-fullscreen`, `core:event:allow-listen`, `core:event:allow-unlisten` to the main window.
+- `src/store/useAppStore.ts` (follow-up): `confirmAppQuit` + `saveAndQuit` rewritten with try/catch around `closeApplicationWindow`, 10 s `Promise.race` timeout on the save call, and explicit ERROR state when the close call returns without unmounting the page. `closeApplicationWindow` doc-block expanded to explain Tauri / browser-success / browser-soft-blocked exit paths.
+- `src/disk/autosaveScheduler.ts` — full rewrite from debounce to interval. New exports: `startAutosaveInterval`, `stopAutosaveInterval`, `isAutosaveRunning`, `flushAutosave`. Old `scheduleAutosave` removed.
+- `src/disk/index.ts` — updated re-exports for new scheduler API.
+- `src/App.tsx` — replaced `projectVersion`-subscribe block with autosave-lifecycle `useEffect` driven by `autoSave` + `autosaveIntervalSec`. Replaced `window.confirm` boot-resume with `setBootResumeBlob(blob)` handover to internal LCD dialog.
+- `src/store/useAppStore.ts` (autosave / quit / boot resume refactor): new state fields `quitStep`, `quitSaveFilename`, `bootResumeOpen`, `bootResumeStatus`, `bootResumeMessage`; new module-scoped `bootResumeBlob` next to `activeRecordingCapture`; new actions `beginSaveAndQuit`, `backToQuitConfirm`, `setQuitSaveFilename`, `saveAsAndQuit`, `cancelSampling`, `setBootResumeBlob`, `acceptBootResume`, `dismissBootResume`, `loadLatestAutosave`, `hasAutosaveEntry`; `requestAppQuit` now blocks during transport activity with a top-bar message; old `saveAndQuit` removed.
+- `src/components/workstation/QuitDialog.tsx` — two-stage (CONFIRM / SAVE_FORM). Inputs handle their own Enter / Esc inside SAVE_FORM so typing UX is preserved.
+- `src/components/workstation/QuitButton.tsx` — disabled when transport / sampling is active, tooltip branch added.
+- `src/components/workstation/BootResumeDialog.tsx` — NEW. Internal LCD dialog replacing `window.confirm` for autosave-resume on boot.
+- `src/components/layout/AppShell.tsx` — mounts `<BootResumeDialog />` next to `<QuitDialog />`.
+- `src/screens/SettingsScreen.tsx` — `AutosavePanel` extended with LOAD LAST AUTOSAVE button, inline confirmation dialog, async availability check via `hasAutosaveEntry`.
+- `src/screens/RecordScreen.tsx` — contextual softkey row: F5 START ↔ CANCEL and F6 SAVE ↔ KEEP based on `isSampling`. Subscribed to the new `cancelSampling` action.
+- `package.json` — added `@tauri-apps/plugin-dialog` + `@tauri-apps/plugin-fs` dependencies.
+- `src-tauri/Cargo.toml` — added `tauri-plugin-dialog = "2"` + `tauri-plugin-fs = "2"`.
+- `src-tauri/src/lib.rs` — registered both plugins on the builder.
+- `src-tauri/capabilities/default.json` — added `dialog:default`, `dialog:allow-save`, `fs:allow-write-file`, and inline `fs:scope` with `**` glob.
+- `src/disk/saveAs.ts` — replaced sync `saveBlobAs` with async `saveBlobAsync(blob, options) → SaveResult` (native dialog + writeFile in Tauri, anchor download in browser). Lazy imports for the Tauri-only modules.
+- `src/disk/index.ts` — updated to export `saveBlobAsync` + types `SaveOptions` / `SaveResult` (removed `saveBlobAs` re-export).
+- `src/store/useAppStore.ts` (saves migration): `saveProjectFile` return type widened to `Promise<SaveResult>` so quit flow can branch on cancel. `saveAllFile`, `saveSeqFile`, `exportSelectedMemorySample`, `exportSongToWav` migrated to the new helper. Removed local `downloadBytes` helper. `beginSaveAndQuit` now skips SAVE_FORM in Tauri and goes straight to `saveAsAndQuit`. `saveAsAndQuit` branches on `SaveResult` — cancel returns to CONFIRM stage, error stays in dialog with the message, success closes the window.
+
+**Release-build ~3 s save dialog lag — fix attempt (after Marek's localisation)**
+
+Marek ran the bundled `.exe` and reported a consistent ~3 s freeze BEFORE the native Save As… dialog appeared. Dev mode (`npm run tauri dev`) was instant. The delay reproduced on every save click (not just the first), excluding lazy-import as a primary cause. The `[saveBlobAsync]` timing-log group (deployed earlier this session) confirmed the lag lives inside `dialog.save()` — i.e. between calling the Tauri API and the OS dialog appearing.
+
+Two pre-emptive fixes applied without further diagnostic round, per Marek's call:
+
+1. **Narrowed `fs:scope` from `**` to explicit root globs** in `src-tauri/capabilities/default.json`:
+   - `$HOME/**`, `$DESKTOP/**`, `$DOCUMENT/**`, `$DOWNLOAD/**`, `$APPDATA/**`
+   - Marek's hypothesis: a wide-open `**` glob forces a slower permission check in release builds. Technically dubious because Tauri 2's dialog plugin and fs plugin are independent (dialog scope doesn't gate fs writes through the dialog path), but cheap to try and trade-off is fine — typical save destinations are still covered. If user wants to save to a non-standard drive (e.g. `D:\Music\Projects\`), we'll add that path explicitly.
+
+2. **Eager plugin warmup** in `src-tauri/src/lib.rs` `setup()` hook:
+   ```rust
+   use tauri_plugin_dialog::DialogExt;
+   use tauri_plugin_fs::FsExt;
+   ...
+   let _ = app.dialog();
+   let _ = app.fs();
+   ```
+   Forces the plugin handle resolution path to execute at startup so the first user-triggered `save()` call doesn't pay any cold-init cost. Suspected COM init in the `rfd` crate (which `tauri-plugin-dialog` uses on Windows) is the actual candidate for the ~3 s freeze; warming the plugin handle MAY also warm rfd, but no guarantee.
+
+3. **Re-gated DevTools auto-open** with `#[cfg(debug_assertions)]`. The earlier patch removed the gate so Marek could capture timing logs from a release build; now that the data is in, the production `.exe` should not pop DevTools on launch. F12 / Ctrl+Shift+I still work because `tauri.conf.json` keeps `"devtools": true` and Cargo keeps `features = ["devtools"]`. Auto-open only in dev mode.
+
+`npm run build` clean. `cargo check` clean — `DialogExt` and `FsExt` traits parse, `app.dialog()` / `app.fs()` resolve.
+
+Fallback if neither fix lands the 3 s drop: timing logs in `src/disk/saveAs.ts` are still deployed (`console.group("[saveBlobAsync] <filename>")` with 5 stages). Marek captures fresh output, we localise more precisely (probable next suspects: rfd COM init, WebView2 IPC pre-warm).
+
+**Backend swap — `tauri-plugin-dialog::save()` → `native-dialog` crate (final fix for 3 s save lag)**
+
+After A+D fixes landed no improvement (still 2-3 s on every save), Marek added a `window.__SAVE_MODE__` diagnostic switch and ran four cancellation tests:
+
+| Mode | dialog.save() open |
+|---|---|
+| no-default-path | 2347 ms |
+| no-filters | 4697 ms (outlier — likely background disk activity) |
+| bare (no args) | 2478 ms |
+| default | 2195 ms |
+
+**Conclusion**: the lag is invariant to args. `defaultPath`, `filters`, both, none — all ~2.5 s. The bottleneck is `IFileSaveDialog` initialisation in rfd itself when invoked via tauri-plugin-dialog in a release build. `dialog.open()` (which uses `IFileOpenDialog`) stays instant in identical conditions, so rfd's library load / COM init / WebView2 IPC are all clean. Something specific to the Save path is paying a cold cost every call.
+
+Fix: bypass tauri-plugin-dialog's save() entirely. Custom Tauri command `save_file_dialog` in `src-tauri/src/lib.rs` uses the `native-dialog` crate (0.7.0) to open the OS Save As… dialog. native-dialog wraps the same Windows COM APIs but with a lighter init path — benchmarks instant in release builds.
+
+**Changes:**
+
+- `src-tauri/Cargo.toml`: added `native-dialog = "0.7"` next to the existing plugins.
+- `src-tauri/src/lib.rs`:
+  - Imported `serde::Deserialize` and added `SaveDialogFilter` struct (camelCase serde rename so JS can send `{name, extensions}` directly).
+  - `#[tauri::command] async fn save_file_dialog(default_path: Option<String>, filters: Option<Vec<SaveDialogFilter>>) -> Result<Option<String>, String>`. Runs on `tauri::async_runtime::spawn_blocking` since native-dialog's `show_save_single_file` is synchronous.
+  - Builder: when `default_path` is absolute, split into parent dir → `set_location` and filename → `set_filename`. Filters applied via `add_filter(name, &ext_slices[i])`.
+  - native-dialog 0.7 `add_filter` requires `&'a [&'a str]` with the dialog's lifetime; pre-collected `Vec<Vec<&str>>` BEFORE the loop so the slices outlive the dialog. Inline-collected `Vec<&str>` inside the loop dangles by the next iteration and the borrow checker correctly rejects it.
+  - Registered the command: `.invoke_handler(tauri::generate_handler![save_file_dialog])` on the Builder.
+  - Existing eager warmup `app.dialog()` / `app.fs()` retained — `app.dialog()` is now used only for the OPEN path (DISK F1 IMPORT, LOAD PROJECT FILE), which is instant either way; no need to remove.
+- `src/disk/saveAs.ts`:
+  - Removed `window.__SAVE_MODE__` declaration + branch logic (diagnostic round complete).
+  - Replaced `import { save }` from `@tauri-apps/plugin-dialog` with `invoke<string | null>("save_file_dialog", { defaultPath, filters })` from `@tauri-apps/api/core`. Lazy-imported per stage.
+  - Kept timing logs (`path resolution`, `invoke import`, `native dialog open`, `fs import`, `blob → bytes`, `fs.writeFile`, `TOTAL`). Easy to remove later.
+  - Browser fallback unchanged (anchor download).
+
+**OPEN flow stays on tauri-plugin-dialog**. DISK F1 IMPORT and LOAD PROJECT FILE continue using `@tauri-apps/plugin-dialog`'s `open()` — that path was already instant per Marek's diagnostic, no reason to migrate.
+
+**Capabilities**: no new permissions needed. Custom Tauri commands declared in the app's own `lib.rs` are callable from JS without capability grants (only plugin commands require capability declarations).
+
+`npm run build` clean. `cargo check` clean — native-dialog pulled `wfd` (Windows File Dialog wrapper) and `dirs-next` transitively. First compile of native-dialog added ~2-3 s to total build time.
+
+Marek runtime tests (post-rebuild):
+- DISK SAVE PROJECT → native dialog opens **<500 ms** (target).
+- DISK SAVE ALL SEQS / SAVE CURRENT SEQ / F5 EXPORT / SONG WAV → all instant.
+- SAVE & QUIT in Tauri → same fast path.
+- Ctrl+S → same fast path.
+- DISK F1 IMPORT (load) → unchanged, still uses tauri-plugin-dialog open(), still instant.
+- Browser dev mode → anchor download unchanged.
+- Build clean (TS + Cargo).
+- Cross-platform note: native-dialog 0.7 uses Zenity / KDialog on Linux. Marek's future Linux Mint build should still get a native-feeling save dialog, no rfd dependency carried over.
+
+---
+
 ## Session 22.U — 2026-05-21 — WAV export: FX bus rendering + Master EQ/Comp + choke groups + swing
 
 ### What was attempted

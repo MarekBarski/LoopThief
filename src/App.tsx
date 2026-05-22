@@ -5,9 +5,9 @@ import { RuntimeClock } from "./components/workstation/RuntimeClock";
 import { ViewportWarning } from "./components/workstation/ViewportWarning";
 import { useAppStore, subscribeMidiInput } from "./store/useAppStore";
 import {
-  clearAutosave,
   readAutosave,
-  scheduleAutosave,
+  startAutosaveInterval,
+  stopAutosaveInterval,
   serializeProject,
   writeProjectZip,
 } from "./disk";
@@ -111,67 +111,97 @@ export function App() {
       try {
         const blob = await readAutosave();
         if (!blob) return;
-        const shouldResume = window.confirm(
-          "LoopThief found an autosaved session from a previous run.\n\nResume previous session?\n\nOK = Resume   |   Cancel = Start blank",
-        );
-        if (!shouldResume) {
-          await clearAutosave();
-          return;
-        }
-        await useAppStore.getState().loadFile(blob);
+        // Hand the blob to the store; the internal LCD BootResumeDialog
+        // surfaces it and lets the user pick RESUME / DISCARD.
+        useAppStore.getState().setBootResumeBlob(blob);
       } catch (error) {
-        console.warn("[loopthief] autosave resume failed", error);
+        console.warn("[loopthief] autosave resume detection failed", error);
       }
     })();
   }, []);
 
+  // Autosave interval lifecycle.
+  // Settings own autosave: `autoSave` (toggle) starts/stops the interval,
+  // `autosaveIntervalSec` (15..600) controls cadence. The `shouldSkip`
+  // callback is checked at each tick so playback / sequence-record /
+  // sampling silently skip the cycle instead of writing during activity.
   useEffect(() => {
-    let lastVersion = useAppStore.getState().projectVersion;
+    const produceAutosaveBlob = async () => {
+      const state = useAppStore.getState();
+      const { manifest, sampleEntries } = serializeProject({
+        name: "autosave",
+        appVersion: APP_VERSION,
+        samples: state.recordedSamples.map((sample) => ({
+          id: sample.id,
+          name: sample.name,
+          audioBufferId: sample.audioBufferId,
+          durationMs: sample.durationMs,
+          duration: sample.duration,
+          sampleRate: sample.sampleRate,
+          channelCount: sample.channelCount,
+          waveform: sample.waveform,
+          keptSlices: sample.keptSlices,
+          editState: sample.editState,
+        })),
+        programs: state.programs,
+        sequences: state.sequences,
+        songs: state.songSteps,
+        globalSettings: {
+          bpm: state.bpm,
+          swing: state.swing,
+          timingCorrect: state.timingCorrect,
+          tripletMode: state.tripletMode,
+          timeSignature: state.timeSignature,
+          sequenceLengthBars: state.sequenceLengthBars,
+          metronomeEnabled: state.metronomeEnabled,
+          metronomeDuringRecord: state.metronomeDuringRecord,
+          metronomeCountInBars: state.metronomeCountInBars,
+          metronomeVolume: state.metronomeVolume,
+        },
+        fxBuses: state.fxBuses,
+        masterFx: state.masterFx,
+        fxChainFX1ToFX2: state.fxChainFX1ToFX2,
+        fxChainFX3ToFX4: state.fxChainFX3ToFX4,
+        resolveAudioBuffer: (id) => getSampleBuffer(id),
+      });
+      return writeProjectZip(manifest, sampleEntries);
+    };
+
+    const shouldSkip = () => {
+      const s = useAppStore.getState();
+      return (
+        s.isPlaying ||
+        s.isSequenceRecording ||
+        s.overdubEnabled ||
+        s.isSampling ||
+        s.isSamplingArmed
+      );
+    };
+
+    const sync = () => {
+      const { autoSave, autosaveIntervalSec } = useAppStore.getState().settingsValues;
+      if (autoSave) {
+        startAutosaveInterval(produceAutosaveBlob, autosaveIntervalSec, shouldSkip);
+      } else {
+        stopAutosaveInterval();
+      }
+    };
+
+    let lastAutoSave = useAppStore.getState().settingsValues.autoSave;
+    let lastIntervalSec = useAppStore.getState().settingsValues.autosaveIntervalSec;
+    sync();
     const unsubscribe = useAppStore.subscribe((state) => {
-      if (state.projectVersion === lastVersion) return;
-      lastVersion = state.projectVersion;
-      scheduleAutosave(async () => {
-          const state = useAppStore.getState();
-          const { manifest, sampleEntries } = serializeProject({
-            name: "autosave",
-            appVersion: APP_VERSION,
-            samples: state.recordedSamples.map((sample) => ({
-              id: sample.id,
-              name: sample.name,
-              audioBufferId: sample.audioBufferId,
-              durationMs: sample.durationMs,
-              duration: sample.duration,
-              sampleRate: sample.sampleRate,
-              channelCount: sample.channelCount,
-              waveform: sample.waveform,
-              keptSlices: sample.keptSlices,
-              editState: sample.editState,
-            })),
-            programs: state.programs,
-            sequences: state.sequences,
-            songs: state.songSteps,
-            globalSettings: {
-              bpm: state.bpm,
-              swing: state.swing,
-              timingCorrect: state.timingCorrect,
-              tripletMode: state.tripletMode,
-              timeSignature: state.timeSignature,
-              sequenceLengthBars: state.sequenceLengthBars,
-              metronomeEnabled: state.metronomeEnabled,
-              metronomeDuringRecord: state.metronomeDuringRecord,
-              metronomeCountInBars: state.metronomeCountInBars,
-              metronomeVolume: state.metronomeVolume,
-            },
-            fxBuses: state.fxBuses,
-            masterFx: state.masterFx,
-            fxChainFX1ToFX2: state.fxChainFX1ToFX2,
-            fxChainFX3ToFX4: state.fxChainFX3ToFX4,
-            resolveAudioBuffer: (id) => getSampleBuffer(id),
-          });
-          return writeProjectZip(manifest, sampleEntries);
-        });
+      const { autoSave, autosaveIntervalSec } = state.settingsValues;
+      if (autoSave !== lastAutoSave || autosaveIntervalSec !== lastIntervalSec) {
+        lastAutoSave = autoSave;
+        lastIntervalSec = autosaveIntervalSec;
+        sync();
+      }
     });
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      stopAutosaveInterval();
+    };
   }, []);
 
   return (
