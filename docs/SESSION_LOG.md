@@ -99,6 +99,545 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 32 — 2026-05-24 — Live quantize on record + non-4/4 DO IT + dead-code cleanup
+
+### What was attempted
+
+Following the live-recording quantize audit earlier in the day, Marek green-lit Option B: implement true MPC-style live quantize during recording. Scope:
+
+1. **Live quantize on record** — when TC is non-OFF, pad-press position snaps to the current TC grid at the moment of capture; TC OFF preserves raw timing as before.
+2. **Non-4/4 awareness for DO IT** — `eventStepToTicks` / `ticksToStep` previously hardcoded 384 ticks/bar (4/4), so the post-hoc snap (F3 DO IT) was wrong in 3/4 / 6/8 / 12/8. Make the helpers sequence-aware via optional parameter; pass sequence from the DO IT call site.
+3. **Dead code cleanup** — drop `createRecordedPadEvent` (zero call sites) and `quantizeStrength` state field (read by zero sites; UI was removed in Session 6).
+
+Audit-confirmed prerequisites:
+- `quantizeStrength` not present in `disk/types.ts` `GlobalSettings` shape, so no schema migration needed when removing the field.
+- TC screen UI already cleaned of strength controls in Session 6 — no UI edit needed.
+- `createRecordedPadEvent` was the original intended live-record entry but got bypassed when the press/release model with `activeRecordingNotes` landed. Pure dead code.
+
+### What worked
+
+**1. Snap helpers (`useAppStore.ts:5882-5916`).**
+
+Two new helpers added next to `timingCorrectGridTicks`:
+
+```ts
+function snapTickToTC(absTick, timingCorrect) {
+  if (timingCorrect === "OFF") return absTick;
+  const gridTicks = timingCorrectGridTicks(timingCorrect);
+  return Math.round(absTick / gridTicks) * gridTicks;
+}
+
+function captureSnappedRecordingPosition(state) {
+  const raw = captureAbsoluteTick(state);
+  if (state.timingCorrect === "OFF") return raw;
+  const snapped = snapTickToTC(raw.absTick, state.timingCorrect);
+  const sequence = getCurrentSequence(state);
+  const sequenceTicks = getSequenceTotalTicks(sequence);
+  const bounded = sequenceTicks > 0
+    ? ((snapped % sequenceTicks) + sequenceTicks) % sequenceTicks
+    : 0;
+  return { absTick: bounded, stepIndex: Math.floor(bounded / 24), tickOffset: bounded % 24 };
+}
+```
+
+`snapTickToTC` is a pure tick→tick transform with TC OFF early-return. `captureSnappedRecordingPosition` composes raw `captureAbsoluteTick` + snap + sequence-wrap so that a snap which rounds past the end of the loop lands cleanly on bar 1 tick 0 (next loop iteration) instead of an out-of-range step.
+
+Importantly: `captureAbsoluteTick` is left untouched. It's still the primitive used by Note Repeat, releasePad's end-tick capture (now via the new wrapper), and other timing measurements. The wrapper is purely additive.
+
+**2. Wired snap into three press/release sites (`useAppStore.ts`):**
+
+- Standard live-recording press (~line 2091) — `captureAbsoluteTick` → `captureSnappedRecordingPosition`.
+- 16 LEVELS recording press (~line 2049) — same swap. Note Variation events now record at the snapped position too, consistent with the regular pad path.
+- `releasePad` end-tick capture for duration math (~line 2170) — also snapped. With both press and release snapped, recorded gate times align with the TC grid (MPC convention). With TC OFF both ends preserve raw timing.
+
+The count-in pre-roll branch (~line 1985) was deliberately not touched — it already force-snaps press to `(stepIndex=0, tickOffset=0)` (downbeat of bar 1). That's the count-in transition's job, separate from per-press TC quantize.
+
+**3. Sequence-aware `eventStepToTicks` / `ticksToStep` (`useAppStore.ts:5828-5876`):**
+
+Both helpers now accept an optional `sequence?: Sequence` argument:
+
+- If provided: walk per-bar tick counts via `getBarTickCount`; compute beat ticks via `getTimeSignatureAtBar(...).den`. So a 3/4 bar contributes 288 ticks, 6/8 contributes 288 (6 × 48), 12/8 contributes 576.
+- If omitted: fall back to the legacy hardcoded 4/4 math (384/96/96).
+
+The fallback preserves behaviour for the three remaining call sites that don't currently carry a sequence reference:
+- `offsetStepEvent` (paste flow, `useAppStore.ts:5800`) — operates on raw tick offsets.
+- Offline-render baseTicks calculation (`useAppStore.ts:8347`).
+- `computeOfflineSwingTicks` (`useAppStore.ts:8640`).
+
+All three operate in 4/4 today and behave unchanged. They're flagged as follow-up work; full non-4/4 audit would touch swing math + offline render + paste, which is bigger than this session's scope.
+
+**4. `applyTimingCorrectToEvents` (F3 DO IT) now sequence-aware.**
+
+```ts
+const sequence = getCurrentSequence(state);
+const realTicks = eventStepToTicks(event.step, sequence) + event.timingOffset;
+const snappedTicks = Math.round(realTicks / gridTicks) * gridTicks;
+return { ...event, step: ticksToStep(snappedTicks, sequence), timingOffset: 0 };
+```
+
+In 3/4, an event at bar 2 beat 1 tick 0 now correctly maps to absolute tick 288 (not 384), so snapping to a 1/8 grid (48 ticks) round-trips to the right bar/beat position. In 4/4 the behaviour is identical to before.
+
+**5. Dead code removed (`useAppStore.ts`):**
+
+- `createRecordedPadEvent` function — deleted entirely (~17 lines). Verified zero call sites before removal.
+- `quantizeStrength: number` field from `AppState` interface — removed.
+- `quantizeStrength: 100` from default state literal — removed.
+- `adjustQuantizeStrength: (delta: number) => void` from `AppState` interface — removed.
+- `adjustQuantizeStrength` action implementation (`set((state) => ({ quantizeStrength: clamp(...) }))`) — removed.
+
+Post-removal grep across `src/` returned zero references. No call sites broken.
+
+**6. Schema migration: not needed.**
+
+`quantizeStrength` is not part of `disk/types.ts` `GlobalSettings`, `ProjectManifest`, or any other serialized shape. Saved projects don't carry the field. Removal is invisible to disk.
+
+**Build validation:**
+
+- `npm run build` clean (`tsc + vite build` in 2.18 s, no TypeScript errors).
+- `cargo check` not re-run — Rust side untouched this session.
+
+### What didn't work / pitfalls hit
+
+- **Non-4/4 fix is partial, not complete.** Only `applyTimingCorrectToEvents` was updated to pass the sequence. Three other call sites (`offsetStepEvent`, offline-render `baseTicks`, `computeOfflineSwingTicks`) still use the 4/4 fallback. They behave correctly in 4/4 but would compute wrong absolute ticks in non-4/4 sequences. Full audit and fix is a larger scope — flagged in Open Issues. The MAIN-screen non-4/4 partial-support banner (Session 6) should stay up until those three sites are addressed.
+- **`computeOfflineSwingTicks` has its own hardcoded `% 384`** at `useAppStore.ts:8640` — separate from `eventStepToTicks`. That math `eventStepToTicks(eventStep) % 384` collapses a multi-bar event to a "tick-within-bar" position, which is structurally 4/4-only. The function's own comment notes "full MPC-precise per-bar TS swing is out of MVP scope". Not touched this session.
+- **`activeRecordingNotes` stores the snapped position only at press time.** If TC is changed mid-press-hold, the release will snap to the NEW TC grid while the press snapped to the OLD one. Edge case (user actively turning TC knob while holding a pad), but worth documenting. Acceptable for now since TC changes during a held note are rare.
+- **`captureAbsoluteTick`'s `clamp(elapsedTicks, 0, 23)` still in place.** The structural 1/16-step container for raw measurement is preserved per the spec. The snap operates on the resulting absTick AFTER the clamp, so 1/32 snap still works (the snap reads bits within the [0, 23] range and rounds to 0 or 12). No bug — just confirming the constraint is intentional.
+- **Press+release both snap, so duration is grid-aligned.** This is MPC behaviour and is what the spec asks for (TC affects the whole recorded event), but worth noting: a user holding a pad for what they perceive as "off-grid sustained" gate will see the gate snap to grid in TC mode. Users who want raw gate times have TC OFF.
+
+### Decisions made
+
+- **`captureAbsoluteTick` left untouched** per spec. Wrapped by `captureSnappedRecordingPosition` instead. Single primitive, multiple wrappers — clean separation.
+- **TC OFF early-return in both helpers** so the snap-bounded math doesn't even run. Cheaper and preserves the documented "raw timing" semantics exactly.
+- **Sequence-aware tick helpers via optional param** (not duplicated functions). Callers without a sequence carry no behaviour change; callers with one opt into TS-aware math by passing the arg.
+- **Partial non-4/4 fix is fine for this session.** Full audit of offset/offline/swing is a larger architectural task. The user's primary need (DO IT in non-4/4) is the one fixed.
+- **Both press AND release snap when TC ≠ OFF.** MPC convention. Symmetric. Otherwise duration would mix snapped-start and raw-end which is confusing.
+- **Schema migration unneeded for `quantizeStrength` removal.** Confirmed not in `GlobalSettings`. Drop the field cleanly.
+- **Did NOT touch the playback grid** (`tickStepPlayback` hardcoded 24) per anti-pattern in the spec.
+- **Did NOT touch the count-in pre-roll** (`0.25 * beatMs`) per anti-pattern in the spec.
+- **Did NOT add strength back.** Spec explicit. The field is fully removed; if it's wanted back in the future it's a clean re-add.
+
+### Open issues / followups
+
+**Marek runtime test checklist (the 11 scenarios from the spec):**
+
+For live recording at 4/4:
+1. TC OFF, REC, pad-hit off-grid → event in STEP screen shows non-zero `timingOffset` preserving raw timing.
+2. TC 1/16, REC, pad-hit off-grid → event lands on nearest 1/16 boundary; `timingOffset = 0`.
+3. TC 1/8, REC, pad-hit off-grid → event lands on nearest 1/8 boundary (every other 1/16 step, `timingOffset = 0`).
+4. TC 1/32, REC, pad-hit off-grid → event lands on nearest 1/32 boundary; `timingOffset = 0` or `12` (1/32 sub-position within a 1/16 step).
+5. TC 1/8T, REC, pad-hit off-grid → event lands on nearest 1/8 triplet boundary (32-tick grid).
+
+For post-hoc DO IT at 4/4:
+6. Record events with TC OFF (raw), then change TC to 1/16, F3 DO IT → all events snap to 1/16.
+7. Same flow with TC 1/8 → snap to 1/8.
+8. Same flow with TC 1/32 → snap to 1/32.
+
+For non-4/4 (3/4 time signature):
+9. Change TS to 3/4 in TC screen.
+10. TC 1/16 live recording → events snap to 1/16 within 3/4 bar structure (no spillage past beat 3).
+11. F3 DO IT in 3/4 with TC 1/8 → events snap correctly within 3/4 bar.
+
+Build smoke:
+- `npm run tauri dev` launches without errors.
+- Existing browser/Tauri projects load without crash (dead-code cleanup removed only unused fields; no schema impact).
+
+**Phase-3 backlog (not done this session, flagged for future):**
+
+- **Three remaining 4/4 hardcoded call sites** of `eventStepToTicks` / `ticksToStep` (offset-paste, offline-render baseTicks, swing-tick math). All still use the legacy 4/4 path because they lack a sequence reference at the call site. Threading sequence through those three paths is a separate audit / refactor. Not blocking for now in 4/4, but the MAIN-screen non-4/4 banner should stay up until they're addressed.
+- **`computeOfflineSwingTicks` hardcoded `% 384`** at `useAppStore.ts:8640` — non-4/4 limitation acknowledged in the function's own comment ("full MPC-precise per-bar TS swing is out of MVP scope").
+- **Strength re-introduction** would be a future MPC4000/5000-style "human" feel feature. Currently fully removed; re-add when needed.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — added `snapTickToTC` + `captureSnappedRecordingPosition` (lines 5882-5916 region). Replaced `captureAbsoluteTick` calls in three recording sites (16 LEVELS press ~2049, standard recording press ~2091, releasePad end ~2170) with the new snapped capture. Made `eventStepToTicks` / `ticksToStep` sequence-aware via optional `sequence?: Sequence` parameter with 4/4 fallback. Updated `applyTimingCorrectToEvents` (DO IT) to pass `getCurrentSequence(state)` to both helpers. Removed `createRecordedPadEvent` function (~17 lines). Removed `quantizeStrength` field from `AppState` interface, default state literal, interface method declaration, and `adjustQuantizeStrength` action implementation.
+
+Total session diff: 1 file, +101/-43 lines net (after dead-code removal). `npm run build` clean.
+
+### Session 32 follow-up — Unified TC cycler (MPC-style, single 9-value list)
+
+Marek tested the live quantize work and noticed the TC screen cycler only shows OFF/1/4/1/8/1/16/1/32 — the triplet values weren't reachable. Asked me to "restore" them.
+
+**Diagnosis (audit before code change):** git proves this was NOT a regression caused by the live-quantize session. `cycleTimingCorrectPatch` was structurally identical in the last shipping commit (`cc49d39`). The triplet values existed in `timingCorrectGridTicks` (1/4T=64, 1/8T=32, 1/16T=16, 1/32T=8 — all untouched), but the cycler split into two lists (`nonTriplet` / `triplet`) gated on a global `state.tripletMode` boolean — and the toggle for that boolean lived in the NOTE REPEAT screen (F4 TRIPLET softkey, separate ArrowRow). Non-obvious from the TC screen.
+
+Marek picked **Option B** ("like MPC"): drop the `tripletMode` gate; walk a single unified list of all 9 values in MPC order.
+
+**Changes**
+
+- **`cycleTimingCorrectPatch` (`useAppStore.ts:5944-5970` region):** replaced the two-list `state.tripletMode`-gated walk with a single unified list in MPC order: `["OFF", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"]` (or the 8-value version without OFF for NOTE REPEAT's RATE). PREV/NEXT walks one step at a time through every value. The returned patch now ALSO writes `tripletMode = timingCorrect.endsWith("T")` so the legacy state field stays in sync with the actual TC value (useful for serialization round-trips with older builds).
+
+- **`NoteRepeatUtilityScreen` (`UtilityScreens.tsx:463-522`):** removed the `TRIPLET ON/OFF` ArrowRow and the F4 TRIPLET softkey. F4 now renders as a disabled "F4" placeholder per project convention for empty softkey slots. RATE row still cycles via `cycleNoteRepeatRate` — which now walks the unified 8-value list automatically. So triplet rates are still accessible from NOTE REPEAT, just by stepping through F1 RATE instead of a separate TRIPLET button.
+
+- **`toggleTripletMode` action removed** (`useAppStore.ts:2934-2943`): no remaining callers after stripping the NOTE REPEAT TRIPLET UI. Also removed from the `AppState` interface (line 407). Pure dead code.
+
+- **`tripletMode: boolean` state field PRESERVED** in `AppState` + default `tripletMode: false` + serialization in `collectGlobalSettings` / `applyGlobalSettings`. Reason: still in the `disk/types.ts` `GlobalSettings` schema (line 30). Removing the field would require a schema bump + migration of all saved projects. Cheaper to leave it as a derived value (cycler sets it automatically) and skip the schema migration. Future schema cleanup can drop it.
+
+**What worked**
+
+- `npm run build` clean.
+- TC screen NOTE row now cycles through all 9 values in order (verified visually via grep + manual walkthrough of the cycler logic).
+- NOTE REPEAT RATE row gets the same benefit — cycles through all 8 (no-OFF) values including triplets.
+- `tripletMode` state field still serializes correctly; new sessions write it derived from the current `timingCorrect`.
+- Live quantize (Session 32 main work) and F3 DO IT both already routed through `timingCorrectGridTicks`, which has all 9 entries — they just inherit the new cycler exposure for free. No changes to the snap math needed.
+
+**What didn't work / pitfalls hit**
+
+- **Initially expected to remove `tripletMode` entirely.** Held off after realising it's part of the disk schema (`GlobalSettings`). Removing would have meant a `CURRENT_SCHEMA_VERSION` bump + migration for `tripletMode` removal — disproportionate to the value of dropping an 8-byte field. Kept it as derived state.
+- **F4 TRIPLET softkey replacement.** Three options for the empty slot: leave the label blank, render "—" (project convention used in UNDO screen per Session 3), or shift other softkeys down. Picked the minimal-disruption option: keep "F4" label with `onClick: undefined` (disabled). Matches the disabled-softkey pattern.
+- **Marek thought this was a regression from my live-quantize work.** It wasn't — the two-list gate predates this session by multiple commits (cc49d39, c41c1e8, all earlier). But the fix opportunity was real: the prior UX hid triplets behind a non-obvious toggle in a different screen. Reporting "not a regression" + offering options (A: add F4 TRIPLET to TC screen / B: unify cycler / C: both) let Marek pick the right path rather than reverting good work.
+
+**Decisions made**
+
+- **Option B picked by Marek** ("like in MPC"). MPC2000XL / MPC3000 / MPC4000 all use a single cycle list including triplets. Matches reference hardware behaviour.
+- **Order: OFF → 1/4 → 1/4T → 1/8 → 1/8T → 1/16 → 1/16T → 1/32 → 1/32T.** Coarse → fine, with each non-triplet immediately followed by its triplet. Walks naturally to MPC users.
+- **`tripletMode` kept as derived state field, not removed.** Schema-compat reasons. Vestigial but harmless; can be removed in a future schema bump.
+- **F4 in NOTE REPEAT becomes a disabled placeholder, not shifted.** Stays consistent with the "softkeys at fixed positions, blank when unused" project convention.
+- **NOTE REPEAT's TRIPLET row deleted entirely.** Not turned into a read-only display — that would be a vestigial UI element and Fake UI Policy violation.
+
+**Open issues / followups**
+
+- **`tripletMode` field is now derived, not user-toggled.** If any code path still writes it directly elsewhere, that write becomes the source of truth (transient). Grep confirms no other writers — only `cycleTimingCorrectPatch` (auto-derived) and `resetTimingCorrect` (sets false). Safe.
+- **Future schema cleanup** could drop `tripletMode` from `disk/types.ts` `GlobalSettings`. Needs a `CURRENT_SCHEMA_VERSION` bump and a no-op migration that drops the key from loaded projects. Low priority.
+- **Marek runtime test for the unified cycler:**
+  1. Open TC screen → F1 NOTE → cycles OFF → 1/4 → 1/4T → 1/8 → 1/8T → 1/16 → 1/16T → 1/32 → 1/32T → wraps back to OFF.
+  2. With TC at 1/8T, REC, pad-hit off-grid → event snaps to nearest 1/8T (32-tick) boundary.
+  3. With TC at 1/16T, REC, pad-hit off-grid → event snaps to nearest 1/16T (16-tick) boundary.
+  4. F3 DO IT at any triplet TC value → existing events snap to triplet grid.
+  5. Open NOTE REPEAT screen → no TRIPLET row visible, no F4 TRIPLET softkey, F4 button shows "F4" disabled.
+  6. NOTE REPEAT F1 RATE cycles through all 8 values (no OFF) including triplets.
+
+**Files modified (Session 32 follow-up)**
+
+- `src/store/useAppStore.ts` — `cycleTimingCorrectPatch` rewritten to walk a single unified MPC-order list; sets `tripletMode` as a derived `endsWith("T")` value alongside `timingCorrect` and `tcEnabled`. Removed `toggleTripletMode` action implementation + `AppState` interface entry.
+- `src/screens/UtilityScreens.tsx` — `NoteRepeatUtilityScreen` lost the TRIPLET ArrowRow, the `tripletMode` / `toggleTripletMode` subscriptions, and the F4 TRIPLET softkey. F4 slot now renders disabled.
+
+Cumulative Session 32 diff (live quantize + non-4/4 DO IT + dead code + cycler unification): 2 files, ~+115/-65 lines net. `npm run build` clean.
+
+---
+
+## Session 31 — 2026-05-24 — Pre-1.1.1 polish: default project init + ASSIGN scrollbar + layout editor toggle
+
+### What was attempted
+
+Three independent small tasks before next release:
+1. **Default project on clean boot / NEW PROJECT** — eliminate the "empty state" onboarding gap where the app loaded with no sequence/track/program and the user had to manually create all three before being able to do anything.
+2. **ASSIGN screen scrollbar** — middle column "AVAILABLE SOURCES" was unscrollable; after a multi-bank CHOP with 32–64 slices, entries past the visible area were unreachable.
+3. **Re-enable layout editor in Tauri release** — previously gated by `!isTauri()`. Add a SETTINGS → SYSTEM toggle so Marek can flip it on for occasional repositioning work without rebuilding.
+
+### What worked
+
+**Task 1 — default project init**
+
+Root cause: two code paths produced incompatible "empty" states.
+- Boot init (initial state literal in `useAppStore.ts:904+`) already seeded `SEQ01` + `TRACK01` + `PRG01` with empty `initialStepEvents` (`createStepEvents`-derived demo events were already disabled). Just needed BPM bump.
+- `newProject` action (`useAppStore.ts:5223`) called `createBlankProjectState` which returned `sequences: []`, `programs: []`, `currentSequence: ""`. That's the broken path — the truly-empty state.
+
+Fix:
+- `createBlankProjectState` now returns a seeded shape: `sequences: createSequences([])` (one SEQ01 with empty events), `programs: createPrograms()` (one PRG01), correct `currentSequence/currentProgramId/currentTrackId/activeProgram/activeTrack/sequenceName` plus BPM 96, lengthBars 4, time signature 4/4. The `fxBuses` and `masterFx` defaults are preserved so `syncFxEngine` in `newProject` still runs cleanly.
+- BPM 94 → 96 in two places: initial state literal (`bpm: 96`) and `createSequences`-internal seed (`createSequence("01", "SEQ01", 96, ...)`).
+- TC default is already `1/16`. lengthBars default is already `4`. No further changes needed.
+
+Result: both fresh boot (no autosave) AND DISK → NEW PROJECT land on MAIN with SEQ01/TRACK01/PRG01 populated. User can press REC immediately.
+
+**Task 2 — ASSIGN scrollbar**
+
+`AssignColumn` component (`ProgramScreen.tsx:368`) extended with optional `scrollable?: boolean` prop. When true, renders as a two-row grid (`grid-rows-[auto_1fr]`) with the title pinned and a scrollable body (`min-h-0 overflow-y-auto`). Project-wide phosphor-green LCD scrollbar styling in `src/styles/index.css:38+` applies automatically.
+
+The "AVAILABLE SOURCES" middle column now uses `scrollable`. New `AssignSourceList` component extracted from the inline `.map` so it can hold a `useRef`-based auto-scroll: when `sourceIndex` changes (via F2 PREV / F3 NEXT softkeys, or direct click), the matching button calls `scrollIntoView({ block: "nearest" })`. Keeps the highlighted entry visible during list traversal.
+
+Other two columns (SOURCE TYPE, TARGET) keep their original non-scrollable rendering — no list there can overflow.
+
+**Task 3 — layout editor toggle**
+
+Added `layoutEditorEnabled: boolean` to `SettingsValues` (default `false`). Persistence rides the existing `loopthief.settings` localStorage path — `App.tsx:33-44` hydrates settings on boot, `App.tsx:46-65` writes on any settingsValues change, debounced 500ms. No new persistence wiring needed.
+
+`AppShell.tsx:34` gate updated from `!isTauri()` to `!isTauri() || layoutEditorOverride` so the F7 keypress handler AND the `<LayoutEditorOverlay />` render gate respect the toggle. Default behavior unchanged for browser mode (always on) and shipped releases (off until Marek flips it).
+
+UI: new toggle row in SETTINGS → SYSTEM (F6 INFO) panel below the existing info rows. Three columns: "LAYOUT EDITOR" label, hint text "F7 toggle · Ctrl+S needs `tauri dev`", ON/OFF indicator. Click toggles via `hydrateSettings({ layoutEditorEnabled: !value })` — merges into settingsValues, App subscriber persists.
+
+**Build validation**
+
+- `npm run build` clean. TypeScript passes. Vite produces dist/. Only existing warnings (`fxEngine.ts` and `disk/index.ts` mixed dynamic+static imports — known carry-over from prior sessions, not introduced this session).
+- `cargo check` clean (Rust untouched; the working tree's pre-existing `main.rs` console-suppression edit was left alone since it's a separate concern Marek hadn't asked to commit yet).
+
+### What didn't work / pitfalls hit
+
+- **First store edit added a duplicate `bpm` field.** I wrote a new `bpm: 96` line via Edit without first noticing the existing `bpm: 94` line was three lines above. TypeScript would have happily accepted the duplicate (later key wins) but it was clearly wrong. Caught immediately via `grep "bpm: 94|bpm: 96"`, fixed by removing the old line and keeping the new one. Lesson: when adding a setting that may already exist in a multi-hundred-line object literal, grep first.
+
+- **Ctrl+S save in Tauri release is structurally broken — flagged, not fixed.** The layout editor's `Ctrl+S` handler (`LayoutEditorOverlay.tsx:33-44`) POSTs to `/__layout/save`, which is a Vite dev-server middleware (`vite.config.ts:17-39`) that writes to `src/layout/layout.json`. In `npm run tauri build` output there's no Vite server — the fetch will fail. The toggle alone gives Marek a runtime editor in Tauri but **persistence requires running `npm run tauri dev`** (which spawns Vite alongside Tauri). Documented in the toggle's hint text and below. Wiring a Tauri command (`save_layout` IPC) to write `layout.json` from Rust would close this gap but expands scope beyond the spec.
+
+- **QuitButton (X) is NOT layout-editor-aware.** Marek's stated intent was "reposition the X button". The QuitButton (`QuitButton.tsx`) uses hardcoded CSS constants `OFFSET_PX = 30` and `SIZE_PX = 70`, rendered outside `<LayoutElements />` and not present in `src/layout/layout.json`. The layout editor only operates on elements registered in `layout.json`. So enabling the editor won't make the X draggable. Two paths if Marek wants this:
+  1. Manually edit `QuitButton.tsx` constants and reload.
+  2. Add a `quit-button` entry to `layout.json` and refactor QuitButton to read its rect from `useLayoutStore`. ~10 lines, scope-creep relative to this session.
+
+  Flagged to Marek pre-implementation; user direction pending.
+
+- **`createBlankProjectState` doesn't reset everything.** Pre-existing behavior: doesn't touch global `swing`, `timingCorrect`, `tripletMode`, `metronome*`, `currentPadMode`, transport phase, chop state, etc. I kept that behavior — only seeded the sequence/track/program/FX shape. If a user had `swing: 70, BPM: 130` and hits NEW PROJECT, they now land at BPM 96 (per my reset) but swing/TC stay. Could surprise users; not addressed since the spec only listed sequence-level defaults.
+
+- **Settings persistence is async (500ms debounce).** Toggling `layoutEditorEnabled` in SETTINGS updates state immediately and the editor reflects within React's render cycle, but the localStorage write happens 500ms later via App.tsx subscriber. If Marek toggles ON then immediately kills the process before 500ms elapses, the toggle reverts on next boot. Edge case; not worth a sync write.
+
+### Decisions made
+
+- **SETTINGS toggle over constant flag.** Spec said either, with toggle preferred "if not much extra work". One field on `SettingsValues`, one row in SystemInfo, one AppShell gate update — minimal scope. Lives in code permanently as a hidden dev affordance; OFF by default in shipping.
+- **Toggle exposed in SETTINGS → SYSTEM (F6 INFO) panel** rather than a new category. SYSTEM is the existing "build/runtime metadata" slot, dev-toggle fits the same theme. Avoids softkey re-shuffling (which would have meant a 7th F-key).
+- **`hydrateSettings` reused as toggle setter** instead of adding a dedicated `setLayoutEditorEnabled` action. Merge semantics are correct; App subscriber picks up the change either way. One less action on the AppState interface.
+- **Layout editor remains under F7**, NOT F2. F2 is a softkey passthrough across all screens (Session log Session ?: comment in `AppShell.tsx:39`). The spec text said "F2" but the code is already F7 by design — kept F7.
+- **Default project BPM 96**, not 94. Spec said 96; the previous boot/seed defaulted to 94 silently. Updated to match spec across initial state + `createSequences`. If Marek wanted 94 specifically he'll say so.
+- **`createBlankProjectState` resets BPM to 96** when user picks NEW PROJECT. Reset is partial (sequence shape + BPM only). Other global state (swing, TC, transport) untouched. Tracked above as a known not-everything-resets carve-out.
+- **Auto-scroll behavior = `scrollIntoView({ block: "nearest" })`**. Smoother than full-center scroll; only nudges the list when the selected button is actually outside the visible area. Matches user expectation when arrow-navigating long lists.
+- **Did NOT make the X button layout-editor-aware.** Scope question raised to Marek before commit; if he confirms he wants this, that's a follow-up edit (refactor QuitButton to read rect from useLayoutStore + register in layout.json).
+
+### Open issues / followups
+
+**Marek runtime test (default project init)**:
+1. Close app, clear IndexedDB (DevTools → Application → Storage → Clear site data) OR uninstall + reinstall release `.exe`.
+2. Launch app → BootResumeDialog should NOT appear (no autosave).
+3. MAIN screen shows: TIME SIG=4/4, BPM=96 (was 94), BARS=04, SEQ=SEQ01, TRACK=TRACK01, PROGRAM=PRG01.
+4. Press REC → starts recording into the existing sequence. No "create sequence first" friction.
+5. DISK → NEW PROJECT (after the project has been touched, so it's dirty) → confirm dialog appears → OK → state resets to SEQ01/TRACK01/PRG01 with BPM 96. Sample registry empty.
+
+**Marek runtime test (ASSIGN scrollbar)**:
+1. CHOP a sample with 32+ slices, TARGET BANK=A, CREATE PROGRAM=ON → all slices land in registry.
+2. PROGRAM screen → F1 ASSIGN → middle column shows full list.
+3. Scroll with mouse wheel → reaches bottom of list. Phosphor-green LCD-tinted thin scrollbar visible on right edge.
+4. Click F2 PREV / F3 NEXT softkeys → selection moves through list AND list auto-scrolls so selected entry stays visible.
+5. Click an entry beyond the original visible area → selection updates, no UI lockup.
+
+**Marek runtime test (layout editor toggle)**:
+1. In Tauri release `.exe`, go to SETTINGS → F6 INFO → scroll to bottom → "LAYOUT EDITOR" toggle row visible, default OFF.
+2. Toggle ON → press F7 → layout editor overlay appears (cyan rectangles on draggable elements). The Tauri-default-off behaviour is overridden.
+3. Toggle OFF → press F7 → nothing happens (editor stays inactive). Confirms the gate.
+4. Toggle ON, restart app → toggle persists ON via localStorage (`loopthief.settings`).
+5. **To actually save** layout edits: run `npm run tauri dev` (NOT `npm run tauri build` output), enable the toggle, F7, drag, Ctrl+S → writes to `src/layout/layout.json`. Restart `tauri dev` → layout persisted. Shipped release `.exe` users CANNOT persist edits (no Vite middleware).
+
+**Phase-3 backlog (not touched this session)**:
+- Tauri IPC for layout save: a `save_layout` command in Rust + frontend swap (fetch → invoke when isTauri) would let Marek persist edits directly from release `.exe`. ~30 lines. Defer until/unless Marek asks.
+- QuitButton in layout editor: add `quit-button` to `layout.json`, refactor QuitButton to read rect from `useLayoutStore`. ~10 lines. Defer until Marek confirms he wants this.
+- Pre-existing `main.rs` console-suppression edit (`windows_subsystem = "windows"` cfg-gated) sitting in working tree — Marek's call whether to bundle with this commit or split.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — BPM 94→96 in initial state (`bpm: 96`) and `createSequences` (`createSequence("01", "SEQ01", 96, ...)`); `createBlankProjectState` rewritten to seed `SEQ01` + `TRACK01` + `PRG01` with correct currentSequence/Program/Track ids, sequenceName, sequenceLengthBars, timeSignature; `SettingsValues` type extended with `layoutEditorEnabled: boolean`; default `layoutEditorEnabled: false` in settingsValues init.
+- `src/components/layout/AppShell.tsx` — import `useAppStore`; subscribe to `settingsValues.layoutEditorEnabled`; gate computed as `!isTauri() || layoutEditorOverride`.
+- `src/screens/ProgramScreen.tsx` — `useEffect` / `useRef` imports added; `AssignColumn` extended with optional `scrollable` prop rendering a two-row grid with scrollable body; new `AssignSourceList` component extracted with `scrollIntoView` on `sourceIndex` change; "AVAILABLE SOURCES" column switched to `scrollable` mode + uses `AssignSourceList`.
+- `src/screens/SettingsScreen.tsx` — `SystemInfo` adds a layout-editor toggle row at the bottom, wired to `hydrateSettings({ layoutEditorEnabled: !value })` for persistence via existing settings localStorage path.
+
+Total diff: 5 files, +115/-24 lines. `npm run build` clean. `cargo check` clean.
+
+### Session 31 follow-up — QuitButton (X) registered in layout.json
+
+Marek confirmed he wants the X button draggable via the F7 editor. Migrated from CSS-constant positioning to the layout system.
+
+**Changes**
+
+- **`src/types/layout.ts`** — `LayoutElementType` union extended with `"quit-button"`.
+- **`src/layout/layout.json`** — new entry `{ id: "quit-button", type: "quit-button", x: 2427, y: 30, w: 70, h: 70 }`. Coordinates match the previous CSS offsets (top-right corner inset 30px in the 2527×1610 canvas, 70×70 button).
+- **`src/components/layout/LayoutElements.tsx`** — `LayoutElementView` returns `null` early for `type === "quit-button"`. Without this, the default catch-all renderer at the bottom would paint a generic-button stub over the real QuitButton. The element still exists in `useLayoutStore.elements`, so the F7 overlay draws its draggable cyan rectangle as expected.
+- **`src/components/workstation/QuitButton.tsx`** — pure rect-source swap per Marek's mid-task constraint. Reads rect from `useLayoutStore.elements.find((e) => e.id === "quit-button")`. Falls back to `FALLBACK_RECT` (computed from `OFFSET_PX = 30` / `SIZE_PX = 70` constants — identical values to the previous version) if the entry is missing. Switched from percentage-based CSS (`right`/`width`/`top`/`height` as `%`) to pixel-direct absolute positioning (`left/top/width/height`), matching the rest of the layout system. AppShell's `transform: scale(...)` already handles viewport fitting, so percentage vs pixel produces identical visual output. **Behavior unchanged**: `onClick={requestAppQuit}` (same handler, same QUIT CONFIRM dialog / transport-block funnel), `disabled = !inTauri || transportBlocked` (same predicate), `title` (same conditional strings), visual states / z-40 / disabled classes (untouched).
+
+**What worked**
+
+- `npm run build` clean. TypeScript accepts the new union member and the JSON shape parses.
+- Existing layout elements are unaffected — added a single new entry at the end of the array.
+- The F7 editor doesn't need changes: it iterates `useLayoutStore.elements` blindly and draws rectangles per (x, y, w, h). The new `quit-button` entry participates automatically.
+- The CSS-to-pixel coordinate translation is exact: `right: 30/2527 → left: 2527-30-70 = 2427`, `top: 30/1610 → top: 30`. No visual shift.
+
+**What didn't work / pitfalls hit**
+
+- **First read of LayoutElements.tsx missed the catch-all renderer.** Lines 209+ render a default `<button>` for any `LayoutElement` not handled by an earlier `if`. If I'd left LayoutElementView alone, the `quit-button` element would have rendered a generic button image at the QuitButton's spot, overlapping the real one. Caught during the inspection pass after seeing the default branch — easy fix with an explicit early-return `null`. Lesson: when adding a new element type, always check whether the renderer has a default branch that would auto-paint something.
+- **`LayoutEditorOverlay.tsx:101-102` uses `2859` as canvas width** for drag-delta scaling, but the actual canvas is 2527 (per `AppShell.CANVAS_WIDTH`). Pre-existing bug, not introduced this session — but it means the drag delta is off by ~13% when Marek pulls the rectangle. Visual outcome: dragging will FEEL approximately right but won't be pixel-perfect; Marek will likely need to drag-tune iteratively. Out of scope to fix this session — flagged in followups.
+- **The QuitButton's `z-40` is preserved**, but the LayoutEditorOverlay rectangles don't set a z-index. JSX order in AppShell is `<QuitButton /> ... <LayoutEditorOverlay />`, so the overlay paints on top of the quit button in edit mode (same-z + later-DOM-order wins). Click interception during F7 editing works through the overlay; the QuitButton's own `disabled` predicate stays focused on its real concerns (Tauri-only + transportBlocked).
+- **Initially extended `disabled` with `editMode`** thinking it'd guard against accidental Quit clicks during a drag. Marek corrected mid-task: pure rect-source swap, no behavior changes. Reverted. The overlay already intercepts clicks in edit mode, so the QuitButton's own disabled logic doesn't need to know about editMode.
+
+**Decisions made**
+
+- **New element type `"quit-button"`** rather than reusing an existing type. Specific enough that future readers know it's the QuitButton; specific enough that `LayoutElementView` can skip it cleanly.
+- **Skip-render in LayoutElementView, render in QuitButton.tsx** rather than moving the rendering into LayoutElementView. Reason: QuitButton has unique logic (transport-blocked disable, Tauri-only disable, dynamic title text) that doesn't fit the LayoutElementView switch chain. Co-locating those concerns in QuitButton.tsx keeps responsibilities clean.
+- **Pixel coordinates (`left/top/width/height`)** instead of the old percentage-based CSS. Matches the rest of the layout system. Saves the `CANVAS_WIDTH` / `CANVAS_HEIGHT` import in QuitButton.tsx.
+- **Defensive `FALLBACK_RECT` constant in QuitButton.tsx** — if a future layout.json edit accidentally removes the `quit-button` entry, the button still renders at sensible coordinates instead of crashing or rendering at (0,0). Marek's spec asked for this explicitly. Fallback derived from preserved `OFFSET_PX = 30` / `SIZE_PX = 70` so the numbers match the previous CSS positioning exactly.
+- **Pure rect-source swap, behavior unchanged.** Per Marek's mid-task constraint — `requestAppQuit` funnel, transport-block predicate, disabled tooltip, all 4 close-path convergence, dialog wiring, all left as-is.
+
+**Open issues / followups**
+
+- **Drag-delta math in `LayoutEditorOverlay.tsx:101-102` uses `2859`** — should be `CANVAS_WIDTH (2527)`. One-line fix; defer until Marek explicitly asks (touching the editor was sacred per CLAUDE.md).
+- **Ctrl+S still requires `npm run tauri dev`** (Vite middleware). Same caveat as the main Session 31 entry — release `.exe` users cannot persist edits. After Marek tunes the X-button position in `tauri dev`, the new x/y/w/h is written to `src/layout/layout.json` and ships as the new default on next rebuild.
+
+**Marek runtime test**
+
+1. `npm run tauri dev` (NOT `tauri build` output) → app opens.
+2. SETTINGS → F6 INFO → toggle "LAYOUT EDITOR" ON (carries over from boot if previously enabled).
+3. Press F7 → cyan rectangles appear over all layout elements, including a 70×70 rectangle in the top-right where the X button is.
+4. Click the X-button rectangle → it highlights cyan (selected). Top-left HUD shows `quit-button · X 2427 · Y 30 · W 70 · H 70`.
+5. Drag to a new position. The real X button image moves with the rectangle.
+6. Optionally resize via the corner handles.
+7. Ctrl+S → HUD shows "SAVED" (green). `src/layout/layout.json` updated on disk.
+8. Press F7 again to exit edit mode → real X button now sits at the new coordinates and is clickable.
+9. Restart `tauri dev` → position persists.
+10. Run `npm run tauri build` → release installer carries the new default position.
+
+**Files modified (followup)**
+
+- `src/types/layout.ts` — `LayoutElementType` union + 1 member.
+- `src/layout/layout.json` — 1 new element entry at end of array.
+- `src/components/layout/LayoutElements.tsx` — early-return `null` for `"quit-button"` type.
+- `src/components/workstation/QuitButton.tsx` — read rect from layout store; fallback constant (`OFFSET_PX`/`SIZE_PX` preserved); switch from percentage CSS to pixel positioning. Behavior (onClick, disabled, title, tooltip, dialog wiring) untouched.
+
+Cumulative session diff: 9 files, +151/-35 lines. `npm run build` clean.
+
+### Session 31 follow-up 2 — Toggle persistence (sync) + keybind rebind F7 → Ctrl+Shift+L
+
+Marek tested the F7 path inside `npm run tauri dev` and reported two real failures:
+1. `JSON.parse(localStorage.getItem("loopthief.settings"))?.layoutEditorEnabled` returned `undefined` after toggling ON in SETTINGS.
+2. Even if the toggle persisted, F7 was unresponsive in Tauri's WebView2.
+
+**Root cause 1 — apparent (not actual) persistence failure**
+
+The localStorage key was correct (`"loopthief.settings"` is the only key written anywhere in `src/`, no Zustand `persist` middleware in use, only one writer in `App.tsx:46-65`). What actually broke the DevTools probe was the **500ms debounce** on the App.tsx subscriber:
+```ts
+pendingTimer = window.setTimeout(() => {
+  window.localStorage.setItem("loopthief.settings", JSON.stringify(...));
+}, 500);
+```
+
+Sequence:
+- Toggle click → `hydrateSettings({ layoutEditorEnabled: true })` updates state synchronously.
+- Subscriber fires, schedules write 500ms later.
+- Marek immediately reads localStorage → either `null` (no prior write on clean install) or stale snapshot without the field → optional chaining returns `undefined`.
+- 500ms later the actual write lands, but by then Marek has already concluded "doesn't persist."
+
+The toggle WAS working. The DevTools observation window was too small.
+
+**Root cause 2 — F7 captured by WebView2**
+
+Standalone test confirmed: WebView2 (Chromium) reserves F7 for Caret Browsing accelerator and intercepts the keydown before page handlers see it. The AppShell `window.addEventListener("keydown", ...)` never fires for F7 in Tauri.
+
+**Fix 1 — synchronous persist on toggle**
+
+`SettingsScreen.tsx` SystemInfo toggle now calls `persistSettingsNow()` immediately after `hydrateSettings`. Same store function the SETTINGS sidebar SAVE button uses — wraps `window.localStorage.setItem("loopthief.settings", JSON.stringify(get().settingsValues))`. Synchronous, no debounce window. After click, the value is verifiable in the same tick via the same DevTools one-liner.
+
+The 500ms debounce in App.tsx remains as the general-purpose write path for all other settings changes; it's only the layout-editor toggle that needs synchronous write because its UX is "click → verify in DevTools."
+
+**Fix 2 — rebind to Ctrl+Shift+L**
+
+`AppShell.tsx` keydown handler matches:
+```ts
+event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "l"
+```
+
+Ctrl+Shift+L is unbound in Chromium AND in Tauri's default menu, so it reaches the page listener cleanly. The `.toLowerCase()` handles Shift's effect on `event.key` (`"L"` vs `"l"`). The explicit `!event.altKey && !event.metaKey` rejection prevents Ctrl+Alt+Shift+L or Cmd+Shift+L (which could be OS shortcuts on macOS later) from accidentally toggling.
+
+SETTINGS hint text updated: `"F7 toggle · Ctrl+S needs \`tauri dev\`"` → `"Ctrl+Shift+L toggle · Ctrl+S needs \`tauri dev\`"`.
+
+**What worked**
+
+- `npm run build` clean.
+- localStorage key verified by grep across all of `src/` — `"loopthief.settings"` is the only key. No Zustand persist middleware. No alternate persistence path.
+- KeyboardShortcuts.tsx confirmed only intercepts F1–F6 + F11 + Ctrl+S/Q/Y/Z — no conflict with Ctrl+Shift+L.
+- `src-tauri/src/lib.rs` has no global accelerators registered — no conflict at the Rust/OS level either.
+
+**What didn't work / pitfalls hit**
+
+- **I initially defended "the key was right".** It was right, but the user's symptom (`undefined`) was real and pointed at a real bug — just not the one they diagnosed. The 500ms debounce had been invisible during my testing because I checked persistence by closing/reopening sessions (where the boot hydration captures the eventually-flushed value), not by an immediate same-tab read. Lesson: when a user reports a persistence symptom, the actionable failure mode isn't always "key wrong" — could be "write timing wrong relative to read." Force-sync the path that has a "click → verify" UX.
+- **`event.key.toLowerCase() === "l"` gotcha.** With Shift held, `event.key` is `"L"` (uppercase). Earlier instinct was to write `=== "l"` directly. The lowercase comparison handles both naturally.
+- **Tempting fix: rebind to Ctrl+L.** Browser-level Ctrl+L = address bar focus (in normal Chrome). WebView2 doesn't show an address bar but the shortcut may still be reserved. Ctrl+Shift+L is unambiguously safe.
+
+**Decisions made**
+
+- **Synchronous persist via `persistSettingsNow()` only on this toggle**, not blanket-removed for all settings. Other settings benefit from debounced batched writes (toggling autoSave + interval back-to-back coalesces into one localStorage write); only this one needs synchronous-and-verifiable behavior.
+- **Ctrl+Shift+L over F9 / Ctrl+L.** Per Marek's explicit choice; matches IDE/editor convention for "toggle layout panel" in some tools (VS Code uses Ctrl+Shift+L for "Select All Occurrences" — irrelevant here, no input focus expected when toggling layout editor).
+- **Did NOT add an input-focus guard** to the AppShell handler. Ctrl+Shift+L is unlikely to collide with any natural typing; if a user is editing a project name field and accidentally hits the combo, the worst outcome is the layout editor toggling and the user re-toggling. Skip the guard for simplicity.
+- **Did NOT update KeyboardReference panel** in SETTINGS → F5 KEYS with the new shortcut. The layout editor is dev-only; documenting it in the user-facing keyboard reference would suggest it's a normal feature. Hidden tool, hidden shortcut.
+
+**Marek runtime test (updated)**
+
+1. `npm run tauri dev` (with the rebuilt code) → app opens.
+2. SETTINGS → F6 INFO → click "LAYOUT EDITOR" toggle → ON.
+3. **Immediately** check DevTools:
+   ```js
+   JSON.parse(localStorage.getItem("loopthief.settings"))?.layoutEditorEnabled
+   ```
+   Should return `true` synchronously (no 500ms wait).
+4. Press **Ctrl+Shift+L** → layout editor activates (cyan rectangles over all draggable elements, including the new `quit-button` rect in the top-right).
+5. Drag the X-button rect to a new position. Resize via corner handles if needed.
+6. Ctrl+S → HUD shows "SAVED" (green). `src/layout/layout.json` updated on disk via Vite middleware.
+7. Press Ctrl+Shift+L again to exit edit mode → real X button now sits at the new coordinates and is clickable.
+8. Restart `tauri dev` → both the layout-editor toggle AND the new X position persist.
+9. If the editor still doesn't activate after Ctrl+Shift+L, run the synthetic test:
+   ```js
+   window.dispatchEvent(new KeyboardEvent("keydown", { key: "L", ctrlKey: true, shiftKey: true }))
+   ```
+   If THAT activates it → real key is being captured somewhere upstream (unlikely with Ctrl+Shift+L but worth checking).
+
+**Files modified (followup 2)**
+
+- `src/screens/SettingsScreen.tsx` — toggle onClick now wraps `hydrateSettings` + `persistSettingsNow`; subscribed to `persistSettingsNow` action from store; hint text updated to `Ctrl+Shift+L`.
+- `src/components/layout/AppShell.tsx` — F7 keydown match swapped for `Ctrl+Shift+L` (with explicit Alt/Meta rejection and case-insensitive key compare).
+
+Cumulative session diff (incl. main work + followup 1 + followup 2): 9 files, +163/-40 lines. `npm run build` clean.
+
+### Session 31 follow-up 3 — Abandoned editor-toggle approach; tuning via direct JSON edits + HMR
+
+After follow-up 2 (sync persist + Ctrl+Shift+L rebind) landed, Marek pivoted: drop the editor-toggle approach entirely and tune element positions by editing `src/layout/layout.json` directly while watching the HMR preview in `npm run dev`. For the immediate need (nudge the X-button position by a small amount), the editor UI was overhead.
+
+**What was attempted**
+
+- Read the current `quit-button` rect from `layout.json` and report it to Marek.
+- Apply numeric reposition instructions (e.g. "x: 2437") directly to the JSON file.
+- HMR re-applies the change in the browser preview within ~1 second per edit.
+- After confirmation, revert all editor-toggle wiring (SETTINGS row, Ctrl+Shift+L keybind, `layoutEditorEnabled` field) so the codebase returns to its pre-Session-31-followup state on the editor surface.
+
+**What worked**
+
+- **Direct JSON edit + HMR workflow.** Reading `quit-button` from `layout.json`, applying `x: 2427 → 2437` (+10 right), Marek visually confirmed in browser preview. Right edge of button now at x+w = 2507; distance from canvas right edge = 20px (was 30px).
+- **Revert is clean.** The four files modified by follow-ups 1 + 2 in the editor surface revert tidily:
+  - `src/components/layout/AppShell.tsx` — removed `useAppStore` import + `layoutEditorOverride` subscription; restored `!isTauri()` gate; restored `F7` keydown match (Ctrl+Shift+L removed).
+  - `src/screens/SettingsScreen.tsx` — removed LAYOUT EDITOR toggle row from `SystemInfo` + the local `hydrateSettings`/`persistSettings`/`layoutEditorEnabled` subscriptions.
+  - `src/store/useAppStore.ts` — removed `layoutEditorEnabled: boolean` from `SettingsValues` type and from default `settingsValues` literal.
+  - The QuitButton → `useLayoutStore` migration **stays** (this is what makes the JSON-edit workflow work in the first place).
+- `npm run build` clean after revert.
+
+**What didn't work / pitfalls hit**
+
+- **Three rounds of editor wiring before the pivot.** Followup 1 (added the SETTINGS toggle + AppShell gate override), followup 2 (sync persist + F7 → Ctrl+Shift+L rebind), then full revert. None of it ended up shipping. In hindsight: when the user's actual need is "nudge this rect by 10 pixels once", the editor UI surface is heavier than just editing the JSON and reading HMR feedback. **Lesson: when the user requests a tool, ask what they need to accomplish with it; the existing build/HMR loop is often a faster path than wiring a new tool surface.**
+- **F7 swallowed by WebView2 Caret Browsing** — confirmed as a real WebView2/Chromium binding. Even after rebinding to Ctrl+Shift+L in followup 2, the keybind approach was abandoned because the editor itself wasn't needed.
+- **localStorage 500ms-debounce window** was the actual cause of the "toggle doesn't persist" symptom in follow-up 2, not a wrong storage key. Correctly diagnosed in followup 2, fix landed (sync `persistSettingsNow()` on toggle click), then made moot by this revert.
+- **Three followups in one session is a lot of code-write-then-throw-away churn.** All of it lives in the git working tree until commit, which makes the final diff confusing if someone reads file-by-file rather than the cumulative net. The revert keeps the actual git history clean (no commits to revert), but the session log carries the full attempt trail.
+
+**Decisions made**
+
+- **Drop the editor-toggle approach entirely.** No SETTINGS row, no Ctrl+Shift+L keybind, no `layoutEditorEnabled` field, no synchronous-persist wiring on toggle. Editor remains gated on `!isTauri()` — its original pre-Session-31 state.
+- **Keep the QuitButton → layout.json migration.** This is the load-bearing piece for HMR-tuning the X-button position. `QuitButton.tsx` reads rect from `useLayoutStore`; `LayoutElements.tsx` skips rendering `quit-button` type; `layout/layout.json` carries the canonical x/y/w/h.
+- **HMR + direct JSON edits is the canonical workflow** for tuning hardware-shell element positions going forward. No editor needed for small numeric adjustments.
+- **X-button position confirmed at x=2437, y=30, w=70, h=70.** Marek may continue nudging via the same workflow without further code changes.
+
+**Open issues / followups**
+
+- None on the layout-editor / quit-button track. Position is set. Workflow is documented above.
+- Pre-existing `src-tauri/src/main.rs` console-suppression edit (`windows_subsystem = "windows"` cfg-gated to release) is still in the working tree from before this session started. Marek's call whether to bundle into this commit or split.
+
+**Files modified (follow-up 3, net effect after revert)**
+
+- `src/layout/layout.json` — `quit-button` `x: 2427 → 2437`.
+- `src/components/layout/AppShell.tsx` — reverted: `!isTauri()` gate restored, F7 handler restored. No net change vs pre-Session-31.
+- `src/screens/SettingsScreen.tsx` — reverted: LAYOUT EDITOR row removed from SystemInfo. No net change vs pre-Session-31.
+- `src/store/useAppStore.ts` — reverted: `layoutEditorEnabled` removed from `SettingsValues` + defaults. Default-project-init changes (Task 1, BPM 96, `createBlankProjectState` seeds SEQ01/TRACK01/PRG01) STAY.
+
+**Net session deliverable after all follow-ups**
+
+What lands in the commit (if Marek says commit):
+1. Default project init on boot + NEW PROJECT (Task 1) — store changes.
+2. ASSIGN sample list scrollbar + auto-scroll selected (Task 2) — `ProgramScreen.tsx`.
+3. QuitButton rect now reads from `useLayoutStore` "quit-button" entry, with fallback constants (was Task 3 expansion → became the foundation for HMR position tuning). Quit-button at x=2437.
+4. Pre-session `main.rs` console suppression — Marek's call.
+
+What does NOT land (reverted within this session):
+- SETTINGS LAYOUT EDITOR toggle row.
+- AppShell editor gate override + Ctrl+Shift+L rebind.
+- `layoutEditorEnabled` field in `SettingsValues`.
+
+Cumulative session diff (final, post-revert): 7 files modified (down from 9 after the editor-toggle revert; SESSION_LOG.md being the 8th). `npm run build` clean.
+
+---
+
 ## Session 30 — 2026-05-22 — Release 1.1.0 — first user-facing Windows shipping build
 
 ### What was attempted

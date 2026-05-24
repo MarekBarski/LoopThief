@@ -122,7 +122,6 @@ type AppState = {
   bpm: number;
   swing: number;
   timingCorrect: "OFF" | "1/4" | "1/8" | "1/16" | "1/32" | "1/4T" | "1/8T" | "1/16T" | "1/32T";
-  quantizeStrength: number;
   tcEnabled: boolean;
   timingApplyTo: "CURRENT TRACK" | "ALL TRACKS";
   noteRepeatEnabled: boolean;
@@ -382,7 +381,6 @@ type AppState = {
   setBpm: (value: number) => void;
   adjustSwing: (delta: number) => void;
   setSwing: (value: number) => void;
-  adjustQuantizeStrength: (delta: number) => void;
   cycleTimingApplyTo: () => void;
   applyTimingCorrectToEvents: () => void;
   openTimeSigWindow: () => void;
@@ -406,7 +404,6 @@ type AppState = {
   cycleNoteRepeatRateBack: () => void;
   adjustNoteRepeatGate: (delta: number) => void;
   setNoteRepeatGate: (value: number) => void;
-  toggleTripletMode: () => void;
   cycleTimingCorrectBack: () => void;
   cycleNoteRepeatVelocityMode: () => void;
   cycleSixteenLevelsParameter: () => void;
@@ -912,10 +909,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   timeSignature: "4/4",
   sequenceName: "SEQ01",
   bar: "001.01.00",
-  bpm: 94,
+  bpm: 96,
   swing: 54,
   timingCorrect: "1/16",
-  quantizeStrength: 100,
   tcEnabled: true,
   timingApplyTo: "CURRENT TRACK",
   noteRepeatEnabled: false,
@@ -2046,7 +2042,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const recording16Active =
           state.isPlaying && (state.isSequenceRecording || state.overdubEnabled) && sourceAssigned;
         if (recording16Active) {
-          const { absTick, stepIndex: pressStep, tickOffset: pressTick } = captureAbsoluteTick(state);
+          const { absTick, stepIndex: pressStep, tickOffset: pressTick } = captureSnappedRecordingPosition(state);
           activeRecordingNotes.set(activeNoteKey(state.padBank, selectedPad), {
             startTickAbsolute: absTick,
             startStepIndex: pressStep,
@@ -2088,7 +2084,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const recordingActive = state.isPlaying && (state.isSequenceRecording || state.overdubEnabled);
       if (recordingActive) {
         const padAssignmentRec = state.padAssignments[state.padBank].find((p) => p.pad === selectedPad);
-        const { absTick, stepIndex: pressStep, tickOffset: pressTick } = captureAbsoluteTick(state);
+        const { absTick, stepIndex: pressStep, tickOffset: pressTick } = captureSnappedRecordingPosition(state);
         activeRecordingNotes.set(activeNoteKey(state.padBank, selectedPad), {
           startTickAbsolute: absTick,
           startStepIndex: pressStep,
@@ -2167,7 +2163,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (recordingStillActive) {
         const sequence = getCurrentSequence(state);
         const seqTotalTicks = getSequenceTotalTicks(sequence);
-        const { absTick: endAbsTick } = captureAbsoluteTick(state);
+        const { absTick: endAbsTick } = captureSnappedRecordingPosition(state);
         let duration =
           endAbsTick >= active.startTickAbsolute
             ? endAbsTick - active.startTickAbsolute
@@ -2571,8 +2567,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...recordUndo(state, "SWING", `swing:${state.currentSequence}`),
       };
     }),
-  adjustQuantizeStrength: (delta) =>
-    set((state) => ({ quantizeStrength: clamp(state.quantizeStrength + delta, 0, 100) })),
   cycleTimingApplyTo: () =>
     set((state) => ({
       timingApplyTo: state.timingApplyTo === "CURRENT TRACK" ? "ALL TRACKS" : "CURRENT TRACK",
@@ -2583,15 +2577,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         return { lastAudioMessage: "TC OFF — nothing to apply" };
       }
       const gridTicks = timingCorrectGridTicks(state.timingCorrect);
+      const sequence = getCurrentSequence(state);
       const targetTrackId = state.timingApplyTo === "CURRENT TRACK" ? state.currentTrackId : null;
       const stepEvents = state.stepEvents
         .map((event) => {
           if (targetTrackId && event.trackId !== targetTrackId) return event;
-          const realTicks = eventStepToTicks(event.step) + event.timingOffset;
+          // Sequence-aware tick math: in non-4/4 bars `eventStepToTicks` walks
+          // per-bar tick counts so the snap boundary lines up with the actual
+          // beat positions (e.g. 3/4 bar = 288 ticks, not 384).
+          const realTicks = eventStepToTicks(event.step, sequence) + event.timingOffset;
           const snappedTicks = Math.round(realTicks / gridTicks) * gridTicks;
           return {
             ...event,
-            step: ticksToStep(snappedTicks),
+            step: ticksToStep(snappedTicks, sequence),
             timingOffset: 0,
           };
         })
@@ -2932,16 +2930,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({ noteRepeatGate: clamp(state.noteRepeatGate + delta, 1, 100) })),
   setNoteRepeatGate: (value) =>
     set(() => ({ noteRepeatGate: clamp(Math.round(value), 1, 100) })),
-  toggleTripletMode: () =>
-    set((state) => {
-      const tripletMode = !state.tripletMode;
-      if (state.timingCorrect === "OFF") {
-        return { tripletMode };
-      }
-      const baseRate = state.timingCorrect.replace("T", "") as "1/4" | "1/8" | "1/16" | "1/32";
-      const timingCorrect = (tripletMode ? `${baseRate}T` : baseRate) as AppState["timingCorrect"];
-      return { tripletMode, timingCorrect };
-    }),
   cycleNoteRepeatVelocityMode: () =>
     set((state) => ({
       noteRepeatVelocityMode: state.noteRepeatVelocityMode === "PAD" ? "FIXED" : "PAD",
@@ -5272,14 +5260,25 @@ function sanitizeProjectName(value: string): string {
 }
 
 function createBlankProjectState(): Partial<AppState> {
+  // Seed a usable starter project: one sequence + one track + one program so
+  // the user lands on MAIN with non-empty SEQ/TRACK/PROGRAM selectors and can
+  // hit REC immediately. Truly empty arrays here used to be the onboarding
+  // killer — user had to manually NEW SEQ, NEW TRACK, NEW PROGRAM first.
+  const sequences = createSequences([]);
   return {
-    sequences: [],
-    currentSequence: "",
+    sequences,
+    currentSequence: "01",
+    sequence: "01",
+    sequenceName: "SEQ01",
+    sequenceLengthBars: 4,
+    timeSignature: "4/4",
+    bpm: 96,
     stepEvents: [],
-    sequenceName: "",
-    programs: [],
-    currentProgramId: "",
-    activeProgram: "",
+    programs: createPrograms(),
+    currentProgramId: "PRG01",
+    activeProgram: "PRG01",
+    currentTrackId: "TRACK01",
+    activeTrack: formatTrackName("TRACK01", 0),
     padAssignments: createPadAssignments(),
     padMixer: createPadMixer(),
     recordedSamples: [],
@@ -5768,18 +5767,53 @@ function eventGlobalStep(step: string, sequence: Sequence, gridTicks: number = 2
   return cumulative + Math.floor(ticksInBar / gridTicks);
 }
 
-function eventStepToTicks(step: string) {
+// "BAR.BEAT.TICK" string ↔ absolute-tick conversions. The optional `sequence`
+// argument enables non-4/4 awareness by walking actual per-bar time signatures
+// (`getBarTickCount` + `getTimeSignatureAtBar`). Without it the helpers fall
+// back to the hardcoded 4/4 grid (384 ticks/bar, 96 ticks/beat) so existing
+// callers that don't carry a sequence reference keep their previous behaviour.
+function eventStepToTicks(step: string, sequence?: Sequence): number {
   const [bar, beat, tick] = step.split(".").map(Number);
-  return (bar - 1) * 384 + (beat - 1) * 96 + tick;
+  if (!sequence) {
+    return (bar - 1) * 384 + (beat - 1) * 96 + tick;
+  }
+  let total = 0;
+  const barIndex = Math.max(0, Math.min(bar - 1, sequence.lengthBars - 1));
+  for (let i = 0; i < barIndex; i += 1) {
+    total += getBarTickCount(sequence, i);
+  }
+  const { den } = getTimeSignatureAtBar(sequence, barIndex);
+  const ticksPerBeat = Math.round((96 * 4) / den);
+  return total + (beat - 1) * ticksPerBeat + tick;
 }
 
-function ticksToStep(ticks: number) {
+function ticksToStep(ticks: number, sequence?: Sequence): string {
   const bounded = Math.max(0, Math.round(ticks));
-  const bar = Math.floor(bounded / 384) + 1;
-  const tickInBar = bounded % 384;
-  const beat = Math.floor(tickInBar / 96) + 1;
-  const tick = tickInBar % 96;
-  return `${String(bar).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`;
+  if (!sequence) {
+    const bar = Math.floor(bounded / 384) + 1;
+    const tickInBar = bounded % 384;
+    const beat = Math.floor(tickInBar / 96) + 1;
+    const tick = tickInBar % 96;
+    return `${String(bar).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`;
+  }
+  let remaining = bounded;
+  let barIndex = 0;
+  while (barIndex < sequence.lengthBars) {
+    const barTicks = getBarTickCount(sequence, barIndex);
+    if (remaining < barTicks) break;
+    remaining -= barTicks;
+    barIndex += 1;
+  }
+  if (barIndex >= sequence.lengthBars) {
+    // Tick past sequence end — clamp to last tick of last bar.
+    barIndex = Math.max(0, sequence.lengthBars - 1);
+    remaining = Math.max(0, getBarTickCount(sequence, barIndex) - 1);
+  }
+  const { den } = getTimeSignatureAtBar(sequence, barIndex);
+  const ticksPerBeat = Math.round((96 * 4) / den);
+  const beat = Math.floor(remaining / ticksPerBeat) + 1;
+  const tick = remaining % ticksPerBeat;
+  return `${String(barIndex + 1).padStart(3, "0")}.${String(beat).padStart(2, "0")}.${String(tick).padStart(2, "0")}`;
 }
 
 function offsetStepEvent(event: StepEvent, offsetTicks: number): StepEvent {
@@ -5799,23 +5833,6 @@ function uniqueSongTracks(state: AppState) {
     sequence?.tracks.forEach((track) => tracks.set(track.id, { ...track }));
   });
   return [...tracks.values()];
-}
-
-function createRecordedPadEvent(state: AppState, pad: string, velocity: number) {
-  const position = getRecordedEventPosition(state);
-  const assignment = state.padAssignments[state.padBank].find((item) => item.pad === pad);
-  return createStepEventAtPosition(position.stepIndex, position.tickOffset, pad, velocity, state.noteRepeatGate, {
-    sequence: getCurrentSequence(state),
-    trackId: state.currentTrackId,
-    trackName: getTrackName(getCurrentSequence(state), state.currentTrackId),
-    sourcePad: pad,
-    sourceAssignment: assignment?.assignment === "---" ? undefined : assignment?.assignment,
-    padBank: state.padBank,
-    programId: state.currentProgramId,
-    variation: "REC",
-    duration: 0,
-    length: 0,
-  });
 }
 
 function getRecordedEventPosition(state: AppState) {
@@ -5860,6 +5877,36 @@ function timingCorrectGridTicks(timingCorrect: AppState["timingCorrect"]): numbe
   }
 }
 
+// Pure tick→tick snap to the current TC grid. TC=OFF returns the raw tick
+// (preserves human timing). All other values round to the nearest grid
+// boundary. Operates in absolute sequence-tick space.
+function snapTickToTC(absTick: number, timingCorrect: AppState["timingCorrect"]): number {
+  if (timingCorrect === "OFF") return absTick;
+  const gridTicks = timingCorrectGridTicks(timingCorrect);
+  return Math.round(absTick / gridTicks) * gridTicks;
+}
+
+// Press/release capture for live recording. Applies TC snap on top of the
+// raw captureAbsoluteTick() reading, then wraps within the sequence's total
+// tick count so a snap that rounds past the end of the loop lands on the
+// downbeat of bar 1 (next loop iteration) instead of an out-of-range step.
+// TC=OFF preserves raw timing — same shape as `captureAbsoluteTick`.
+function captureSnappedRecordingPosition(state: AppState): { absTick: number; stepIndex: number; tickOffset: number } {
+  const raw = captureAbsoluteTick(state);
+  if (state.timingCorrect === "OFF") return raw;
+  const snapped = snapTickToTC(raw.absTick, state.timingCorrect);
+  const sequence = getCurrentSequence(state);
+  const sequenceTicks = getSequenceTotalTicks(sequence);
+  const bounded = sequenceTicks > 0
+    ? ((snapped % sequenceTicks) + sequenceTicks) % sequenceTicks
+    : 0;
+  return {
+    absTick: bounded,
+    stepIndex: Math.floor(bounded / 24),
+    tickOffset: bounded % 24,
+  };
+}
+
 function repeatIntervalSteps(rate: AppState["timingCorrect"]) {
   switch (rate) {
     case "1/4":
@@ -5883,25 +5930,29 @@ function repeatIntervalSteps(rate: AppState["timingCorrect"]) {
   }
 }
 
+// Single unified cycle list, MPC-style: coarse → fine, with each non-triplet
+// value followed immediately by its triplet equivalent. PREV/NEXT walks one
+// step at a time through every value. The previous two-list design (gated on
+// `state.tripletMode`) hid triplets behind a separate toggle that only lived
+// in NOTE REPEAT screen — surfaced never in the TC screen. Removed in favour
+// of this single visible cycle.
 function cycleTimingCorrectPatch(
   state: AppState,
   delta: number,
   options: { includeOff: boolean },
 ): Partial<AppState> {
-  const nonTriplet: AppState["timingCorrect"][] = options.includeOff
-    ? ["OFF", "1/4", "1/8", "1/16", "1/32"]
-    : ["1/4", "1/8", "1/16", "1/32"];
-  const triplet: AppState["timingCorrect"][] = options.includeOff
-    ? ["OFF", "1/4T", "1/8T", "1/16T", "1/32T"]
-    : ["1/4T", "1/8T", "1/16T", "1/32T"];
-  const values = state.tripletMode ? triplet : nonTriplet;
+  const values: AppState["timingCorrect"][] = options.includeOff
+    ? ["OFF", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"]
+    : ["1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"];
   const currentIdx = values.indexOf(state.timingCorrect);
   const startIdx = currentIdx === -1 ? 0 : currentIdx;
   const nextIdx = (startIdx + delta + values.length) % values.length;
   const timingCorrect = values[nextIdx];
+  const tripletMode = timingCorrect.endsWith("T");
   return {
     timingCorrect,
     tcEnabled: timingCorrect !== "OFF",
+    tripletMode,
   };
 }
 
@@ -7301,7 +7352,7 @@ function createStepEvents(): StepEvent[] {
 
 function createSequences(firstSequenceEvents = createStepEvents()): Sequence[] {
   return [
-    createSequence("01", "SEQ01", 94, firstSequenceEvents),
+    createSequence("01", "SEQ01", 96, firstSequenceEvents),
   ];
 }
 

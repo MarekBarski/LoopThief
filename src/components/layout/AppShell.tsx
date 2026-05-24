@@ -31,6 +31,8 @@ export function AppShell() {
 
   // Layout editor is dev-only — disabled inside Tauri so the shipping .exe
   // can't accidentally enter edit mode (no F7 toggle, no overlay rendered).
+  // Layout positions are now tuned by editing src/layout/layout.json directly
+  // and watching the HMR preview in `npm run dev`.
   const layoutEditorEnabled = !isTauri();
 
   useEffect(() => {

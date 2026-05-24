@@ -464,7 +464,6 @@ export function NoteRepeatUtilityScreen() {
   const timingCorrect = useAppStore((s) => s.timingCorrect);
   const swing = useAppStore((s) => s.swing);
   const noteRepeatGate = useAppStore((s) => s.noteRepeatGate);
-  const tripletMode = useAppStore((s) => s.tripletMode);
   const noteRepeatVelocityMode = useAppStore((s) => s.noteRepeatVelocityMode);
   const cycleNoteRepeatRate = useAppStore((s) => s.cycleNoteRepeatRate);
   const cycleNoteRepeatRateBack = useAppStore((s) => s.cycleNoteRepeatRateBack);
@@ -472,7 +471,6 @@ export function NoteRepeatUtilityScreen() {
   const setNoteRepeatGate = useAppStore((s) => s.setNoteRepeatGate);
   const adjustSwing = useAppStore((s) => s.adjustSwing);
   const setSwing = useAppStore((s) => s.setSwing);
-  const toggleTripletMode = useAppStore((s) => s.toggleTripletMode);
   const cycleNoteRepeatVelocityMode = useAppStore((s) => s.cycleNoteRepeatVelocityMode);
   const exit = useAppStore((s) => s.exitUtilityWorkflow);
   return (
@@ -505,14 +503,13 @@ export function NoteRepeatUtilityScreen() {
               onCommit: setSwing,
             }}
           />
-          <ArrowRow label="TRIPLET" value={tripletMode ? "ON" : "OFF"} onPrev={toggleTripletMode} onNext={toggleTripletMode} />
           <ArrowRow label="VELOCITY MODE" value={noteRepeatVelocityMode} onPrev={cycleNoteRepeatVelocityMode} onNext={cycleNoteRepeatVelocityMode} />
         </section>,
         [
           { label: "F1 RATE", onClick: cycleNoteRepeatRate },
           { label: "F2 GATE", onClick: () => adjustNoteRepeatGate(5) },
           { label: "F3 SWING", onClick: () => adjustSwing(1) },
-          { label: "F4 TRIPLET", onClick: toggleTripletMode },
+          { label: "F4", onClick: undefined },
           { label: "F5 VELOCITY", onClick: cycleNoteRepeatVelocityMode },
           { label: "F6 EXIT", onClick: exit },
         ],

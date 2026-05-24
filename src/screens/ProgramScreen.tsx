@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -294,20 +294,15 @@ export function ProgramScreen() {
                   </button>
                 ))}
               </AssignColumn>
-              <AssignColumn title="AVAILABLE SOURCES">
+              <AssignColumn title="AVAILABLE SOURCES" scrollable>
                 {activeSources.length === 0 ? (
                   <p className="text-[#91a477]">--- EMPTY ---</p>
                 ) : (
-                  activeSources.map((source, index) => (
-                    <button
-                      key={source}
-                      type="button"
-                      onClick={() => setSourceIndex(index)}
-                      className={`text-left ${index === sourceIndex ? "bg-amber-200/10 text-amber-100" : "text-[#d8e3b7] hover:bg-black/30"}`}
-                    >
-                      {source}
-                    </button>
-                  ))
+                  <AssignSourceList
+                    sources={activeSources}
+                    sourceIndex={sourceIndex}
+                    onSelect={setSourceIndex}
+                  />
                 )}
               </AssignColumn>
               <AssignColumn title="TARGET">
@@ -365,12 +360,62 @@ export function ProgramScreen() {
   );
 }
 
-function AssignColumn({ title, children }: { title: string; children: ReactNode }) {
+function AssignColumn({
+  title,
+  children,
+  scrollable,
+}: {
+  title: string;
+  children: ReactNode;
+  scrollable?: boolean;
+}) {
+  if (scrollable) {
+    // Two-row grid: header stays pinned, body scrolls. Used by AVAILABLE
+    // SOURCES which can hold 64+ entries after a multi-bank CHOP.
+    return (
+      <div className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20 p-[10px]">
+        <p className="border-b border-[#46533b] pb-[6px] text-[#91a477]">{title}</p>
+        <div className="grid min-h-0 content-start gap-[8px] overflow-y-auto pt-[8px]">
+          {children}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[10px]">
       <p className="border-b border-[#46533b] pb-[6px] text-[#91a477]">{title}</p>
       {children}
     </div>
+  );
+}
+
+function AssignSourceList({
+  sources,
+  sourceIndex,
+  onSelect,
+}: {
+  sources: readonly string[];
+  sourceIndex: number;
+  onSelect: (index: number) => void;
+}) {
+  const selectedRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: "nearest" });
+  }, [sourceIndex]);
+  return (
+    <>
+      {sources.map((source, index) => (
+        <button
+          key={source}
+          ref={index === sourceIndex ? selectedRef : null}
+          type="button"
+          onClick={() => onSelect(index)}
+          className={`text-left ${index === sourceIndex ? "bg-amber-200/10 text-amber-100" : "text-[#d8e3b7] hover:bg-black/30"}`}
+        >
+          {source}
+        </button>
+      ))}
+    </>
   );
 }
 

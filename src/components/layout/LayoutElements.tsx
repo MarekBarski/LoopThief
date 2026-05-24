@@ -75,6 +75,15 @@ function LayoutElementView({ element, editMode }: { element: LayoutElement; edit
     height: element.h,
   };
 
+  if (element.type === "quit-button") {
+    // QuitButton renders itself in AppShell (separate component owns the
+    // disabled/transport-blocked logic). The layout entry exists so the F7
+    // editor can drag/resize it; the actual button reads x/y/w/h directly
+    // from the layout store. Skip rendering here to avoid a stub button
+    // overlapping the real one.
+    return null;
+  }
+
   if (element.type === "lcd") {
     return (
       <div className="absolute" style={commonStyle}>

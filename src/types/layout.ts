@@ -8,7 +8,8 @@ export type LayoutElementType =
   | "pad"
   | "bank"
   | "logo"
-  | "mascot";
+  | "mascot"
+  | "quit-button";
 
 export type LayoutElement = {
   id: string;
