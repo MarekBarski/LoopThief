@@ -1,5 +1,6 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { isPadVisuallyTriggered, useAppStore } from "../store/useAppStore";
+import { samplerEngine } from "../audio/samplerEngine";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 import { EditableNumber } from "../components/EditableNumber";
@@ -172,6 +173,44 @@ function ChannelStrip({
   onMute: () => void;
   onSolo: () => void;
 }) {
+  // L1 lag fix — direct samplerEngine writes during drag so the user hears
+  // the slider/knob move in real time WITHOUT forcing a per-pointermove
+  // Zustand mutation (which fans out to 16 ChannelStrip re-renders +
+  // syncCurrentProgram + recordUndo per drag pixel and starves the
+  // sequencer tickStepPlayback setInterval on the JS main thread).
+  //
+  // Channel key + audible state are read imperatively from the store on
+  // each call — cheap and avoids extra subscriptions. The store write
+  // happens once on pointerup via the existing onLevel / onPan callbacks
+  // which route through setMixerChannelValue (heavy-but-one-shot).
+  //
+  // Tradeoff: a voice that spawns mid-drag uses the PRE-drag store level
+  // for its initial gain (because playAssignedPadWithContext reads from
+  // store, not from the direct-audio path). The next pointermove sweeps
+  // it to the dragged level. Brief discontinuity is acceptable per spec.
+  const directAudioLevel = (level: number) => {
+    const state = useAppStore.getState();
+    const key = state.currentProgramId
+      ? `${state.currentProgramId}:${state.padBank}:${channel.pad}`
+      : `${state.padBank}:${channel.pad}`;
+    // gain scaling matches syncMixerBankToAudio (level / 100, not / 127).
+    samplerEngine.updateChannelMix(key, {
+      gain: level / 100,
+      pan: channel.pan / 64,
+      audible,
+    });
+  };
+  const directAudioPan = (pan: number) => {
+    const state = useAppStore.getState();
+    const key = state.currentProgramId
+      ? `${state.currentProgramId}:${state.padBank}:${channel.pad}`
+      : `${state.padBank}:${channel.pad}`;
+    samplerEngine.updateChannelMix(key, {
+      gain: channel.level / 100,
+      pan: pan / 64,
+      audible,
+    });
+  };
   return (
     <div
       onPointerDown={onSelect}
@@ -180,8 +219,8 @@ function ChannelStrip({
       } ${audible ? "" : "opacity-45"}`}
     >
       <span>{channel.pad.slice(1)}</span>
-      <PanKnob value={channel.pan} onChange={onPan} />
-      <Fader value={channel.level} onChange={onLevel} />
+      <PanKnob value={channel.pan} onChange={onPan} onDragAudio={directAudioPan} />
+      <Fader value={channel.level} onChange={onLevel} onDragAudio={directAudioLevel} />
       <div
         onPointerDown={(event) => event.stopPropagation()}
         className="grid place-items-center"
@@ -246,34 +285,88 @@ function ChannelStrip({
   );
 }
 
-function Fader({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function Fader({
+  value,
+  onChange,
+  onDragAudio,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onDragAudio?: (value: number) => void;
+}) {
+  // L1 lag fix — local drag state. Display follows the cursor; only the
+  // pointerup commits to the store via onChange. Direct audio is driven
+  // by onDragAudio at each pointermove. See ChannelStrip comment for full
+  // rationale.
+  const [dragValue, setDragValue] = useState<number | null>(null);
+  const displayValue = dragValue ?? value;
   return (
     <div
-      onPointerDown={(event) => beginVerticalDrag(event, value, onChange, 0, 127)}
+      onPointerDown={(event) =>
+        beginVerticalDrag(
+          event,
+          displayValue,
+          (v) => {
+            setDragValue(v);
+            onDragAudio?.(v);
+          },
+          0,
+          127,
+          (finalValue) => {
+            onChange(finalValue);
+            setDragValue(null);
+          },
+        )
+      }
       className="relative mx-auto h-full min-h-[86px] w-[14px] cursor-ns-resize border border-[#46533b] bg-black/35"
     >
-      <div className="absolute inset-x-[3px] bottom-0 bg-[#91a477]" style={{ height: `${(value / 127) * 100}%` }} />
+      <div className="absolute inset-x-[3px] bottom-0 bg-[#91a477]" style={{ height: `${(displayValue / 127) * 100}%` }} />
       <div
         className="absolute left-[-3px] right-[-3px] h-[5px] bg-[#eef6d8]"
-        style={{ bottom: `calc(${(value / 127) * 100}% - 2px)` }}
+        style={{ bottom: `calc(${(displayValue / 127) * 100}% - 2px)` }}
       />
     </div>
   );
 }
 
-function PanKnob({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function PanKnob({
+  value,
+  onChange,
+  onDragAudio,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onDragAudio?: (value: number) => void;
+}) {
+  const [dragValue, setDragValue] = useState<number | null>(null);
+  const displayValue = dragValue ?? value;
   return (
     <div
-      onPointerDown={(event) => beginHorizontalDrag(event, value, onChange, -50, 50)}
+      onPointerDown={(event) =>
+        beginHorizontalDrag(
+          event,
+          displayValue,
+          (v) => {
+            setDragValue(v);
+            onDragAudio?.(v);
+          },
+          -50,
+          50,
+          (finalValue) => {
+            onChange(finalValue);
+            setDragValue(null);
+          },
+        )
+      }
       className="grid cursor-ew-resize gap-[2px]"
     >
       <div className="relative mx-auto h-[15px] w-[15px] rounded-full border border-[#46533b]">
         <span
           className="absolute left-1/2 top-1/2 h-[6px] w-px origin-bottom bg-[#eef6d8]"
-          style={{ transform: `translate(-50%, -100%) rotate(${value * 1.35}deg)` }}
+          style={{ transform: `translate(-50%, -100%) rotate(${displayValue * 1.35}deg)` }}
         />
       </div>
-      <span>{formatPan(value)}</span>
+      <span>{formatPan(displayValue)}</span>
     </div>
   );
 }
@@ -301,43 +394,57 @@ function Meter({ active, level: targetLevel }: { active: boolean; level: number 
 function beginVerticalDrag(
   event: ReactPointerEvent,
   initialValue: number,
-  onChange: (value: number) => void,
+  onMove: (value: number) => void,
   min: number,
   max: number,
+  onEnd?: (finalValue: number) => void,
 ) {
   event.preventDefault();
   event.stopPropagation();
   const startY = event.clientY;
+  // Track the most-recent dragged value in the closure so onEnd can pass
+  // it to the caller (commit-on-release). Without this, onEnd would only
+  // know the initialValue.
+  let lastValue = initialValue;
   const move = (moveEvent: PointerEvent) => {
     const delta = startY - moveEvent.clientY;
-    onChange(Math.round(clamp(initialValue + delta * 1.2, min, max)));
+    lastValue = Math.round(clamp(initialValue + delta * 1.2, min, max));
+    onMove(lastValue);
   };
-  bindDrag(move);
+  bindDrag(move, () => onEnd?.(lastValue));
 }
 
 function beginHorizontalDrag(
   event: ReactPointerEvent,
   initialValue: number,
-  onChange: (value: number) => void,
+  onMove: (value: number) => void,
   min: number,
   max: number,
+  onEnd?: (finalValue: number) => void,
 ) {
   event.preventDefault();
   event.stopPropagation();
   const startX = event.clientX;
+  let lastValue = initialValue;
   const move = (moveEvent: PointerEvent) => {
     const delta = moveEvent.clientX - startX;
-    onChange(Math.round(clamp(initialValue + delta * 0.7, min, max)));
+    lastValue = Math.round(clamp(initialValue + delta * 0.7, min, max));
+    onMove(lastValue);
   };
-  bindDrag(move);
+  bindDrag(move, () => onEnd?.(lastValue));
 }
 
-function bindDrag(move: (event: PointerEvent) => void) {
+function bindDrag(move: (event: PointerEvent) => void, onEnd?: () => void) {
   const end = () => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", end);
+    onEnd?.();
   };
   window.addEventListener("pointermove", move);
+  // Window-bound pointerup fires for releases anywhere on screen — including
+  // the case "user drags off the component then releases", so we don't need
+  // a separate pointerleave handler. pointerup is the canonical "drag ended"
+  // signal.
   window.addEventListener("pointerup", end, { once: true });
 }
 

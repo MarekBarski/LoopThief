@@ -99,6 +99,111 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 36 — 2026-05-24 — MIX slider/knob drag lag fix (L1: local drag state + direct samplerEngine, commit on release)
+
+### What was attempted
+
+Pre-existing performance bug: dragging the per-pad VOLUME fader or PAN knob in MIX during PLAY caused sequencer stutter / audio voice timing jitter. Root cause documented in the prior audit — every pointermove fired `setMixerChannelValue` which on EACH tick:
+1. Rebuilt the 16-channel padMixer bank array.
+2. Called `syncMixerBankToAudio` (16× AudioParam writes, only one channel actually changed).
+3. Rebuilt the `programs` array via `syncCurrentProgram(state, { padMixer })`.
+4. Pushed a new `lastAction` / `projectVersion` / `undoHistory` reference via `recordUndo`.
+5. Re-rendered 17 components subscribed to padMixer (MIX header + 16× ChannelStrip).
+
+At 60Hz pointermove × ~3-5ms React reconciliation per tick = 18-30ms of JS main-thread work between sequencer ticks. `RuntimeClock.tsx:23` runs `setInterval(tickStepPlayback, 125ms @ 120BPM)` on the same JS main thread — drag bursts starved the sequencer's wake-up, voices fired late, user perceived stutter.
+
+Pre-existing since the action's introduction in `f1630ed feat: add interactive pad mixer workflow`. Not a Session 33-35 regression.
+
+Spec: Option L1 from the audit — local drag state in the input components + direct `samplerEngine.updateChannelMix` writes during drag + single commit to store on pointerup.
+
+### What worked
+
+**1. Local drag state in `Fader` + `PanKnob`.**
+
+Each component now owns a `useState<number | null>` (`dragValue`). While dragging, the display reads from this local state; on pointerup it clears, and the displayed value reverts to the `value` prop (store-driven). No React re-render storm: only the dragging component re-renders during the drag.
+
+**2. Direct `samplerEngine.updateChannelMix` during drag.**
+
+`ChannelStrip` provides two callbacks — `directAudioLevel(level)` and `directAudioPan(pan)` — passed to `Fader` and `PanKnob` as `onDragAudio`. Each callback reads `state.currentProgramId` and `state.padBank` imperatively via `useAppStore.getState()` (no subscription, no re-render trigger) and writes directly to the AudioParam:
+
+```ts
+samplerEngine.updateChannelMix(channelKey, {
+  gain: level / 100,
+  pan: channel.pan / 64,
+  audible,
+});
+```
+
+`samplerEngine.updateChannelMix` (line 134 in `samplerEngine.ts`) iterates active voices for the matching channelKey and sets `voice.channelGain.gain.value` + `voice.pan.pan.value`. Live voices follow the drag in real time.
+
+Channel key composition matches `mixerChannelKey` (private function in `useAppStore.ts`): `${programId}:${bank}:${pad}` when programId present else `${bank}:${pad}`. Inlined as a 1-line template literal instead of widening the store's export surface.
+
+**3. Commit on pointerup via existing `onChange`.**
+
+`beginVerticalDrag` / `beginHorizontalDrag` got an `onEnd?(finalValue)` callback parameter. The drag helpers track the most-recent dragged value in a closure-captured `lastValue` variable; on `pointerup` (via `bindDrag`'s end handler) they pass `lastValue` to `onEnd`. `Fader` / `PanKnob` use this to call `onChange(finalValue)` (which routes through `setMixerChannelValue` → the existing heavy mutation path) ONCE per drag, then clear `dragValue` state.
+
+Result: 1 store write per drag instead of N. 1 undo entry per drag instead of N coalesced into one bucket. 1 burst of 17-component re-render on release instead of 17 per pointermove.
+
+**4. Pointer-leaves-component-mid-drag handled by window-bound `pointerup`.**
+
+The drag listeners were already window-bound (`window.addEventListener("pointerup", end, { once: true })`), so a release anywhere on the page fires the end handler. No need for an explicit `pointerleave` handler. The user can drag off the component and release elsewhere — the commit still fires.
+
+**Build validation:**
+- `npm run build` clean (2.21 s).
+- `cargo check` not re-run; Rust untouched.
+
+### What didn't work / pitfalls hit
+
+- **`lastValue` closure trap.** First instinct was to read drag value inside the React component's `useState` via a follow-up effect. That fails because the closure passed to `bindDrag` captures the initial state, not the latest. The clean fix is to track `lastValue` inside `beginVerticalDrag` / `beginHorizontalDrag` (the closure that lives for the duration of the drag) and pass it to `onEnd`. Pattern works for both helpers.
+- **Voices spawned mid-drag use pre-drag store level.** `playAssignedPadWithContext` reads `mix.level` and `mix.pan` from the store (not from any live AudioParam state). During a drag, the store hasn't moved yet — only the live voices' AudioParam values have, via the direct samplerEngine path. A pad triggering mid-drag therefore spawns a voice at the OLD store level, and the very next pointermove sweeps it to the dragged level via `updateChannelMix` (which iterates all matching voices). Brief discontinuity, perceptually minor. Spec accepted this tradeoff explicitly ("audio updates live via direct samplerEngine bypass"); flagged for completeness.
+- **Skipped throttling.** Spec said "Do NOT add throttling on top of L1". The local-drag-state approach already eliminates the React reconciliation cost; pointer-input rate doesn't matter once the heavy mutation is gone. Confirmed by reading the spec twice before deferring.
+- **`directAudioLevel` and `directAudioPan` are defined fresh each render.** Closure recreation per render of ChannelStrip. Not memoized. Fine — the drag handlers capture the callback once at pointerdown, and React's re-render-via-prop-change doesn't tear down active drag handlers. Memoizing would be premature; the channel-strip render itself is cheap.
+
+### Decisions made
+
+- **Inline `mixerChannelKey` formula** (1-line template literal) in ChannelStrip instead of widening the store's export surface. Trivial code; if the key format ever changes, two places to update — acceptable.
+- **Read `state.padBank` + `state.currentProgramId` via `useAppStore.getState()` imperatively** in the direct-audio callbacks instead of subscribing in ChannelStrip. No subscription, no re-render trigger when those change mid-drag (which doesn't happen — they're stable while MIX is mounted).
+- **`audible` snapshot from prop** at callback-creation time. If solo/mute changes mid-drag, the direct-audio path uses stale audibility for the rest of the drag. On pointerup the store write resyncs everything via `syncMixerBankToAudio` so the next state is correct. Acceptable for the rare "user drags fader while another user-action toggles solo" case.
+- **`pointerleave`-as-pointerup not added.** Window-bound `pointerup` covers the "drag off then release" case. Adding pointerleave would also need to track whether the user is still dragging or just hovered out → unnecessary complication.
+- **`onDragAudio` is optional.** If a future caller doesn't want live-audio (e.g. a fader controlling something without an AudioParam mapping), the prop can be omitted — drag still works as visual-only with commit-on-release.
+
+### Open issues / followups
+
+**Marek runtime test (lag fix acceptance):**
+
+1. Boot app, load any project with audio, switch to MIX screen.
+2. Press PLAY. Sequence rolling.
+3. Drag a pad's volume fader rapidly up and down for ~5 seconds while sequence plays.
+   - Expected: no audio stutter, no voice timing jitter.
+   - Expected: fader visually follows the cursor smoothly.
+   - Expected: audio level for sustained / re-triggering voices on that pad follows the drag in real time.
+4. Release the drag.
+   - Expected: fader stays at the dropped position. Voices use the new level.
+   - Expected: STEP screen / DISK shows the new static level persisted.
+5. Repeat with pan knob — same expectations.
+6. Drag pad volume → drag pad pan → drag another pad volume in rapid succession during playback.
+   - Expected: no stutter at any drag transition.
+7. Drag pad volume far off the component (e.g. release outside the MIX viewport).
+   - Expected: pointerup anywhere commits the final value, drag ends cleanly, no stuck state.
+8. After dragging, press Ctrl+Z (undo).
+   - Expected: ONE undo step reverts to the pre-drag level. NOT N undo steps.
+9. Quit + reload project.
+   - Expected: dragged static level persisted to disk.
+
+**Deferred / known tradeoffs:**
+
+- **Voices spawned mid-drag use pre-drag store level.** Documented above. Next pointermove sweeps them via the direct-audio iteration.
+- **EditableNumber inputs** in MIX header + ChannelStrip (VOL / PAN / SEND number-typing fields) still route through `setMixerChannelValue` (no debounce). They commit on Enter/blur, not per-keystroke, so they're not in the hot path. Untouched.
+- **Automation retry** (Session 35 reverted, stash preserved) is a SEPARATE session. The L1 drag-state pattern landed here is reusable when automation retry begins — same Fader/PanKnob with `onChange` that can branch between "static mixer commit" (current) and "active-event paramValue commit" (future).
+
+### Files modified
+
+- `src/screens/MixScreen.tsx` — `samplerEngine` import added. `ChannelStrip` got `directAudioLevel` + `directAudioPan` callbacks. `Fader` and `PanKnob` got local `dragValue` state, render `displayValue = dragValue ?? value`, pointerDown threads onMove (sets local + onDragAudio) + onEnd (commits via onChange + clears local). `beginVerticalDrag` / `beginHorizontalDrag` track `lastValue` in closure and pass to `onEnd(finalValue)`. `bindDrag` accepts `onEnd?` callback.
+
+Single file change. `npm run build` clean.
+
+---
+
 ## Session 34 — 2026-05-24 — Mute Groups 16 — Per-pad cross-bank mutual muting
 
 ### What was attempted
