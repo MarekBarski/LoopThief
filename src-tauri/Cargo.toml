@@ -46,6 +46,13 @@ cpal = "0.15"
 ringbuf = "0.4"
 crossbeam-channel = "0.5"
 
+# Cross-platform user-directory resolution. Used by the in-LCD file browser
+# (`fs_browser` module) to resolve the Desktop folder via `dirs::desktop_dir()`.
+# Beats hand-rolling `%USERPROFILE%\Desktop` joins, which break on localised
+# Windows installations where Desktop is redirected (OneDrive, custom shells)
+# and on Linux where Desktop may not exist at all.
+dirs = "5"
+
 # Full release-build optimisation. Slower compile (~2-3× vs default)
 # but smaller / faster runtime. Marek's hypothesis: this may shrink the
 # 3 s dialog-open lag if any of the cost lives in non-LTO'd plugin code.

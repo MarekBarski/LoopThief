@@ -99,6 +99,183 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 33 — 2026-05-24 — In-LCD file browser Sub-phase A — native filesystem commands
+
+### What was attempted
+
+Sub-phase A of the in-LCD file browser feature (full spec: replace ALL native OS file dialogs across save/load with a custom LCD-aesthetic component, solving Session 23's ~3 s `IFileSaveDialog` lag AND enabling audio preview for sample loading — neither possible while WebView2 renders HTML `<input type="file">` as the native Windows dialog).
+
+This session = **Rust filesystem command surface only**. No frontend changes, no migration of existing flows. The React FileBrowser component, mode-driven UI, preview wiring, and migration of HTML file inputs + the custom `save_file_dialog` command live in Sub-phases B / C / D, separate sessions.
+
+### What worked
+
+**1. New module `src-tauri/src/fs_browser.rs` (~330 LOC).**
+
+Six Tauri commands behind a serde-stable bridge:
+
+```
+fs_list_locations(force_refresh?: bool) -> Vec<FsLocation>
+fs_list_directory(path, extensions: Vec<String>) -> Vec<FsEntry>
+fs_read_file_bytes(path) -> Vec<u8>
+fs_write_file_bytes(path, bytes: Vec<u8>) -> ()
+fs_create_folder(path) -> ()
+fs_path_exists(path) -> bool
+```
+
+All commands `async` so the WebView event loop stays responsive even on slow USB / network drives.
+
+**2. Locations enumeration — minimal-dep approach.**
+
+- **Windows:** raw `extern "system" { fn GetLogicalDrives() -> u32; }` (~5 LOC) instead of pulling `windows-sys` (~MB of bindings). Each set bit `i` maps to drive letter `'A' + i`. Each candidate drive is probed via `read_dir().is_err()` to skip empty CD-ROM / card reader drive letters that show in the bitmask but have no media.
+- **Linux:** parse `/proc/mounts` line-by-line. Filter pseudo-filesystems (`proc`, `sysfs`, `devtmpfs`, `tmpfs`, `cgroup*`, `fuse*`, `pstore`, `snap`, etc. — full list in module) and skip path prefixes `/proc`, `/sys`, `/dev`, `/run/lock`, `/run/user`, `/snap`. Each remaining mount gets a `read_dir` probe to filter unreadable ones (perm-denied auto-mounts).
+- **Desktop shortcut:** appended via `dirs::desktop_dir()` after the OS-specific drive/mount list. Cross-platform — handles locale-redirected Windows Desktop (OneDrive, custom shells) and Linux setups where Desktop may not exist.
+
+Result shape per location: `{ label, path, kind: "Drive" | "MountPoint" | "Shortcut" }`. The two enum variants `Drive` / `Shortcut` are populated on every platform; `MountPoint` is Linux-only and gets `#[allow(dead_code)]` to suppress the Windows-build warning.
+
+**3. Locations cache — `Mutex<Option<Vec<FsLocation>>>` in `LocationsCache` struct.**
+
+Tauri-managed via `.manage(LocationsCache::new())` in `lib.rs:259`. First call to `fs_list_locations` builds and caches; subsequent calls return the clone. `force_refresh = true` rebuilds. This is the path the future F4 REFRESH softkey will use for hot-plug USB detection.
+
+**4. Directory listing — `fs_list_directory`.**
+
+`std::fs::read_dir` filtered by case-insensitive extension list. Directories always pass (navigation requirement); files match against the provided extensions. Empty extension list = "no filter" path for future "show all" modes.
+
+Sort: directories first, then files, both case-insensitively alphabetised. Matches MPC convention. Each entry returns `{ name, path, is_dir, size_bytes?, modified?, duration_ms? }`. `modified` is ISO-8601 UTC, computed without pulling `chrono` (manual Howard-Hinnant civil-from-days algorithm, ~15 LOC). `duration_ms` is computed for `.wav` / `.wave` files only.
+
+**5. WAV duration parser — inline RIFF walker (~50 LOC).**
+
+Reads RIFF/WAVE header, walks chunks looking for `fmt ` and `data`. Skips unknown chunks (LIST/INFO/etc.) with proper even-byte padding. Computes duration as `data_size * 1000 / byte_rate` (most reliable). Falls back to `data_size * 1000 / (sample_rate * 2)` (assumes 16-bit mono) if `byte_rate` is unavailable in the fmt chunk. Returns `Ok(ms)` or `Err`; the caller turns errors into `None` so malformed WAVs don't break the listing.
+
+Skipped `hound` crate — would be the only consumer of it, and the inline parse handles all the variants Marek's likely to encounter. If extensible WAVE / loop-point / cue-list parsing is ever needed, switch then.
+
+**6. `fs_create_folder` uses `create_dir` (not `create_dir_all`).**
+
+Refuses to materialise a missing parent chain. The UI in B/C will navigate via existing dirs only, so the user never legitimately needs to create N levels at once.
+
+**7. Cargo deps: `dirs = "5"` added.**
+
+Pulls in `dirs-sys` (~50KB) for the Desktop folder resolver. Cross-platform; handles Windows locale redirects + missing Linux Desktops cleanly. Confirmed by Marek explicitly: "YES, add it. Cross-platform Desktop resolution is worth one small dep."
+
+**8. Registered in `lib.rs`.**
+
+- `mod fs_browser;` at top.
+- `.manage(LocationsCache::new())` alongside the existing `AudioEngineState`.
+- Six commands added to `tauri::generate_handler![]` at line 258+.
+
+**9. Build validation.**
+
+- `cargo check` clean (1.17 s incremental, 23 s cold).
+- `npm run build` clean (2.21 s — frontend untouched, sanity-check).
+- Two transient warnings fixed: unused `Deserialize` import (only `Serialize` needed) and the `MountPoint` dead-code false-positive on Windows.
+
+### What didn't work / pitfalls hit
+
+- **`windows-sys` would have been overkill.** Considered briefly for the `GetLogicalDrives` call. Even with feature gating, it pulls hundreds of KB of bindings for one function. Raw `extern "system"` decl is 5 lines and stable across Windows versions. No regret.
+- **`dirs::desktop_dir()` returns `None` on headless Linux** with no XDG environment. Handled — the Desktop entry is appended only when `desktop.exists()` returns true. Headless / server installs just don't see Desktop in the sidebar.
+- **`tauri::State` requires `Send + Sync`**, which `Mutex<Option<Vec<FsLocation>>>` satisfies but the `LocationsCache` struct needed to wrap it explicitly (not a tuple struct, not `static mut`). Initial attempt with `OnceCell` was cleaner but failed the trait bound since `OnceCell<RefCell<...>>` isn't `Sync`. `Mutex` is the canonical Tauri-State pattern, kept it simple.
+- **ISO-8601 without `chrono`.** Pulled out Howard Hinnant's civil-from-days algorithm (public domain) to convert `SystemTime` seconds → year/month/day. ~15 LOC. Avoids a 1 MB+ dep for one display string. Verified by mentally tracing a few epoch values; runtime check pending Marek's DevTools probe.
+- **`MountPoint` dead-code warning on Windows.** The enum variant is only constructed inside `enumerate_linux_mounts`, which `#[cfg(target_os = "linux")]`-gates the entire function — so on Windows the variant has zero constructors and rustc fires `dead_code`. Suppressed with `#[allow(dead_code)]` on the variant directly (not the whole enum) so future per-variant additions get their own warnings.
+- **Spec mismatch caught during audit:** the original spec said "Replace `tauri-plugin-dialog::open()` calls" — grep returned zero hits in `src/`. The native Windows dialog Marek sees on load IS WebView2 rendering HTML `<input type="file">` as a native Common File Dialog (`DiskScreen.tsx:107` LOAD PROJECT and `:156` F1 IMPORT WAV). Both are the migration targets in Sub-phase C/D. Confirmed with Marek mid-audit; updated mental model.
+
+### Decisions made
+
+- **Single Rust module `fs_browser.rs`** (not split across multiple). 330 LOC is comfortably under any "split it up" threshold and the commands all share the cache + WAV parser. Splitting would mean more cross-module visibility plumbing for no readability gain.
+- **Async commands.** Even though all six operations are short, async keeps the worst-case (e.g. listing a 5000-file directory on a slow USB drive) off the main thread without effort.
+- **Inline WAV parse over `hound`.** Spec said "if it's already a dependency, otherwise manual parse". `hound` not in `Cargo.toml`; manual parse is ~50 LOC of straightforward chunk walking.
+- **`dirs = "5"` only.** Considered `sysinfo` for Linux mounts (would have given drive-size / mount-type metadata) but `/proc/mounts` is simpler and Marek hasn't asked for those columns.
+- **Drive probe via `read_dir().is_err()`.** Catches empty CD-ROM / card reader drive letters that `GetLogicalDrives` reports but can't be entered. Cheap probe, sub-millisecond per drive.
+- **Strict path-safety deferred to Sub-phase D.** Per Marek: "Sub-phase A user-facing surface is zero (DevTools only), no security pressure yet." Defensive note left in module header.
+- **Single commit per sub-phase.** Sub-phase A is a logical landing point even though no end-user behaviour changes.
+
+### Open issues / followups
+
+**Marek DevTools probe checklist (Sub-phase A acceptance):**
+
+In `npm run tauri dev` → F12 → Console:
+
+```js
+// 1. Locations (cold path)
+await window.__TAURI__.core.invoke('fs_list_locations', { forceRefresh: true })
+// → [{ label: "C:", path: "C:\\", kind: "Drive" },
+//    { label: "D:", path: "D:\\", kind: "Drive" },
+//    ...,
+//    { label: "Desktop", path: "C:\\Users\\<name>\\Desktop", kind: "Shortcut" }]
+
+// 2. Locations (cached path — should return same array instantly)
+await window.__TAURI__.core.invoke('fs_list_locations', {})
+
+// 3. Directory listing with WAV filter
+await window.__TAURI__.core.invoke('fs_list_directory', {
+  path: 'C:\\',
+  extensions: ['wav'],
+})
+// → folders first (no extension filter applied to dirs), then any C:\*.wav
+
+// 4. Project file filter
+await window.__TAURI__.core.invoke('fs_list_directory', {
+  path: 'C:\\Users\\<your-name>\\Desktop',
+  extensions: ['lthief'],
+})
+
+// 5. Path-exists check
+await window.__TAURI__.core.invoke('fs_path_exists', { path: 'C:\\Windows' })
+// → true
+await window.__TAURI__.core.invoke('fs_path_exists', { path: 'C:\\NonexistentFolder' })
+// → false
+
+// 6. Read file bytes (large array on a real .wav — sanity check)
+const bytes = await window.__TAURI__.core.invoke('fs_read_file_bytes', {
+  path: 'C:\\path\\to\\some.wav',
+})
+// → Uint8Array of file contents
+
+// 7. WAV duration parse — sample list entry should carry durationMs
+//    (verify on .wav files in step 3 above — durationMs ≈ actual duration in ms)
+```
+
+If 1-5 + 7 all succeed, Sub-phase A is signed off and Sub-phase B can proceed in a follow-up session.
+
+**Deferred to Sub-phase B (UI):**
+
+- React `<FileBrowser>` component with LOCATIONS sidebar + FOLDER CONTENTS list + footer F-keys.
+- Mode prop (`LOAD_SAMPLE` / `LOAD_PROJECT` / `SAVE_*`).
+- Navigation, selection, mouse-wheel scroll, keyboard arrow nav.
+- Scrollbars (reuse `src/styles/index.css` phosphor pattern).
+
+**Deferred to Sub-phase C (mode wiring):**
+
+- F2 PREVIEW toggle (LOAD_SAMPLE) — wires to `samplerEngine` preview path.
+- F2 NEW FOLDER overlay (SAVE_*) — text-input modal → `fs_create_folder` → navigate.
+- Overwrite confirmation overlay — `fs_path_exists` → "File exists. F1 OVERWRITE / F3 CANCEL".
+
+**Deferred to Sub-phase D (migration + cleanup):**
+
+- Replace `DiskScreen.tsx:107` `projectInputRef.current?.click()` → FileBrowser LOAD_PROJECT.
+- Replace `DiskScreen.tsx:156` `fileInputRef.current?.click()` → FileBrowser LOAD_SAMPLE.
+- Migrate `saveBlobAsync` call sites (5 total: `useAppStore.ts:4894, 4922, 5129, 5160, 5193`) to FileBrowser SAVE_* modes.
+- Remove the old `save_file_dialog` Rust command + the dialog-warmup thread in `lib.rs:288-295`.
+- Strict path-safety hardening (canonicalise + root-prefix check before any read/write).
+- Strip `tauri-plugin-dialog` + `native-dialog` from `Cargo.toml` if no other users.
+- Remove `.lthief-all` + `.lthief-seq` format support entirely per Marek's "FULL REMOVAL" instruction:
+  - DISK screen buttons (DiskScreen.tsx:91-104)
+  - `saveAllFile` + `saveSeqFile` store actions (useAppStore.ts:5149+, 5178+)
+  - `serializeAll` + `serializeSeq` exports (src/disk/index.ts:18-21)
+  - `hydrateAllBundle` + `hydrateSeqBundle` load paths
+  - `loaderFromBlob` format-detection cases
+  - File input `accept=".lthief,.lthief-all,.lthief-seq"` → `.lthief` only
+  - Grep for any other format references during the removal pass.
+
+### Files modified
+
+- `src-tauri/Cargo.toml` — added `dirs = "5"` dependency with rationale comment.
+- `src-tauri/Cargo.lock` — regenerated by cargo (dirs + dirs-sys + transitive option_set).
+- `src-tauri/src/lib.rs` — `mod fs_browser;` + `use fs_browser::LocationsCache;` + `.manage(LocationsCache::new())` + 6 command registrations in `invoke_handler![]`.
+- `src-tauri/src/fs_browser.rs` — NEW. Full module per spec.
+
+Cumulative diff: 3 modified + 1 new file, +109/-5 in modified lines, new file ~330 LOC. `cargo check` clean. `npm run build` clean. No frontend changes — existing flows continue to work via the legacy `save_file_dialog` command and HTML file inputs.
+
+---
+
 ## Session 32 — 2026-05-24 — Live quantize on record + non-4/4 DO IT + dead-code cleanup
 
 ### What was attempted

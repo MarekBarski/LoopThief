@@ -4,8 +4,10 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_fs::FsExt;
 
 mod audio;
+mod fs_browser;
 
 use audio::{AudioConfig, AudioDevice, AudioEngine, AudioEngineState};
+use fs_browser::LocationsCache;
 
 // ---------------------------------------------------------------------------
 // Custom save dialog command — replaces tauri-plugin-dialog's `save()` for
@@ -255,6 +257,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AudioEngineState::new())
+        .manage(LocationsCache::new())
         .invoke_handler(tauri::generate_handler![
             save_file_dialog,
             audio_list_devices,
@@ -268,6 +271,12 @@ pub fn run() {
             audio_set_output_device,
             audio_set_monitor_mode,
             audio_restart_engine,
+            fs_browser::fs_list_locations,
+            fs_browser::fs_list_directory,
+            fs_browser::fs_read_file_bytes,
+            fs_browser::fs_write_file_bytes,
+            fs_browser::fs_create_folder,
+            fs_browser::fs_path_exists,
         ])
         .setup(|app| {
             let _ = app.dialog();
