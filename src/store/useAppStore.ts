@@ -28,9 +28,7 @@ import metronomeSampleUrl from "../../assets/Samples/Metronome.wav?url";
 import {
   loadFromBlob,
   saveBlobAsync,
-  serializeAll,
   serializeProject,
-  serializeSeq,
   writeProjectZip,
 } from "../disk";
 import { encodeAudioBufferToWav } from "../disk/wavCodec";
@@ -107,6 +105,51 @@ type UndoEntry = {
   timestamp: number;
   bucket: string;
 };
+
+// File browser (in-LCD replacement for native dialogs / HTML file inputs).
+// Sub-phase A landed the Rust filesystem commands. Sub-phase B (this code)
+// stands up the React component and store slice; mode wiring (preview,
+// new folder, overwrite confirmation) and migration of existing flows
+// follow in Sub-phases C / D respectively.
+export type FileBrowserMode =
+  | "LOAD_SAMPLE"
+  | "LOAD_PROJECT"
+  | "SAVE_SAMPLE"
+  | "SAVE_PROJECT"
+  | "SAVE_MIXDOWN_WAV";
+
+export type FsLocationKind = "Drive" | "MountPoint" | "Shortcut";
+
+// Mirrors the Rust serde shape in src-tauri/src/fs_browser.rs.
+export type FsLocation = {
+  label: string;
+  path: string;
+  kind: FsLocationKind;
+};
+
+// Mirrors FsEntry in src-tauri/src/fs_browser.rs.
+export type FsEntry = {
+  name: string;
+  path: string;
+  isDir: boolean;
+  sizeBytes?: number;
+  modified?: string;
+  durationMs?: number;
+};
+
+// Map a browser mode to the file extension(s) the directory listing should
+// filter to. Folders pass the filter regardless (navigation requirement).
+function extensionsForMode(mode: FileBrowserMode): string[] {
+  switch (mode) {
+    case "LOAD_SAMPLE":
+    case "SAVE_SAMPLE":
+    case "SAVE_MIXDOWN_WAV":
+      return ["wav"];
+    case "LOAD_PROJECT":
+    case "SAVE_PROJECT":
+      return ["lthief"];
+  }
+}
 
 type AppState = {
   activeScreen: ScreenId;
@@ -288,6 +331,49 @@ type AppState = {
   dismissBootResume: () => Promise<void>;
   loadLatestAutosave: () => Promise<{ ok: boolean; message: string }>;
   hasAutosaveEntry: () => Promise<boolean>;
+  // -------- File browser (Sub-phases B + C) --------
+  fileBrowserMode: FileBrowserMode | null;
+  fileBrowserPath: string;
+  fileBrowserLocations: FsLocation[];
+  fileBrowserEntries: FsEntry[];
+  fileBrowserSelectedIndex: number;
+  fileBrowserLoading: boolean;
+  fileBrowserError: string | null;
+  fileBrowserReturnScreen: ScreenId;
+  // Sub-phase C: F2 PREVIEW toggle + sample-preview source.
+  fileBrowserPreviewEnabled: boolean;
+  // Sub-phase C: filename input value in SAVE_* modes (without extension —
+  // the extension is appended automatically based on mode).
+  fileBrowserSaveFilename: string;
+  // Sub-phase C: F2 NEW FOLDER overlay state.
+  fileBrowserNewFolderOpen: boolean;
+  fileBrowserNewFolderName: string;
+  // Sub-phase C: overwrite-confirmation overlay. When non-null, the save
+  // flow is paused waiting for the user to confirm/cancel overwrite. The
+  // string holds the full destination path that would be overwritten.
+  fileBrowserOverwritePath: string | null;
+  // Sub-phase C: deferred result of `fileBrowserSave` after overwrite
+  // confirmation. Stored so the action can resume after the user confirms.
+  // (Not exposed in the interface; lives on internal closure state.)
+  openFileBrowser: (mode: FileBrowserMode) => Promise<void>;
+  closeFileBrowser: () => void;
+  fileBrowserSelectIndex: (index: number) => void;
+  fileBrowserNavigateInto: (entry: FsEntry) => Promise<void>;
+  fileBrowserNavigateUp: () => Promise<void>;
+  fileBrowserNavigateToLocation: (path: string) => Promise<void>;
+  fileBrowserRefreshLocations: () => Promise<void>;
+  // Sub-phase C — F1 OPEN / SAVE handlers, preview, overlays.
+  fileBrowserOpenSelected: () => Promise<void>;
+  fileBrowserTogglePreview: () => void;
+  fileBrowserPreviewEntry: (entry: FsEntry) => Promise<void>;
+  fileBrowserSetSaveFilename: (name: string) => void;
+  fileBrowserSave: () => Promise<void>;
+  fileBrowserOpenNewFolder: () => void;
+  fileBrowserSetNewFolderName: (name: string) => void;
+  fileBrowserConfirmNewFolder: () => Promise<void>;
+  fileBrowserCancelNewFolder: () => void;
+  fileBrowserConfirmOverwrite: () => Promise<void>;
+  fileBrowserCancelOverwrite: () => void;
   // -------- Phase 2 audio config (Tauri native capture) --------
   audioConfig: import("../audio/native").AudioConfig;
   appliedAudioConfig: import("../audio/native").AudioConfig;
@@ -464,6 +550,7 @@ type AppState = {
       | "attack"
       | "decay"
       | "chokeGroup"
+      | "muteGroup"
       | "filterCutoff"
       | "filterResonance"
       | "fxSend",
@@ -478,6 +565,7 @@ type AppState = {
       | "attack"
       | "decay"
       | "chokeGroup"
+      | "muteGroup"
       | "filterCutoff"
       | "filterResonance"
       | "fxSend",
@@ -598,8 +686,6 @@ type AppState = {
   previewEditedSample: () => void;
   createProjectSnapshot: () => ProjectSnapshot;
   saveProjectFile: (name: string) => Promise<import("../disk").SaveResult>;
-  saveAllFile: (name: string) => Promise<void>;
-  saveSeqFile: (name: string, sequenceId?: string) => Promise<void>;
   loadFile: (file: Blob, options?: { targetSequenceId?: string }) => Promise<{ type: "project" | "all" | "seq"; name: string }>;
   newProject: () => Promise<void>;
   preloadAudioBuffers: () => void;
@@ -626,6 +712,12 @@ type PadAssignment = {
   muteTargetMode: "OFF" | "PAIR" | "GROUP";
   muteTargets: string[];
   loop: boolean;
+  // Mute group (1-16) — independent of CHOKE. When pad triggers, all other
+  // pads (cross-bank, current program) with the same muteGroup value get a
+  // fast-release voice stop. 0 = OFF, no mute behaviour. Coexists with
+  // chokeGroup (same-bank pair) and muteTargets (explicit pad list) —
+  // those mechanisms remain untouched.
+  muteGroup: number;
 };
 
 // ============================================================================
@@ -845,6 +937,17 @@ type SettingsValues = {
   midiSyncIn: "OFF" | "CLOCK";
   midiSyncOut: "OFF" | "CLOCK";
   midiPadOut: boolean;
+  // FileBrowser per-mode last-used directory. Persisted in loopthief.settings
+  // so opening LOAD_SAMPLE / SAVE_PROJECT etc. lands the user back where they
+  // were last time. null = no persisted value yet → use Desktop / first drive.
+  // CANCEL does NOT update; only successful F1 OPEN / F1 SAVE writes here.
+  fileBrowserPaths: {
+    LOAD_SAMPLE: string | null;
+    LOAD_PROJECT: string | null;
+    SAVE_SAMPLE: string | null;
+    SAVE_PROJECT: string | null;
+    SAVE_MIXDOWN_WAV: string | null;
+  };
 };
 
 let eventIdCounter = 0;
@@ -1074,6 +1177,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     midiSyncIn: "OFF",
     midiSyncOut: "OFF",
     midiPadOut: false,
+    fileBrowserPaths: {
+      LOAD_SAMPLE: null,
+      LOAD_PROJECT: null,
+      SAVE_SAMPLE: null,
+      SAVE_PROJECT: null,
+      SAVE_MIXDOWN_WAV: null,
+    },
   },
   midiAvailable: false,
   midiInputs: [],
@@ -1089,6 +1199,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   bootResumeOpen: false,
   bootResumeStatus: "IDLE",
   bootResumeMessage: "",
+  fileBrowserMode: null,
+  fileBrowserPath: "",
+  fileBrowserLocations: [],
+  fileBrowserEntries: [],
+  fileBrowserSelectedIndex: 0,
+  fileBrowserLoading: false,
+  fileBrowserError: null,
+  fileBrowserReturnScreen: "MAIN",
+  fileBrowserPreviewEnabled: true,
+  fileBrowserSaveFilename: "",
+  fileBrowserNewFolderOpen: false,
+  fileBrowserNewFolderName: "",
+  fileBrowserOverwritePath: null,
   audioConfig: defaultAudioConfigInternal(),
   appliedAudioConfig: defaultAudioConfigInternal(),
   audioDevices: [],
@@ -1373,6 +1496,385 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }
   },
+  // ---------- File browser (Sub-phase B) ----------
+  // openFileBrowser: enter the LCD viewport file browser in the given mode.
+  // Fetches the locations cache (cold first call, instant thereafter) and
+  // lists the first location's directory as the starting view. The previous
+  // screen is stashed in `fileBrowserReturnScreen` so closeFileBrowser can
+  // route back without callers having to remember.
+  //
+  // Requires Tauri runtime — the Rust fs_browser commands aren't available
+  // in browser dev mode. Browser fallback path stays on the existing HTML
+  // file inputs until Sub-phase D migration.
+  openFileBrowser: async (mode) => {
+    if (!isTauri()) {
+      set({ lastAudioMessage: "FILE BROWSER REQUIRES DESKTOP APP" });
+      return;
+    }
+    stopFileBrowserPreview();
+    const { invoke } = await import("@tauri-apps/api/core");
+    const prevScreen = get().activeScreen;
+    const state = get();
+    const defaultFilename = suggestSaveFilename(mode, state);
+    set({
+      activeScreen: "FILE_BROWSER",
+      fileBrowserMode: mode,
+      fileBrowserReturnScreen: prevScreen,
+      fileBrowserLoading: true,
+      fileBrowserError: null,
+      fileBrowserEntries: [],
+      fileBrowserSelectedIndex: 0,
+      fileBrowserSaveFilename: defaultFilename,
+      fileBrowserNewFolderOpen: false,
+      fileBrowserNewFolderName: "",
+      fileBrowserOverwritePath: null,
+    });
+    try {
+      const locations = await invoke<FsLocation[]>("fs_list_locations", {});
+      // Persisted-path fallback chain:
+      //   1. settingsValues.fileBrowserPaths[mode] if it still exists on disk
+      //   2. Desktop shortcut (kind === "Shortcut" in the locations list)
+      //   3. First location (drives / mounts)
+      //   4. Empty (caller hits the "No locations available" branch below)
+      const persisted = state.settingsValues.fileBrowserPaths[mode];
+      let startPath = "";
+      if (persisted) {
+        const exists = await invoke<boolean>("fs_path_exists", { path: persisted })
+          .catch(() => false);
+        if (exists) {
+          startPath = persisted;
+        }
+      }
+      if (!startPath) {
+        const desktop = locations.find((loc) => loc.kind === "Shortcut");
+        startPath = desktop?.path ?? locations[0]?.path ?? "";
+      }
+      if (!startPath) {
+        set({
+          fileBrowserLocations: locations,
+          fileBrowserPath: "",
+          fileBrowserEntries: [],
+          fileBrowserLoading: false,
+          fileBrowserError: "No locations available",
+        });
+        return;
+      }
+      const entries = await invoke<FsEntry[]>("fs_list_directory", {
+        path: startPath,
+        extensions: extensionsForMode(mode),
+      });
+      set({
+        fileBrowserLocations: locations,
+        fileBrowserPath: startPath,
+        fileBrowserEntries: entries,
+        fileBrowserSelectedIndex: 0,
+        fileBrowserLoading: false,
+        fileBrowserError: null,
+      });
+    } catch (err) {
+      set({
+        fileBrowserLoading: false,
+        fileBrowserError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+  closeFileBrowser: () => {
+    stopFileBrowserPreview();
+    set((state) => ({
+      activeScreen: state.fileBrowserReturnScreen,
+      fileBrowserMode: null,
+      fileBrowserPath: "",
+      fileBrowserEntries: [],
+      fileBrowserSelectedIndex: 0,
+      fileBrowserLoading: false,
+      fileBrowserError: null,
+      fileBrowserSaveFilename: "",
+      fileBrowserNewFolderOpen: false,
+      fileBrowserNewFolderName: "",
+      fileBrowserOverwritePath: null,
+    }));
+  },
+  fileBrowserSelectIndex: (index) =>
+    set((state) => ({
+      fileBrowserSelectedIndex: clamp(
+        index,
+        0,
+        Math.max(0, state.fileBrowserEntries.length - 1),
+      ),
+    })),
+  // Navigate into a folder entry. No-op if entry is a file — Sub-phase C
+  // wires file selection / OPEN softkey behaviour.
+  fileBrowserNavigateInto: async (entry) => {
+    if (!entry.isDir) return;
+    if (!isTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mode = get().fileBrowserMode;
+    if (!mode) return;
+    set({ fileBrowserLoading: true, fileBrowserError: null });
+    try {
+      const entries = await invoke<FsEntry[]>("fs_list_directory", {
+        path: entry.path,
+        extensions: extensionsForMode(mode),
+      });
+      set({
+        fileBrowserPath: entry.path,
+        fileBrowserEntries: entries,
+        fileBrowserSelectedIndex: 0,
+        fileBrowserLoading: false,
+      });
+    } catch (err) {
+      set({
+        fileBrowserLoading: false,
+        fileBrowserError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+  // ".." parent navigation. Computed locally via string slice — Rust side
+  // would canonicalise but for display purposes JS path math is fine.
+  // No-op when already at a drive/mount root (parent would escape the
+  // location). The UI hides the ".." row in that case.
+  fileBrowserNavigateUp: async () => {
+    if (!isTauri()) return;
+    const state = get();
+    const mode = state.fileBrowserMode;
+    if (!mode) return;
+    const parent = computeParentPath(state.fileBrowserPath);
+    if (!parent) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    set({ fileBrowserLoading: true, fileBrowserError: null });
+    try {
+      const entries = await invoke<FsEntry[]>("fs_list_directory", {
+        path: parent,
+        extensions: extensionsForMode(mode),
+      });
+      set({
+        fileBrowserPath: parent,
+        fileBrowserEntries: entries,
+        fileBrowserSelectedIndex: 0,
+        fileBrowserLoading: false,
+      });
+    } catch (err) {
+      set({
+        fileBrowserLoading: false,
+        fileBrowserError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+  fileBrowserNavigateToLocation: async (path) => {
+    if (!isTauri()) return;
+    const mode = get().fileBrowserMode;
+    if (!mode) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    set({ fileBrowserLoading: true, fileBrowserError: null });
+    try {
+      const entries = await invoke<FsEntry[]>("fs_list_directory", {
+        path,
+        extensions: extensionsForMode(mode),
+      });
+      set({
+        fileBrowserPath: path,
+        fileBrowserEntries: entries,
+        fileBrowserSelectedIndex: 0,
+        fileBrowserLoading: false,
+      });
+    } catch (err) {
+      set({
+        fileBrowserLoading: false,
+        fileBrowserError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+  fileBrowserRefreshLocations: async () => {
+    if (!isTauri()) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      const locations = await invoke<FsLocation[]>("fs_list_locations", {
+        forceRefresh: true,
+      });
+      set({ fileBrowserLocations: locations });
+    } catch (err) {
+      set({ fileBrowserError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+  // ---------- File browser Sub-phase C ----------
+  fileBrowserTogglePreview: () => {
+    stopFileBrowserPreview();
+    set((state) => ({ fileBrowserPreviewEnabled: !state.fileBrowserPreviewEnabled }));
+  },
+  fileBrowserSetSaveFilename: (name) => set({ fileBrowserSaveFilename: name }),
+  // F1 OPEN — mode-dispatched read flow. LOAD_SAMPLE wraps the file bytes
+  // in a synthetic File and routes through the existing importWavFile path
+  // (which already handles decode + sample-library registration). LOAD_PROJECT
+  // builds a Blob and routes through loadFile (which handles .lthief unzip,
+  // project hydration, FX engine sync, etc.). On success the browser closes
+  // and the return screen is shown.
+  fileBrowserOpenSelected: async () => {
+    if (!isTauri()) return;
+    const state = get();
+    const entry = state.fileBrowserEntries[state.fileBrowserSelectedIndex];
+    if (!entry || entry.isDir) return;
+    const mode = state.fileBrowserMode;
+    if (mode !== "LOAD_SAMPLE" && mode !== "LOAD_PROJECT") return;
+    set({ fileBrowserLoading: true, fileBrowserError: null });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const bytes = await invoke<number[] | Uint8Array>("fs_read_file_bytes", {
+        path: entry.path,
+      });
+      // Tauri 2 returns Vec<u8> as a number[]; normalise to a fresh
+      // Uint8Array backed by a non-shared ArrayBuffer (passes BlobPart type).
+      const u8 = new Uint8Array(bytes as ArrayLike<number>);
+      if (mode === "LOAD_SAMPLE") {
+        const file = new File([u8 as BlobPart], entry.name, { type: "audio/wav" });
+        await get().importWavFile(file);
+      } else {
+        const blob = new Blob([u8 as BlobPart], { type: "application/octet-stream" });
+        await get().loadFile(blob);
+      }
+      // Persist the directory we loaded from so the next open of this mode
+      // lands here. Captures the path AT THE MOMENT OF SUCCESS — cancel /
+      // error paths don't fall through to this branch.
+      persistFileBrowserPath(get, set, mode, state.fileBrowserPath);
+      stopFileBrowserPreview();
+      get().closeFileBrowser();
+    } catch (err) {
+      set({
+        fileBrowserLoading: false,
+        fileBrowserError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+  // PREVIEW playback for LOAD_SAMPLE. Reads bytes via fs_read_file_bytes,
+  // decodes via samplerEngine's AudioContext, plays through a dedicated
+  // BufferSource that connects to ctx.destination (bypassing sample-library
+  // registration — preview is ephemeral, not a real import). Tracks the
+  // active source for stop-on-next-select / stop-on-close.
+  fileBrowserPreviewEntry: async (entry) => {
+    if (!isTauri()) return;
+    if (entry.isDir) return;
+    const state = get();
+    if (state.fileBrowserMode !== "LOAD_SAMPLE") return;
+    if (!state.fileBrowserPreviewEnabled) return;
+    if (!isWavName(entry.name)) return;
+    stopFileBrowserPreview();
+    // Capture the just-incremented token so we can detect if a NEWER call
+    // ran during our awaits (fs_read_file_bytes + decodeAudioData). Without
+    // this gate, two rapid clicks each fire their stop() before the other's
+    // source-start, and both sources end up playing — only the latest gets
+    // tracked in activeFileBrowserPreview, the earlier one plays untracked
+    // until natural end. With this gate the earlier call detects the
+    // token mismatch and stops its own source before publishing it.
+    const myToken = fileBrowserPreviewToken;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const bytes = await invoke<number[] | Uint8Array>("fs_read_file_bytes", {
+        path: entry.path,
+      });
+      if (fileBrowserPreviewToken !== myToken) return;
+      const u8 = new Uint8Array(bytes as ArrayLike<number>);
+      const buffer = await samplerEngine.decodeAudioData(u8.buffer as ArrayBuffer);
+      if (fileBrowserPreviewToken !== myToken) return;
+      const ctx = samplerEngine.getContext();
+      if (!ctx) return;
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.onended = () => {
+        if (activeFileBrowserPreview === source) {
+          activeFileBrowserPreview = null;
+        }
+      };
+      source.start();
+      // Final gate: if the token moved between decode and start, our source
+      // is already obsolete — stop it immediately, don't publish.
+      if (fileBrowserPreviewToken !== myToken) {
+        try { source.stop(); } catch { /* not started */ }
+        try { source.disconnect(); } catch { /* not connected */ }
+        return;
+      }
+      activeFileBrowserPreview = source;
+    } catch {
+      // Best-effort preview — silently bail on decode failure. The list still
+      // shows the file; user can try F1 OPEN to get the proper error path.
+    }
+  },
+  // F1 SAVE — mode-dispatched serialize-and-write. Checks overwrite via
+  // fs_path_exists before write. If file exists, sets fileBrowserOverwritePath
+  // and bails; the UI shows the confirmation overlay; user F1 OVERWRITE or
+  // F3 CANCEL resolves it.
+  fileBrowserSave: async () => {
+    if (!isTauri()) return;
+    const state = get();
+    const mode = state.fileBrowserMode;
+    if (
+      mode !== "SAVE_SAMPLE" &&
+      mode !== "SAVE_PROJECT" &&
+      mode !== "SAVE_MIXDOWN_WAV"
+    ) {
+      return;
+    }
+    const filename = sanitizeSaveFilename(state.fileBrowserSaveFilename);
+    if (!filename) {
+      set({ fileBrowserError: "Filename required" });
+      return;
+    }
+    const extension = mode === "SAVE_PROJECT" ? "lthief" : "wav";
+    const fullName = filename.toLowerCase().endsWith(`.${extension}`)
+      ? filename
+      : `${filename}.${extension}`;
+    const fullPath = joinPath(state.fileBrowserPath, fullName);
+    const { invoke } = await import("@tauri-apps/api/core");
+    const exists = await invoke<boolean>("fs_path_exists", { path: fullPath })
+      .catch(() => false);
+    if (exists) {
+      set({ fileBrowserOverwritePath: fullPath });
+      return;
+    }
+    await performFileBrowserWrite(get, set, mode, fullPath);
+  },
+  fileBrowserConfirmOverwrite: async () => {
+    const state = get();
+    const target = state.fileBrowserOverwritePath;
+    const mode = state.fileBrowserMode;
+    if (!target || !mode) return;
+    set({ fileBrowserOverwritePath: null });
+    if (
+      mode === "SAVE_SAMPLE" ||
+      mode === "SAVE_PROJECT" ||
+      mode === "SAVE_MIXDOWN_WAV"
+    ) {
+      await performFileBrowserWrite(get, set, mode, target);
+    }
+  },
+  fileBrowserCancelOverwrite: () => set({ fileBrowserOverwritePath: null }),
+  // F2 NEW FOLDER overlay — open / set name / confirm / cancel.
+  fileBrowserOpenNewFolder: () =>
+    set({ fileBrowserNewFolderOpen: true, fileBrowserNewFolderName: "" }),
+  fileBrowserSetNewFolderName: (name) => set({ fileBrowserNewFolderName: name }),
+  fileBrowserCancelNewFolder: () =>
+    set({ fileBrowserNewFolderOpen: false, fileBrowserNewFolderName: "" }),
+  fileBrowserConfirmNewFolder: async () => {
+    if (!isTauri()) return;
+    const state = get();
+    const trimmed = state.fileBrowserNewFolderName.trim();
+    if (!trimmed) return;
+    // Block path-separator characters so the user can't accidentally create
+    // a multi-level path (fs_create_folder refuses missing parents anyway,
+    // but rejecting here gives a clearer error).
+    if (/[\\/]/.test(trimmed)) {
+      set({ fileBrowserError: "Folder name cannot contain / or \\" });
+      return;
+    }
+    const newPath = joinPath(state.fileBrowserPath, trimmed);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke<void>("fs_create_folder", { path: newPath });
+      set({ fileBrowserNewFolderOpen: false, fileBrowserNewFolderName: "" });
+      await get().fileBrowserNavigateToLocation(newPath);
+    } catch (err) {
+      set({ fileBrowserError: err instanceof Error ? err.message : String(err) });
+    }
+  },
   hasAutosaveEntry: async () => {
     try {
       const { readAutosave } = await import("../disk");
@@ -1406,6 +1908,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const isDoubleStop = now - lastStopAt < 500;
     lastStopAt = now;
     stopAllNoteRepeatLoops();
+    // Transport STOP kills the FileBrowser sample preview too — users
+    // expect a global STOP to silence everything audible regardless of
+    // which screen owns the source. F2 PREVIEW toggle + close-browser
+    // already invoke this; transport STOP joins the same call site.
+    stopFileBrowserPreview();
     if (isDoubleStop) {
       samplerEngine.stopAllVoices();
     }
@@ -3522,6 +4029,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : field === "attack" || field === "decay" ? "ENV"
         : field === "filterCutoff" || field === "filterResonance" ? "FILTER"
         : field === "chokeGroup" ? "CHOKE"
+        : field === "muteGroup" ? "MUTE GRP"
         : `MIX ${(field as string).toUpperCase()}`;
       return {
         padAssignments,
@@ -3548,6 +4056,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : field === "attack" || field === "decay" ? "ENV"
         : field === "filterCutoff" || field === "filterResonance" ? "FILTER"
         : field === "chokeGroup" ? "CHOKE"
+        : field === "muteGroup" ? "MUTE GRP"
         : `MIX ${(field as string).toUpperCase()}`;
       return {
         padAssignments,
@@ -5146,68 +5655,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     void (await import("../disk")).clearAutosave();
     return result;
   },
-  saveAllFile: async (name: string) => {
-    const state = get();
-    const sanitized = sanitizeProjectName(name);
-    const manifest = serializeAll({
-      name: sanitized,
-      appVersion: APP_VERSION,
-      sequences: state.sequences,
-      songs: state.songSteps,
-      globalSettings: collectGlobalSettings(state),
-    });
-    const blob = await writeProjectZip(manifest, []);
-    const result = await saveBlobAsync(blob, {
-      defaultName: sanitized,
-      extension: "lthief-all",
-      filterName: "LoopThief All Sequences",
-      mimeType: "application/octet-stream",
-    });
-    if (!result.ok) {
-      set({
-        lastAudioMessage:
-          result.reason === "cancelled" ? "SAVE CANCELLED" : `SAVE FAILED: ${result.reason}`,
-      });
-      return;
-    }
-    set((current) => ({
-      lastAudioMessage: `SAVED: ${sanitized}.lthief-all`,
-      lastSavedProjectVersion: current.projectVersion,
-    }));
-  },
-  saveSeqFile: async (name: string, sequenceId?: string) => {
-    const state = get();
-    const targetId = sequenceId ?? state.currentSequence;
-    const sequence = state.sequences.find((seq) => seq.id === targetId);
-    if (!sequence) {
-      set({ lastAudioMessage: "SEQ NOT FOUND" });
-      return;
-    }
-    const sanitized = sanitizeProjectName(name);
-    const manifest = serializeSeq({
-      name: sanitized,
-      appVersion: APP_VERSION,
-      sequence,
-    });
-    const blob = await writeProjectZip(manifest, []);
-    const result = await saveBlobAsync(blob, {
-      defaultName: sanitized,
-      extension: "lthief-seq",
-      filterName: "LoopThief Sequence",
-      mimeType: "application/octet-stream",
-    });
-    if (!result.ok) {
-      set({
-        lastAudioMessage:
-          result.reason === "cancelled" ? "SAVE CANCELLED" : `SAVE FAILED: ${result.reason}`,
-      });
-      return;
-    }
-    set((current) => ({
-      lastAudioMessage: `SAVED: ${sanitized}.lthief-seq`,
-      lastSavedProjectVersion: current.projectVersion,
-    }));
-  },
   newProject: async () => {
     const current = get();
     const isDirty = current.projectVersion > current.lastSavedProjectVersion;
@@ -5225,24 +5672,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { clearAutosave } = await import("../disk");
     await clearAutosave().catch(() => {});
   },
-  loadFile: async (file: Blob, options) => {
-    const targetSequenceId = options?.targetSequenceId;
+  loadFile: async (file: Blob, _options) => {
+    // Sub-phase D: .lthief-all / .lthief-seq formats dropped. loadFromBlob
+    // only ever returns a "project" bundle now (legacy files throw inside
+    // loadFromBlob with a friendly error). `targetSequenceId` from options
+    // is no longer consulted — kept in the parameter signature for caller
+    // compat but unused.
     const bundle = await loadFromBlob(file, {
       decodeAudio: (bytes) => samplerEngine.decodeAudioData(bytes),
       onProgress: (progress) => {
         set({ lastAudioMessage: progress.message });
       },
     });
-    if (bundle.type === "project") {
-      hydrateProjectBundle(bundle, set);
-      return { type: "project", name: bundle.manifest.name };
-    }
-    if (bundle.type === "all") {
-      hydrateAllBundle(bundle, set);
-      return { type: "all", name: bundle.manifest.name };
-    }
-    hydrateSeqBundle(bundle, set, get, targetSequenceId);
-    return { type: "seq", name: bundle.manifest.name };
+    hydrateProjectBundle(bundle, set);
+    return { type: "project", name: bundle.manifest.name };
   },
   preloadAudioBuffers: () => {
     // Fire-and-forget. Metronome buffer fetch + decode happens before first user gesture
@@ -5416,60 +5859,6 @@ function hydrateProjectBundle(
     lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief`,
   });
   syncFxEngine(fxBuses, masterFx, chainFX1ToFX2, chainFX3ToFX4);
-}
-
-function hydrateAllBundle(
-  bundle: Extract<LoadedBundle, { type: "all" }>,
-  set: (partial: Partial<AppState>) => void,
-) {
-  const sequences = (bundle.manifest.sequences as Sequence[]).map(ensureTimeSignatureChanges);
-  const songSteps = bundle.manifest.songs as SongStep[];
-  const firstSequence = sequences[0];
-  const firstTrackId = firstSequence?.tracks[0]?.id ?? "TRACK01";
-  set({
-    sequences,
-    currentSequence: firstSequence?.id ?? "",
-    sequence: firstSequence?.id ?? "",
-    stepEvents: firstSequence?.events ?? [],
-    sequenceName: firstSequence?.name ?? "",
-    currentTrackId: firstTrackId,
-    activeTrack: firstSequence
-      ? formatTrackName(getTrackName(firstSequence, firstTrackId), Math.max(0, firstSequence.tracks.findIndex((t) => t.id === firstTrackId)))
-      : "TRACK01",
-    performanceTracks: derivePerformanceTracks(firstSequence),
-    songSteps,
-    currentSongStepIndex: 0,
-    selectedSongStepIndex: 0,
-    ...applyGlobalSettings(bundle.manifest.globalSettings),
-    lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief-all`,
-  });
-}
-
-function hydrateSeqBundle(
-  bundle: Extract<LoadedBundle, { type: "seq" }>,
-  set: (partial: Partial<AppState>) => void,
-  get: () => AppState,
-  targetSequenceId?: string,
-) {
-  const state = get();
-  const incoming = ensureTimeSignatureChanges(bundle.manifest.sequence as Sequence);
-  const targetId: string = targetSequenceId ?? state.currentSequence;
-  const replaced: Sequence = { ...incoming, id: targetId };
-  const sequences = state.sequences.some((seq) => seq.id === targetId)
-    ? state.sequences.map((seq) => (seq.id === targetId ? replaced : seq))
-    : [...state.sequences, replaced];
-  const firstTrackId = replaced.tracks[0]?.id ?? state.currentTrackId;
-  set({
-    sequences,
-    currentSequence: targetId,
-    sequence: targetId,
-    stepEvents: replaced.events,
-    sequenceName: replaced.name,
-    currentTrackId: firstTrackId,
-    activeTrack: formatTrackName(getTrackName(replaced, firstTrackId), Math.max(0, replaced.tracks.findIndex((t) => t.id === firstTrackId))),
-    performanceTracks: derivePerformanceTracks(replaced),
-    lastAudioMessage: `LOADED: ${bundle.manifest.name}.lthief-seq`,
-  });
 }
 
 samplerEngine.onStatusChange((audioStatus) => {
@@ -6255,6 +6644,232 @@ function createAutoMarkers(start: number, end: number, count: number) {
   return Array.from({ length: count }, (_, index) => start + ((end - start) * index) / count);
 }
 
+// Persist the FileBrowser's current path for a given mode into settingsValues.
+// Writes through hydrateSettings + persistSettingsNow so the value lands in
+// localStorage in the same tick (no 500 ms debounce window). Called by the
+// LOAD F1 OPEN success path and SAVE F1 SAVE success path — NOT on CANCEL.
+function persistFileBrowserPath(
+  get: () => AppState,
+  _set: (patch: Partial<AppState>) => void,
+  mode: FileBrowserMode,
+  path: string,
+): void {
+  if (!path) return;
+  const state = get();
+  const nextPaths = { ...state.settingsValues.fileBrowserPaths, [mode]: path };
+  get().hydrateSettings({ fileBrowserPaths: nextPaths });
+  get().persistSettingsNow();
+}
+
+// FileBrowser preview-source tracker (Sub-phase C). Module scope because
+// AudioBufferSourceNode is non-serialisable and only one preview plays at a
+// time. `stopFileBrowserPreview` is called on toggle-off / select-change /
+// close / transport STOP, with try/catch wrap because `.stop()` on an
+// already-stopped source throws InvalidStateError.
+let activeFileBrowserPreview: AudioBufferSourceNode | null = null;
+// Generation token (Sub-phase D fix). The preview flow has two awaits
+// between "stop previous" and "start new" (fs_read_file_bytes + decodeAudio).
+// A rapid second click can race past the first call's stop and end up with
+// two sources playing in parallel because the second call's stop ran while
+// `activeFileBrowserPreview` was still null. Each call increments the token
+// at entry; before publishing its source to `activeFileBrowserPreview`, the
+// call checks whether a newer token has been issued — if so, the call stops
+// its own source and bails.
+let fileBrowserPreviewToken = 0;
+function stopFileBrowserPreview(): void {
+  // Invalidate any in-flight previews by bumping the token. Without this,
+  // a stop() called between a click and the source-start that the click
+  // triggered would still let the source land in activeFileBrowserPreview
+  // and play. With it, the in-flight call sees the token mismatch and
+  // stops its own source before it's published.
+  fileBrowserPreviewToken += 1;
+  if (!activeFileBrowserPreview) return;
+  try {
+    activeFileBrowserPreview.stop();
+  } catch {
+    /* already stopped */
+  }
+  try {
+    activeFileBrowserPreview.disconnect();
+  } catch {
+    /* already disconnected */
+  }
+  activeFileBrowserPreview = null;
+}
+
+// Filename suggestion seed when openFileBrowser is called in a SAVE_* mode.
+// LOAD_* modes get an empty seed (filename input is hidden anyway). Sample
+// save reuses the currently-selected memory sample name; project save uses
+// either the loaded project name or a fallback. Mixdown uses a timestamped
+// default per the spec.
+function suggestSaveFilename(mode: FileBrowserMode, state: AppState): string {
+  switch (mode) {
+    case "SAVE_SAMPLE": {
+      const sample = state.recordedSamples[state.selectedDiskItemIndex];
+      const base = sample?.name?.replace(/\.wav$/i, "") ?? "sample_export";
+      return base;
+    }
+    case "SAVE_PROJECT": {
+      // No project-name field exists in state today (sanitizeProjectName is
+      // applied at save time by saveProjectFile); fall back to "untitled".
+      return "untitled";
+    }
+    case "SAVE_MIXDOWN_WAV": {
+      const stamp = new Date()
+        .toISOString()
+        .replace(/[^0-9]/g, "")
+        .slice(0, 14);
+      return `Mixdown_${stamp}`;
+    }
+    case "LOAD_SAMPLE":
+    case "LOAD_PROJECT":
+    default:
+      return "";
+  }
+}
+
+// Sanitize the user's filename input to OS-safe characters before joining
+// with a directory path. Strips path separators + characters Windows rejects
+// (`<>:"\\/|?*`). Trims whitespace. Empty string after sanitisation is the
+// "invalid" signal that the save action surfaces as an error.
+function sanitizeSaveFilename(name: string): string {
+  return name.trim().replace(/[<>:"\\/|?*]/g, "_");
+}
+
+// Join a directory path + filename with the host's path separator. Detects
+// separator from the directory (Windows uses backslash, Linux/mac use /).
+// Both Tauri-native and JS-side fs_browser commands accept either separator,
+// but matching the directory's style keeps display strings consistent.
+function joinPath(dir: string, name: string): string {
+  if (!dir) return name;
+  const usesBackslash = dir.includes("\\");
+  const trimmed = dir.replace(/[\\/]+$/, "");
+  const sep = usesBackslash ? "\\" : "/";
+  return `${trimmed}${sep}${name}`;
+}
+
+// True if `name` ends with `.wav` (case-insensitive). Pre-condition for
+// preview playback — non-WAV file selection in LOAD_SAMPLE shouldn't trip
+// `decodeAudioData`.
+function isWavName(name: string): boolean {
+  return /\.wav$/i.test(name);
+}
+
+// Serialize-and-write helper shared by fileBrowserSave + fileBrowserConfirmOverwrite.
+// Encapsulates the mode-dispatched serialization (project / sample / mixdown
+// → bytes) and the fs_write_file_bytes call. On success closes the browser.
+// On failure surfaces to fileBrowserError.
+async function performFileBrowserWrite(
+  get: () => AppState,
+  set: (patch: Partial<AppState>) => void,
+  mode: FileBrowserMode,
+  fullPath: string,
+): Promise<void> {
+  set({ fileBrowserLoading: true, fileBrowserError: null });
+  try {
+    const state = get();
+    let bytes: Uint8Array;
+    if (mode === "SAVE_PROJECT") {
+      const sequence = getCurrentSequence(state);
+      const { manifest, sampleEntries } = serializeProject({
+        name: sanitizeProjectName(state.fileBrowserSaveFilename),
+        appVersion: APP_VERSION,
+        samples: state.recordedSamples.map((sample) => ({
+          id: sample.id,
+          name: sample.name,
+          audioBufferId: sample.audioBufferId,
+          durationMs: sample.durationMs,
+          duration: sample.duration,
+          sampleRate: sample.sampleRate,
+          channelCount: sample.channelCount,
+          waveform: sample.waveform,
+          keptSlices: sample.keptSlices,
+          editState: sample.editState,
+        })),
+        programs: state.programs,
+        sequences: state.sequences,
+        songs: state.songSteps,
+        globalSettings: collectGlobalSettings(state),
+        fxBuses: state.fxBuses,
+        masterFx: state.masterFx,
+        fxChainFX1ToFX2: state.fxChainFX1ToFX2,
+        fxChainFX3ToFX4: state.fxChainFX3ToFX4,
+        resolveAudioBuffer: (id) => getSampleBuffer(id),
+      });
+      void sequence;
+      const blob = await writeProjectZip(manifest, sampleEntries);
+      bytes = new Uint8Array(await blob.arrayBuffer());
+    } else if (mode === "SAVE_SAMPLE") {
+      const sample = state.recordedSamples[state.selectedDiskItemIndex];
+      if (!sample) throw new Error("No sample selected");
+      const audioRef = getSampleAudioRef(sample.audioBufferId);
+      if (!audioRef) throw new Error("Sample PCM buffer missing");
+      const region = getSampleRegion(sample);
+      // encodeWavRegion / encodeAudioBufferToWav return ArrayBuffer; wrap to
+      // Uint8Array so the fs_write_file_bytes serialisation path is uniform.
+      bytes = new Uint8Array(encodeWavRegion(audioRef, region.start, region.end));
+    } else {
+      // SAVE_MIXDOWN_WAV
+      if (state.songSteps.length === 0) {
+        throw new Error("Song is empty — add steps with sequences first");
+      }
+      const buffer = await renderSongOffline(state, { sampleRate: 48000, tailSeconds: 3 });
+      if (buffer.length === 0) {
+        throw new Error("Rendered an empty buffer");
+      }
+      bytes = new Uint8Array(encodeAudioBufferToWav(buffer));
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<void>("fs_write_file_bytes", {
+      path: fullPath,
+      bytes: Array.from(bytes),
+    });
+    // Persist the directory we just wrote to. Same as LOAD persistence —
+    // only on success; overwrite-cancel / error paths don't reach here.
+    persistFileBrowserPath(get, set, mode, get().fileBrowserPath);
+    set({
+      lastAudioMessage: `SAVED: ${fullPath}`,
+      lastSavedProjectVersion: get().projectVersion,
+    });
+    get().closeFileBrowser();
+  } catch (err) {
+    set({
+      fileBrowserLoading: false,
+      fileBrowserError: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// Compute the parent directory for a file-browser path. Returns null when
+// the input IS a root (drive letter on Windows, "/" on Linux) so the UI
+// can hide the ".." row. Lightweight JS path math — Rust would canonicalise
+// more precisely, but for display + the next fs_list_directory call the
+// path string returned here is good enough; the Rust side rejects anything
+// non-existent.
+function computeParentPath(path: string): string | null {
+  if (!path) return null;
+  // Windows drive root: "C:\" or "C:/"
+  if (/^[A-Za-z]:[\\/]?$/.test(path)) return null;
+  // Linux root: "/"
+  if (path === "/") return null;
+  // Strip trailing slash/backslash so the parent split sees the leaf.
+  const trimmed = path.replace(/[\\/]+$/, "");
+  // Pick the rightmost separator that exists in the path.
+  const lastSlash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (lastSlash <= 0) {
+    // No separator past index 0 → already at filesystem root. Bail.
+    return null;
+  }
+  let parent = trimmed.slice(0, lastSlash);
+  // Windows: collapse "C:" → "C:\" so fs_list_directory gets a valid root.
+  if (/^[A-Za-z]:$/.test(parent)) {
+    parent = `${parent}\\`;
+  }
+  // Linux: empty parent means "we're under /" → restore the slash.
+  if (parent === "") parent = "/";
+  return parent;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
@@ -6415,7 +7030,14 @@ function playAssignedPadWithContext(
     }));
   }, Math.max(80, Math.min(240, assignment.decay * 2)));
   const voiceGroup = mixerChannelKey(context.bank, context.pad, program?.id);
+  // Same-bank CHOKE + explicit muteTargets (legacy). Hard-stop, no release.
   samplerEngine.stopVoiceGroups(getMuteStopGroups(state, assignment, context.pad, context.bank, padAssignments, program?.id));
+  // Cross-bank Mute Group cut (independent of CHOKE). Soft 8 ms release to
+  // avoid clicks on the cut voices. No-op if assignment.muteGroup === 0.
+  const muteGroupTargets = getMuteGroupStopGroups(assignment, context.pad, context.bank, padAssignments, program?.id);
+  if (muteGroupTargets.length > 0) {
+    samplerEngine.stopVoiceGroups(muteGroupTargets, { releaseMs: 8 });
+  }
   const fxRouting = (() => {
     const busId = (assignment.fxBus ?? 0) as 0 | BusId;
     if (busId === 0) return undefined;
@@ -6996,6 +7618,34 @@ function getMuteStopGroups(
   return [...targets];
 }
 
+// Mute Group cross-bank cut. Independent of CHOKE / muteTargets — returns
+// the voice-group keys of every other pad (current program, ALL banks) that
+// shares `assignment.muteGroup`. CHOKE remains same-bank only; this is the
+// MPC convention where mute groups span the whole program. Empty array when
+// muteGroup is 0 (OFF) so the trigger path is a no-op for un-grouped pads.
+function getMuteGroupStopGroups(
+  assignment: PadAssignment,
+  pad: string,
+  bank: PadBank,
+  padAssignments: Record<PadBank, PadAssignment[]>,
+  programId?: string,
+) {
+  if (assignment.muteGroup === 0) return [];
+  const targets: string[] = [];
+  const banks: PadBank[] = ["A", "B", "C", "D"];
+  for (const otherBank of banks) {
+    const pads = padAssignments[otherBank];
+    if (!pads) continue;
+    for (const candidate of pads) {
+      const samePadSameBank = otherBank === bank && candidate.pad === pad;
+      if (samePadSameBank) continue;
+      if (candidate.muteGroup !== assignment.muteGroup) continue;
+      targets.push(mixerChannelKey(otherBank, candidate.pad, programId));
+    }
+  }
+  return targets;
+}
+
 function syncMixerBankToAudio(bank: PadBank, channels: MixerChannel[], programId?: string) {
   channels.forEach((channel) => {
     samplerEngine.updateChannelMix(mixerChannelKey(bank, channel.pad, programId), {
@@ -7123,6 +7773,7 @@ function createBankAssignments(): PadAssignment[] {
     muteTargetMode: "OFF" as const,
     muteTargets: [],
     loop: false,
+    muteGroup: 0,
   }));
 }
 
@@ -7301,6 +7952,7 @@ function getParamLimits(
     | "attack"
     | "decay"
     | "chokeGroup"
+    | "muteGroup"
     | "filterCutoff"
     | "filterResonance"
     | "fxSend",
@@ -7322,6 +7974,8 @@ function getParamLimits(
       return { min: 0, max: 100 };
     case "chokeGroup":
       return { min: 0, max: 8 };
+    case "muteGroup":
+      return { min: 0, max: 16 };
   }
 }
 
@@ -8415,7 +9069,14 @@ function scheduleSongEvent(
   if (scheduledVoices) {
     const voiceKey = mixerChannelKey(lookupBank, lookupPad, assignment ? event.programId : undefined);
     const stopGroups = getMuteStopGroups(state, assignment, lookupPad, lookupBank, padAssignments, event.programId);
-    const keysToStop: string[] = [voiceKey, ...stopGroups.filter((k) => k !== voiceKey)];
+    // Cross-bank Mute Group: mirror the live `getMuteGroupStopGroups` call so
+    // the offline WAV render produces the same audible cut as live playback.
+    const muteGroupTargets = getMuteGroupStopGroups(assignment, lookupPad, lookupBank, padAssignments, event.programId);
+    const keysToStop: string[] = [
+      voiceKey,
+      ...stopGroups.filter((k) => k !== voiceKey),
+      ...muteGroupTargets.filter((k) => k !== voiceKey),
+    ];
     const eventStartSec = Math.max(0, eventTicks / ticksPerSecond);
     for (const key of keysToStop) {
       const priors = scheduledVoices.get(key);

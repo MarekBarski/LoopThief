@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { useAppStore } from "../store/useAppStore";
+import { isTauri } from "../runtime/environment";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdSoftkeyHeight } from "./lcdLayout";
 
@@ -18,18 +19,49 @@ export function DiskScreen() {
   const setActiveScreen = useAppStore((state) => state.setActiveScreen);
   const importStatus = useAppStore((state) => state.importStatus);
   const importMessage = useAppStore((state) => state.importMessage);
+  // HTML file inputs kept for browser dev mode only — Tauri build routes
+  // through the FileBrowser. These refs are unused (and the inputs hidden)
+  // when isTauri() returns true.
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const saveProjectFile = useAppStore((state) => state.saveProjectFile);
-  const saveAllFile = useAppStore((state) => state.saveAllFile);
-  const saveSeqFile = useAppStore((state) => state.saveSeqFile);
   const loadFile = useAppStore((state) => state.loadFile);
   const newProject = useAppStore((state) => state.newProject);
-  const sequenceName = useAppStore((state) => state.sequenceName);
-  const [projectName, setProjectName] = useState("project");
+  const openFileBrowser = useAppStore((state) => state.openFileBrowser);
 
   const memoryRows = recordedSamples.map((sample) => createMemoryRow(sample, padAssignments));
   const selectedMemoryRow = memoryRows[selectedDiskItemIndex] ?? memoryRows[0];
+
+  // Click handlers branch on runtime — Tauri opens the in-LCD FileBrowser,
+  // browser dev falls back to the HTML <input type="file"> picker.
+  const onSaveProject = () => {
+    if (isTauri()) {
+      void openFileBrowser("SAVE_PROJECT");
+    } else {
+      void saveProjectFile("project");
+    }
+  };
+  const onLoadProject = () => {
+    if (isTauri()) {
+      void openFileBrowser("LOAD_PROJECT");
+    } else {
+      projectInputRef.current?.click();
+    }
+  };
+  const onImportSample = () => {
+    if (isTauri()) {
+      void openFileBrowser("LOAD_SAMPLE");
+    } else {
+      fileInputRef.current?.click();
+    }
+  };
+  const onExportSample = () => {
+    if (isTauri()) {
+      void openFileBrowser("SAVE_SAMPLE");
+    } else {
+      void exportSelectedMemorySample();
+    }
+  };
 
   return (
     <ScreenFrame title="DISK" subtitle="Project utility">
@@ -74,37 +106,16 @@ export function DiskScreen() {
 
           <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
             <p className="text-[#91a477]">PROJECT I/O</p>
-            <input
-              type="text"
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              placeholder="filename"
-              className="border border-[#46533b] bg-black/40 px-[6%] py-[3%] text-[#eef6d8] outline-none focus:border-amber-300"
-            />
             <button
               type="button"
-              onClick={() => void saveProjectFile(projectName)}
+              onClick={onSaveProject}
               className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
             >
               SAVE PROJECT (.lthief)
             </button>
             <button
               type="button"
-              onClick={() => void saveAllFile(projectName)}
-              className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
-            >
-              SAVE ALL SEQS (.lthief-all)
-            </button>
-            <button
-              type="button"
-              onClick={() => void saveSeqFile(projectName || sequenceName)}
-              className="border border-[#46533b] bg-black/25 px-[4%] py-[4%] text-left text-[#d8e3b7] hover:border-amber-300"
-            >
-              SAVE CURRENT SEQ (.lthief-seq)
-            </button>
-            <button
-              type="button"
-              onClick={() => projectInputRef.current?.click()}
+              onClick={onLoadProject}
               className="border border-amber-300 bg-amber-200/10 px-[4%] py-[4%] text-left text-amber-100 hover:bg-amber-200/20"
             >
               LOAD PROJECT FILE...
@@ -116,10 +127,14 @@ export function DiskScreen() {
             >
               NEW PROJECT
             </button>
+            {/* Browser-dev fallback HTML input — invisible, only fires when
+                isTauri() is false (i.e. `npm run dev` without Tauri shell).
+                Tauri build never uses this; the LOAD PROJECT click routes
+                through openFileBrowser instead. */}
             <input
               ref={projectInputRef}
               type="file"
-              accept=".lthief,.lthief-all,.lthief-seq"
+              accept=".lthief"
               className="hidden"
               onChange={(event) => {
                 const file = event.target.files?.[0];
@@ -137,6 +152,8 @@ export function DiskScreen() {
           className="grid flex-none grid-cols-6 gap-[1.4%]"
           style={{ height: lcdSoftkeyHeight }}
         >
+          {/* Browser-dev fallback for WAV import. Same isTauri-gated story
+              as projectInputRef above. */}
           <input
             ref={fileInputRef}
             type="file"
@@ -153,7 +170,7 @@ export function DiskScreen() {
               key={button}
               type="button"
               onClick={() => {
-                if (button === "F1 IMPORT") fileInputRef.current?.click();
+                if (button === "F1 IMPORT") onImportSample();
                 if (button === "F2 PREVIEW") previewSelectedMemorySample();
                 if (button === "F3 RENAME") {
                   const currentName = selectedMemoryRow?.name ?? "";
@@ -161,7 +178,7 @@ export function DiskScreen() {
                   if (nextName) renameSelectedMemorySample(nextName);
                 }
                 if (button === "F4 DELETE") deleteSelectedMemorySample();
-                if (button === "F5 EXPORT") exportSelectedMemorySample();
+                if (button === "F5 EXPORT") onExportSample();
                 if (button === "F6 EXIT") setActiveScreen("MAIN");
               }}
               className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"

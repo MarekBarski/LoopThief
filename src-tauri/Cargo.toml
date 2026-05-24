@@ -23,12 +23,14 @@ serde_json = "1"
 # features list here would force devtools into release builds too —
 # we don't want that for shipping.
 tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-# Save dialog backend swap — see lib.rs `save_file_dialog` command.
-# tauri-plugin-dialog's rfd-based IFileSaveDialog path has a ~2-3 s lag in
-# release builds; native-dialog uses a lighter path that opens instantly.
-# Still using tauri-plugin-dialog for the OPEN flow (instant either way).
+# native-dialog crate is the QUIT save-and-quit save-dialog backend. The
+# `save_file_dialog` Tauri command (lib.rs) wraps `native_dialog::FileDialog`
+# for the one remaining native-dialog use case: the save-before-quit flow
+# in the QUIT modal, which needs a synchronous resolve/reject for the
+# Promise.race timeout. All other save flows now go through the in-LCD
+# FileBrowser (`fs_browser` module). Remove this crate once the QUIT path
+# is migrated too.
 native-dialog = "0.7"
 
 # ===== Native audio capture (WASAPI on Windows, PipeWire on Linux) =====

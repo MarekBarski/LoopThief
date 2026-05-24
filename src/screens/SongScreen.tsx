@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAppStore } from "../store/useAppStore";
+import { isTauri } from "../runtime/environment";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdSoftkeyHeight } from "./lcdLayout";
 import { EditableNumber } from "../components/EditableNumber";
@@ -25,6 +26,7 @@ export function SongScreen() {
   const setSongStepBars = useAppStore((state) => state.setSongStepBars);
   const setSongTotalBars = useAppStore((state) => state.setSongTotalBars);
   const exportSongToWav = useAppStore((state) => state.exportSongToWav);
+  const openFileBrowser = useAppStore((state) => state.openFileBrowser);
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportName, setExportName] = useState("song_export");
@@ -32,6 +34,17 @@ export function SongScreen() {
   const [exportMessage, setExportMessage] = useState("");
 
   const handleExport = async () => {
+    // Tauri: open FileBrowser in SAVE_MIXDOWN_WAV mode. The render +
+    // encode + write all happen inside FileBrowser's F1 SAVE handler. The
+    // local exportOpen modal stays open until the user confirms in the
+    // browser; closeExport is called from the FileBrowser close path
+    // (the activeScreen returns to SONG, where exportOpen is still true —
+    // user can dismiss it manually). Browser dev: legacy render+download.
+    if (isTauri()) {
+      setExportOpen(false);
+      void openFileBrowser("SAVE_MIXDOWN_WAV");
+      return;
+    }
     setExportStatus("rendering");
     setExportMessage("Rendering…");
     const result = await exportSongToWav(exportName);

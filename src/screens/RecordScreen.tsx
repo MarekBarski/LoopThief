@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -30,8 +30,6 @@ export function RecordScreen() {
   const setThreshold = useAppStore((state) => state.setThreshold);
   const adjustInputGain = useAppStore((state) => state.adjustInputGain);
   const setInputGain = useAppStore((state) => state.setInputGain);
-  const importWavFile = useAppStore((state) => state.importWavFile);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!isSampling) return;
@@ -98,18 +96,6 @@ export function RecordScreen() {
             </div>
           </section>
         </div>
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".wav,audio/wav,audio/x-wav"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.currentTarget.value = "";
-            if (file) void importWavFile(file);
-          }}
-        />
 
         <div className="grid grid-cols-6 gap-[1.4%]">
           {softButtons.map((button) => (

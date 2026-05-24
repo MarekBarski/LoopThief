@@ -95,13 +95,17 @@ export function KeyboardShortcuts() {
       }
 
       // ============================================================
-      // Ctrl+S: save current project. Defaults to "untitled" name —
-      // no project-name field exists in state today, so every Ctrl+S
-      // downloads `untitled.lthief`. User renames in OS file picker.
+      // Ctrl+S: save current project. In Tauri the in-LCD FileBrowser
+      // owns the destination + filename UX. In browser dev the legacy
+      // saveProjectFile path triggers the HTML download anchor.
       // ============================================================
       if (isMeta && key === "s") {
         event.preventDefault();
-        void store.getState().saveProjectFile("untitled");
+        if (isTauri()) {
+          void store.getState().openFileBrowser("SAVE_PROJECT");
+        } else {
+          void store.getState().saveProjectFile("untitled");
+        }
         return;
       }
 

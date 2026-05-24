@@ -1,6 +1,6 @@
 import { applyMigrations } from "./migrations";
 import { readProjectZip } from "./zipContainer";
-import type { AllManifest, AnyManifest, ProjectManifest, SeqManifest, SerializedSample } from "./types";
+import type { AnyManifest, ProjectManifest, SerializedSample } from "./types";
 
 export type LoadedSample = {
   metadata: SerializedSample;
@@ -25,17 +25,10 @@ export type LoadedProject = {
   samples: LoadedSample[];
 };
 
-export type LoadedAll = {
-  type: "all";
-  manifest: AllManifest;
-};
-
-export type LoadedSeq = {
-  type: "seq";
-  manifest: SeqManifest;
-};
-
-export type LoadedBundle = LoadedProject | LoadedAll | LoadedSeq;
+// Sub-phase D — `.lthief-all` and `.lthief-seq` formats removed. The loader
+// only returns a `LoadedProject` shape now; legacy formats trigger an error
+// from `loadFromBlob`.
+export type LoadedBundle = LoadedProject;
 
 export async function loadFromBlob(blob: Blob, options: LoadOptions): Promise<LoadedBundle> {
   const { decodeAudio, onProgress } = options;
@@ -43,35 +36,39 @@ export async function loadFromBlob(blob: Blob, options: LoadOptions): Promise<Lo
   const { manifest: rawManifest, samples: sampleBlobs } = await readProjectZip(blob);
   onProgress?.({ phase: "MIGRATE", completed: 0, total: 1, message: "Applying migrations..." });
   const migrated = applyMigrations(rawManifest) as AnyManifest;
-  if (migrated.type === "project") {
-    const projectManifest = migrated;
-    const total = projectManifest.samples.length;
-    const loadedSamples: LoadedSample[] = [];
-    for (let index = 0; index < projectManifest.samples.length; index += 1) {
-      const sampleMeta = projectManifest.samples[index];
-      const bytes = sampleBlobs.get(sampleMeta.path);
-      if (!bytes) {
-        throw new Error(`ZIP missing sample bytes for path "${sampleMeta.path}"`);
-      }
-      onProgress?.({
-        phase: "DECODE",
-        completed: index,
-        total,
-        message: `Loading samples: ${index}/${total}`,
-      });
-      const buffer = await decodeAudio(bytes);
-      loadedSamples.push({ metadata: sampleMeta, buffer });
+
+  if (migrated.type !== "project") {
+    // .lthief-all and .lthief-seq legacy formats reach this branch via the
+    // `(migrated as { type?: unknown }).type` escape hatch — neither type
+    // is in the union anymore but old files on disk still carry them in
+    // their manifest JSON.
+    const legacyType = (migrated as { type?: unknown }).type;
+    if (legacyType === "all" || legacyType === "seq") {
+      throw new Error(
+        "Unsupported format. .lthief-all and .lthief-seq were dropped — use .lthief project files.",
+      );
     }
-    onProgress?.({ phase: "DONE", completed: total, total, message: "Loaded" });
-    return { type: "project", manifest: projectManifest, samples: loadedSamples };
+    throw new Error(`Unknown manifest type: ${String(legacyType)}`);
   }
-  if (migrated.type === "all") {
-    onProgress?.({ phase: "DONE", completed: 1, total: 1, message: "Loaded" });
-    return { type: "all", manifest: migrated };
+
+  const projectManifest = migrated;
+  const total = projectManifest.samples.length;
+  const loadedSamples: LoadedSample[] = [];
+  for (let index = 0; index < projectManifest.samples.length; index += 1) {
+    const sampleMeta = projectManifest.samples[index];
+    const bytes = sampleBlobs.get(sampleMeta.path);
+    if (!bytes) {
+      throw new Error(`ZIP missing sample bytes for path "${sampleMeta.path}"`);
+    }
+    onProgress?.({
+      phase: "DECODE",
+      completed: index,
+      total,
+      message: `Loading samples: ${index}/${total}`,
+    });
+    const buffer = await decodeAudio(bytes);
+    loadedSamples.push({ metadata: sampleMeta, buffer });
   }
-  if (migrated.type === "seq") {
-    onProgress?.({ phase: "DONE", completed: 1, total: 1, message: "Loaded" });
-    return { type: "seq", manifest: migrated };
-  }
-  throw new Error(`Unknown manifest type: ${String((migrated as { type?: unknown }).type)}`);
+  onProgress?.({ phase: "DONE", completed: total, total, message: "Loaded" });
+  return { type: "project", manifest: projectManifest, samples: loadedSamples };
 }

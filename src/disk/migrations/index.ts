@@ -159,6 +159,38 @@ const MIGRATIONS: Migration[] = [
       };
     },
   },
+  // v4 → v5: Mute Groups. Per-pad `muteGroup: number` (0 = OFF, 1-16 = group)
+  // added to PadAssignment. Independent of CHOKE. Cross-bank cut: pads in the
+  // same group across all banks mute each other on trigger. Migration walks
+  // every program's per-bank pad assignment list and fills `muteGroup: 0` on
+  // any pad missing the field.
+  {
+    from: 4,
+    to: 5,
+    apply: (m) => {
+      if (m.type !== "project") return { ...m, schemaVersion: 5 };
+      const programs = Array.isArray((m as { programs?: unknown }).programs)
+        ? ((m as { programs: unknown[] }).programs as Array<Record<string, unknown>>)
+        : [];
+      const nextPrograms = programs.map((program) => {
+        const padAssignments = (program.padAssignments as Record<string, Array<Record<string, unknown>>>) ?? {};
+        const nextAssignments: Record<string, Array<Record<string, unknown>>> = {};
+        for (const bank of ["A", "B", "C", "D"] as const) {
+          const bankPads = Array.isArray(padAssignments[bank]) ? padAssignments[bank] : [];
+          nextAssignments[bank] = bankPads.map((pad) => {
+            if (typeof pad.muteGroup === "number") return pad;
+            return { ...pad, muteGroup: 0 };
+          });
+        }
+        return { ...program, padAssignments: nextAssignments };
+      });
+      return {
+        ...m,
+        schemaVersion: 5,
+        programs: nextPrograms,
+      };
+    },
+  },
 ];
 
 export function applyMigrations(input: AnyManifest): AnyManifest {

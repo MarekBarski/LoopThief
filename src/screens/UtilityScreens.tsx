@@ -525,6 +525,7 @@ export function TimingCorrectUtilityScreen() {
   const timingApplyTo = useAppStore((s) => s.timingApplyTo);
   const cycleTimingCorrect = useAppStore((s) => s.cycleTimingCorrect);
   const adjustSwing = useAppStore((s) => s.adjustSwing);
+  const setSwing = useAppStore((s) => s.setSwing);
   const cycleTimingApplyTo = useAppStore((s) => s.cycleTimingApplyTo);
   const applyTimingCorrectToEvents = useAppStore((s) => s.applyTimingCorrectToEvents);
   const resetTimingCorrect = useAppStore((s) => s.resetTimingCorrect);
@@ -536,14 +537,28 @@ export function TimingCorrectUtilityScreen() {
     <ScreenFrame title="TIMING CORRECT" subtitle="Global timing utility">
       {shell(
         <div className="grid h-full grid-cols-[1fr_0.7fr] gap-[2.3%]">
-          <Panel rows={[
-            ["NOTE VALUE", timingCorrect],
-            ["SWING", swingEnabled ? `${swing}%` : "—"],
-            ["APPLY TO", timingApplyTo],
-          ]} />
+          {/* Replaced the display-only Panel SWING row with an inline
+              ArrowRow so the value is keyboard-typeable (range 50–75,
+              MPC convention). Mirrors NOTE REPEAT's SWING pattern. */}
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+            <PanelRow label="NOTE VALUE" value={timingCorrect} />
+            <ArrowRow
+              label="SWING"
+              value={swingEnabled ? `${swing}%` : "—"}
+              onPrev={() => adjustSwing(-1)}
+              onNext={() => adjustSwing(1)}
+              editable={swingEnabled
+                ? {
+                    numericValue: swing,
+                    min: 50,
+                    max: 75,
+                    onCommit: setSwing,
+                  }
+                : undefined}
+            />
+            <PanelRow label="APPLY TO" value={timingApplyTo} />
+          </section>
           <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
-            <UtilityAction label="SWING +" onClick={() => adjustSwing(1)} disabled={!swingEnabled} />
-            <UtilityAction label="SWING -" onClick={() => adjustSwing(-1)} disabled={!swingEnabled} />
             <UtilityAction label="DO IT" onClick={applyTimingCorrectToEvents} />
           </section>
         </div>,

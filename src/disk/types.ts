@@ -1,6 +1,10 @@
-export const CURRENT_SCHEMA_VERSION = 4 as const;
+export const CURRENT_SCHEMA_VERSION = 5 as const;
 
-export type ManifestType = "project" | "all" | "seq";
+// Project is the only supported manifest. The `"all"` (.lthief-all) and
+// `"seq"` (.lthief-seq) formats were dropped in Sub-phase D — they offered
+// no functional value over a full project save and were never officially
+// shipped. Loader rejects them with a friendly error.
+export type ManifestType = "project";
 
 export type SerializedSample = {
   id: string;
@@ -57,19 +61,7 @@ export type ProjectManifest = BaseManifest & {
   fxChainFX3ToFX4?: boolean;     // Phase 2: FX3 → FX4 chain routing.
 };
 
-export type AllManifest = BaseManifest & {
-  type: "all";
-  sequences: unknown[];
-  songs: unknown[];
-  globalSettings: GlobalSettings;
-};
-
-export type SeqManifest = BaseManifest & {
-  type: "seq";
-  sequence: unknown;
-};
-
-export type AnyManifest = ProjectManifest | AllManifest | SeqManifest;
+export type AnyManifest = ProjectManifest;
 
 export type SampleEntry = {
   path: string;

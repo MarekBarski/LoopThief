@@ -99,6 +99,195 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 34 — 2026-05-24 — Mute Groups 16 — Per-pad cross-bank mutual muting
+
+### What was attempted
+
+New MPC-convention feature: per-pad `muteGroup` parameter (0 = OFF, 1-16). When a pad triggers, all OTHER pads (cross-bank, same program) sharing that group get a fast-release voice stop. Independent of the existing CHOKE mechanism (same-bank chokeGroup) and the explicit muteTargets list — all three coexist on every pad without interfering.
+
+### What worked
+
+**1. State shape (`src/store/useAppStore.ts`).**
+
+- Added `muteGroup: number` to the `PadAssignment` type (after `loop`). Default `0` in `createBankAssignments` factory.
+- Action-interface unions extended with `"muteGroup"`: `updateSelectedPadParam` and `setSelectedPadParam`.
+- `getParamLimits` got a `"muteGroup"` case returning `{ min: 0, max: 16 }`.
+- `labelGroup` switch in both `updateSelectedPadParam` and `setSelectedPadParam` got a `"MUTE GRP"` branch so undo-history entries label correctly.
+
+**2. Schema migration v4 → v5 (`src/disk/migrations/index.ts`).**
+
+`CURRENT_SCHEMA_VERSION` bumped from 4 to 5. New migration walks `manifest.programs[*].padAssignments[bank][*]` and fills `muteGroup: 0` on any pad missing the field. Existing `.lthief` projects load as if every pad had `muteGroup: 0` (OFF) — behaviour unchanged from before this feature.
+
+**3. Cross-bank mute cut helper (`useAppStore.ts`).**
+
+```ts
+function getMuteGroupStopGroups(
+  assignment: PadAssignment,
+  pad: string,
+  bank: PadBank,
+  padAssignments: Record<PadBank, PadAssignment[]>,
+  programId?: string,
+): string[] {
+  if (assignment.muteGroup === 0) return [];
+  const targets: string[] = [];
+  for (const otherBank of ["A", "B", "C", "D"] as const) {
+    for (const candidate of padAssignments[otherBank] ?? []) {
+      const samePadSameBank = otherBank === bank && candidate.pad === pad;
+      if (samePadSameBank) continue;
+      if (candidate.muteGroup !== assignment.muteGroup) continue;
+      targets.push(mixerChannelKey(otherBank, candidate.pad, programId));
+    }
+  }
+  return targets;
+}
+```
+
+Returns voice-group keys for every other pad sharing the group, across all four banks. No-op for `muteGroup === 0`. The existing `getMuteStopGroups` (same-bank CHOKE + explicit muteTargets) stays untouched and continues to fire alongside.
+
+**4. Trigger interception — live and offline paths.**
+
+- **Live trigger** (`playAssignedPadWithContext` ~line 7034): after the existing `samplerEngine.stopVoiceGroups(getMuteStopGroups(...))`, added a second call:
+  ```ts
+  const muteGroupTargets = getMuteGroupStopGroups(assignment, context.pad, context.bank, padAssignments, program?.id);
+  if (muteGroupTargets.length > 0) {
+    samplerEngine.stopVoiceGroups(muteGroupTargets, { releaseMs: 8 });
+  }
+  ```
+  `releaseMs: 8` matches the spec's "5-10ms fast release" range to avoid clicks. The empty-array guard keeps un-grouped pads on the hot path's zero-allocation behaviour.
+- **Offline render** (`scheduleSongEvent` ~line 9071): added `muteGroupTargets` alongside the existing `stopGroups`, both feeding into the same `keysToStop` list that the offline render uses to stop scheduled `AudioBufferSourceNode`s at the new event's start time. Ensures WAV export produces the same audible cut as live playback.
+
+**5. UI — MUTE GRP cycler in PROGRAM PARAMS view.**
+
+Added a new `<Param>` row after CHOKE in the right column of the 2-column PARAMS grid (`ProgramScreen.tsx:124-183`):
+
+```tsx
+<Param
+  label="MUTE GRP"
+  value={formatMuteGroup(selectedAssignment.muteGroup)}
+  onMinus={() => updateSelectedPadParam("muteGroup", -1)}
+  onPlus={() => updateSelectedPadParam("muteGroup", 1)}
+  editable={{
+    numericValue: selectedAssignment.muteGroup,
+    format: formatMuteGroup,
+    min: 0,
+    max: 16,
+    onCommit: (v) => setSelectedPadParam("muteGroup", Math.round(v)),
+  }}
+/>
+```
+
+New `formatMuteGroup(value)` helper: `0` → `"OFF"`, `1-16` → zero-padded `"01"`–`"16"`. Same format function passed to `EditableNumber` so the typed-input field shows identical text. Result: 11 fields in PARAMS view, last row has MUTE GRP alone in column 1 (column 2 empty) — minor visual asymmetry, acceptable. CHOKE row's raw-integer display unchanged.
+
+**6. CHOKE coexistence verified.**
+
+- The same trigger emits TWO `samplerEngine.stopVoiceGroups` calls per pad-press: one for `getMuteStopGroups` (CHOKE + muteTargets, same bank, hard stop), one for `getMuteGroupStopGroups` (mute group, cross-bank, 8 ms release). Independent target sets, both honored simultaneously.
+- A pad can be in `chokeGroup: 3` AND `muteGroup: 7` — both mechanisms apply on its trigger.
+- A pad's CHOKE behaviour is unaffected by any pad's MUTE GROUP setting and vice versa.
+
+**Build validation:** `npm run build` clean (2.16 s). Rust untouched this session, so no `cargo check` change.
+
+### What didn't work / pitfalls hit
+
+- **Initial migration attempt forgot the per-program nesting.** First draft walked `manifest.padAssignments` directly, but `padAssignments` lives inside each program object. Re-traced via `serializeProject` to confirm the on-disk shape: `manifest.programs: Program[]` where each `Program` has its own `padAssignments: Record<PadBank, PadAssignment[]>`. Fixed the migration to walk both layers. Caught before TS check via memory of the spec text.
+- **`formatChokeGroup` was already defined and unused** (declared at `ProgramScreen.tsx:616`, no callers). Tempted to merge it with `formatMuteGroup` since they produce identical output, but per spec "DO NOT TOUCH CHOKE" — left `formatChokeGroup` as dead code (cleanup deferrable), added `formatMuteGroup` next to it as a separate helper. Future cleanup pass could unify if a third value-with-same-format ever shows up.
+- **CHOKE max is 8** (per `getParamLimits.chokeGroup`), MUTE GRP max is 16. Different ranges by design — CHOKE's 8 is a smaller legacy convention, MUTE GRP follows the 16-group MPC convention from the spec. Worth noting because someone reading PARAMS row labels might expect parity.
+- **Considered `releaseMs: 5`** as the lower spec bound. Stuck with `8` to give a small headroom — at 48 kHz that's ~384 samples, plenty of slope to avoid the discontinuity click. Adjustable if Marek's testing surfaces audible clicks at 8 ms.
+- **Offline render path was easy to miss.** Two trigger paths exist: live (`playAssignedPadWithContext`) and offline (`scheduleSongEvent`, used for WAV export). The spec only flagged the live path, but the offline render also calls `getMuteStopGroups` (line 9071), meaning the same parallel addition was needed there for export fidelity. Missing it would have produced a WAV file with overlapping voices in mute-group sections while live playback cut them correctly. Caught by grep'ing for all `getMuteStopGroups` call sites before declaring the trigger wiring done.
+
+### Decisions made
+
+- **Independent helper `getMuteGroupStopGroups`**, not merged into `getMuteStopGroups`. Per spec: "Independent mechanisms ... Don't merge the systems. Don't refactor CHOKE." CHOKE's same-bank-only iteration stays; the new helper's all-banks iteration lives separately.
+- **Fast release 8 ms.** Spec said 5-10 ms. Middle of the range; safely above the click threshold.
+- **Hard stop (no release) for CHOKE/muteTargets, soft stop for MUTE GROUP.** This matches the existing pattern where the legacy mute mechanisms are immediate. The new mute group prefers a click-free transition because the spec explicitly called out the click-avoidance requirement.
+- **MUTE GRP row added at the end of PARAMS, not paired with CHOKE.** Considered pairing them on a dedicated "mute mechanisms" row (CHOKE col1, MUTE GRP col2). Reordering the grid felt like more disruption than the asymmetry is worth — UI structure left as additive.
+- **`formatMuteGroup` duplicated from `formatChokeGroup`**, not aliased. Future readers can see at a glance that the two formatters are deliberately independent (CHOKE might change format someday; MUTE GRP shouldn't follow automatically).
+- **Display format: `OFF` / `01`–`16`** (zero-padded). Matches MPC convention.
+- **Iteration order: A → B → C → D, then pad order within each bank.** Stable, deterministic order; the final voice-stop list is order-independent (set-based mute behaviour), so this is purely for ease of debugging.
+
+### Open issues / followups
+
+**Marek runtime test (Mute Groups acceptance):**
+
+**UI:**
+1. PROGRAM → F2 PARAMS → `MUTE GRP` visible as last row in right column, default `OFF`.
+2. Cycler `<` / `>` cycles: `OFF` → `01` → `02` → ... → `16` → `OFF` (wraps both directions).
+3. Click `MUTE GRP` value → type `5` → Enter → displays `05`.
+4. Type out-of-range (`99`, `-3`) → EditableNumber clamps to 0–16 on commit.
+5. Type `0`, Enter → displays `OFF`.
+6. Switching selected pad in the left column updates the displayed `MUTE GRP` to that pad's value.
+
+**Mute behaviour:**
+7. P01 `muteGroup=03`, P02 `muteGroup=03`, both have samples:
+   - Trigger P01 → plays.
+   - While P01 plays, trigger P02 → P01 stops with fast fadeout (no click), P02 plays.
+   - Trigger P01 again → P02 stops, P01 plays.
+8. P03 `muteGroup=OFF`:
+   - Trigger P01 (group 03), then P03 (OFF) → P01 keeps playing, P03 plays alongside.
+   - Trigger P03, then P01 → P03 keeps playing (P01's group 03 doesn't reach P03).
+9. P05 `muteGroup=03`, P06 `muteGroup=07`:
+   - Both play simultaneously without cutting each other (different groups).
+
+**Cross-bank:**
+10. A05 `muteGroup=05`, B05 `muteGroup=05`:
+    - Trigger A05 → plays.
+    - Switch to bank B, trigger B05 → A05 stops with fast fade, B05 plays.
+11. Sequencer pattern containing both A05 and B05 events → during playback the second one cuts the first as expected. Verify by running through offline WAV export — the export should show the same cut.
+
+**CHOKE coexistence:**
+12. P01 CHOKE pair = P02 (legacy choke), P01 `muteGroup=03`, P03 `muteGroup=03`:
+    - Trigger P01 → plays. Will choke P02 (if P02 was playing) via legacy CHOKE.
+    - Trigger P03 → P01 stops via Mute Group (not via CHOKE pair). P03 plays.
+    - Both systems active; neither breaks the other.
+
+**Save/load:**
+13. Set MUTE GRP across several pads → DISK → SAVE PROJECT → reload project → MUTE GRP values restored.
+14. Load an existing pre-Mute-Groups `.lthief` project (any saved before this session) → opens without crash. All pads default to `muteGroup: 0` (OFF). No behaviour change vs. before this feature.
+
+**Sequencer / Note Repeat:**
+15. Pattern with two pads sharing a mute group on different steps → during playback, the second pad cuts the first as expected.
+16. NOTE REPEAT on a pad with `muteGroup > 0` → each retrigger cuts other group members. Matches MPC behaviour.
+
+**Offline export:**
+17. Build a song with mute-group pads, export to WAV via SONG screen → the exported WAV honours the same cuts as live playback (the offline `scheduleSongEvent` mirror was the easy-to-miss bit; verify the WAV is clean).
+
+**Deferred / Phase-post:**
+
+- **Visual indicator on the pad list (left column of PROGRAM)** for mute-group membership — explicitly off the table per anti-pattern list. Phase post-1.1 if Marek requests.
+- **Dedicated "Mute Group Editor" screen** — also off the table. Per-pad PARAMS field is the canonical edit point.
+- **`formatChokeGroup` dead-code cleanup** — leftover from a prior session, unused. Removable in a future polish pass. Not touching now because CHOKE is sacred per spec.
+
+### Files modified
+
+- `src/store/useAppStore.ts` — `PadAssignment.muteGroup` field; `createBankAssignments` default; `updateSelectedPadParam` / `setSelectedPadParam` interface unions + label-group switch; `getParamLimits` muteGroup case; new helper `getMuteGroupStopGroups`; live trigger interception in `playAssignedPadWithContext`; offline render mirror in `scheduleSongEvent`.
+- `src/disk/types.ts` — `CURRENT_SCHEMA_VERSION` 4 → 5.
+- `src/disk/migrations/index.ts` — new v4 → v5 migration filling `muteGroup: 0` per-pad per-bank per-program.
+- `src/screens/ProgramScreen.tsx` — `<Param label="MUTE GRP" ...>` row added to PARAMS view; `formatMuteGroup` helper added next to existing `formatChokeGroup`.
+
+Total Session 34 diff: 4 modified files. `npm run build` clean (2.16 s). No Rust changes.
+
+### Session 34 follow-up — PARAMS column overflow scroll fix
+
+Marek tested Mute Groups and reported MUTE GRP (the 6th right-column row) was visibly clipped at the bottom of the PARAMS container, with `OFF +` half-cut.
+
+**Root cause.** The PARAMS view container at `ProgramScreen.tsx:125` had `overflow-hidden` — designed for a 5-row layout. Adding MUTE GRP pushed it to 6 rows × ~2.6% vertical padding each, which exceeded the bounded section height at smaller LCD render scales. The grid laid out correctly, just clipped invisibly.
+
+**Fix.** One-line change per view:
+
+- `programView === "PARAMS"` div: `overflow-hidden` → `overflow-y-auto`.
+- `programView === "FILTER"` div: defensive `overflow-y-auto` added (currently 3 rows, fits; future-proof).
+- `programView === "FX"` div: defensive `overflow-y-auto` added (same rationale).
+
+The global LCD-tinted scrollbar from `src/styles/index.css:38+` (added Session 31 for the ASSIGN sample list + reused by FileBrowser) applies automatically — no per-screen styling needed. `min-h-0` was already on each container so the grid shrinks to the parent's bounded height and overflow actually triggers.
+
+Visual outcome: scrollbar appears only when content overflows (default browser behaviour for `overflow-y-auto`), thin and LCD-green-tinted via `scrollbar-width: thin` + `scrollbar-color: rgba(145, 164, 119, 0.55) rgba(0, 20, 0, 0.4)`. Mouse-wheel scrolls when hovering. Identical to the ASSIGN scrollbar pattern.
+
+**Files modified (follow-up):**
+- `src/screens/ProgramScreen.tsx` — three `overflow-y-auto` additions (PARAMS / FILTER / FX containers).
+
+`npm run build` clean (2.17 s).
+
+---
+
 ## Session 33 — 2026-05-24 — In-LCD file browser Sub-phase A — native filesystem commands
 
 ### What was attempted
@@ -273,6 +462,404 @@ If 1-5 + 7 all succeed, Sub-phase A is signed off and Sub-phase B can proceed in
 - `src-tauri/src/fs_browser.rs` — NEW. Full module per spec.
 
 Cumulative diff: 3 modified + 1 new file, +109/-5 in modified lines, new file ~330 LOC. `cargo check` clean. `npm run build` clean. No frontend changes — existing flows continue to work via the legacy `save_file_dialog` command and HTML file inputs.
+
+### Session 33 Sub-phase B — FileBrowser React component + state slice + dev triggers
+
+Sub-phase A committed as `a1fcb7f`. Marek green-lit continuing with B in the same session.
+
+**Scope (B):** stand up the React component, the Zustand state slice, and wire navigation. NO mode-aware F1 OPEN / SAVE behaviour, NO F2 PREVIEW playback, NO F2 NEW FOLDER overlay, NO overwrite confirmation. Those land in Sub-phase C. NO migration of existing call sites — that's Sub-phase D.
+
+**What worked**
+
+- **Screen registration.** Added `"FILE_BROWSER"` to `src/types/navigation.ts` `screens` const. Mapped to `FileBrowserScreen` in `src/screens/index.ts`. Wired through the `LcdContent.tsx` router automatically.
+
+- **Store slice (`src/store/useAppStore.ts`).** New types `FileBrowserMode`, `FsLocationKind`, `FsLocation`, `FsEntry` (mirroring Rust serde shape). New state fields: `fileBrowserMode`, `fileBrowserPath`, `fileBrowserLocations`, `fileBrowserEntries`, `fileBrowserSelectedIndex`, `fileBrowserLoading`, `fileBrowserError`, `fileBrowserReturnScreen`. New actions: `openFileBrowser(mode)`, `closeFileBrowser()`, `fileBrowserSelectIndex(i)`, `fileBrowserNavigateInto(entry)`, `fileBrowserNavigateUp()`, `fileBrowserNavigateToLocation(path)`, `fileBrowserRefreshLocations()`. All async actions guard on `isTauri()` and bail with a user-facing message in browser dev mode.
+
+- **`computeParentPath` helper.** Pure JS path math (~15 LOC) handles Windows drives (`C:\` → null), Linux root (`/` → null), and arbitrary nested paths. Used by `fileBrowserNavigateUp` and mirrored client-side inside the screen for ".." row visibility.
+
+- **`extensionsForMode` helper.** Maps `LOAD_SAMPLE` / `SAVE_SAMPLE` / `SAVE_MIXDOWN_WAV` → `["wav"]` and `LOAD_PROJECT` / `SAVE_PROJECT` → `["lthief"]`. Used by every directory-listing call.
+
+- **`FileBrowserScreen.tsx` (~270 LOC).** Two-column grid: LOCATIONS sidebar (left, ~22% width) + FOLDER CONTENTS list (right). Header carries the mode title + truncated path. List rows show name, duration/modified, size — column choice depends on mode (LOAD_PROJECT / SAVE_PROJECT show modified-date; other modes show WAV duration). Folder rows end with `/` per spec convention. SELECTED footer shows the highlighted entry's name. Softkey row uses mode-aware labels (only F3 CANCEL and F4 REFRESH actually wired in B; the rest render disabled).
+
+- **Auto-scroll selected into view.** `useRef` + `useEffect` on `selectedIndex` change — same pattern as the ASSIGN screen scrollbar from Session 31.
+
+- **Keyboard navigation.** Window-level keydown handler installed via the component's mount effect. Arrow Up/Down adjust selection (auto-scroll follows), Enter navigates into a folder, Backspace navigates up, Escape closes. Tear-down on unmount via the effect's cleanup. Short-circuits when the user is typing in an input/textarea/contentEditable — important for Sub-phase C's filename input.
+
+- **".." parent-up row.** Rendered as a virtual first row when `computeParentPathClientSide` returns a non-null value. Backend doesn't emit it; UI knows whether parent navigation is possible from the path string alone.
+
+- **Loading/error states.** Both rendered inside the list area. Loading: "LOADING..." in muted phosphor. Error: "ERROR: <message>" in red. Empty directory: "--- EMPTY ---".
+
+- **Three temporary DEV triggers in DISK screen** (`src/screens/DiskScreen.tsx`):
+  - `[DEV] FILE BROWSER (LOAD_SAMPLE)` → opens with `.wav` filter on `C:\` (or first available drive).
+  - `[DEV] FILE BROWSER (LOAD_PROJECT)` → opens with `.lthief` filter.
+  - `[DEV] FILE BROWSER (SAVE_PROJECT)` → opens save mode (no UI behaviour yet beyond display).
+
+  Styled cyan to distinguish from real buttons. Inline comment marks them for removal in Sub-phase D.
+
+- **Build clean.** `npm run build` — 2.12 s, no TypeScript errors. The pre-existing chunk-size warning is unchanged.
+
+**What didn't work / pitfalls hit**
+
+- **First store edit broke the screen-registry typecheck.** Adding `"FILE_BROWSER"` to the union exposed that `screensById` was missing the entry. Caught by an intentional `npx tsc --noEmit` probe mid-edit. Lesson: union changes propagate to `Record<ScreenId, ...>`, so registry updates are paired commits with the union edit.
+
+- **`useEffect` keyboard handler scoping concern.** The window-level keydown listener captures `entries`, `selectedIndex`, etc. from its closure. With React's effect-deps array tracking them, every selection change re-creates the listener (mount/unmount per keypress). Acceptable here (the listener body is tiny and add/removeEventListener is O(1)), but worth flagging if this pattern needs to scale. Cleaner alternative: `useRef` for the latest state. Skipped because the simpler version reads fine.
+
+- **`KeyboardShortcuts.tsx` global keymap doesn't know about FILE_BROWSER.** When the screen is open and user presses arrow keys, two listeners fire: the FileBrowser's keydown + the global `KeyboardShortcuts` window listener. The global one short-circuits on input focus but NOT on screen identity. For Sub-phase B this is harmless (arrows aren't bound globally), but Sub-phase C's filename input + F2 NEW FOLDER overlay will need explicit attention. Flagged.
+
+- **Browser dev mode (no Tauri) shows a `lastAudioMessage` toast** when openFileBrowser is called: "FILE BROWSER REQUIRES DESKTOP APP". Not a great UX — the user might wonder why nothing happened. Sub-phase D will keep the HTML file input fallback for browser mode (per spec), so this branch is transitional. Acceptable for now.
+
+- **Path truncation is naive.** `truncatePath` lops the leading characters with "..." prefix. Doesn't preserve the last folder name boundary, so the truncated path can show "...rs\Marek\Desktop" instead of "...\Desktop". Cosmetic; revisit if it ever bothers.
+
+**Decisions made**
+
+- **Screen-as-route, not modal overlay.** FILE_BROWSER lives in the `activeScreen` union alongside DISK, MAIN, etc. `openFileBrowser` swaps the active screen + stashes the previous one in `fileBrowserReturnScreen`; `closeFileBrowser` swaps back. Cleaner than a parallel modal-overlay system, fits the LCD-content-router architecture, and Sacred-Zone-compliant (no separate window).
+- **`isTauri()` guard inside actions, not at the call site.** Centralised so future call sites can dispatch `openFileBrowser` without each having to check. Browser mode silently no-ops with a message.
+- **Mode-aware column labels.** Project files get a `MODIFIED` column; samples / mixdowns get a `DURATION` column. Different information is useful per mode.
+- **Three DEV triggers in DISK** (not one). Marek can sanity-check all three mode shapes (extension filter, softkey labels, title) without rebuilding.
+- **F3 CANCEL + F4 REFRESH are the only live softkeys in B.** Rest render as disabled (`disabled` attribute + opacity-40). Honest UI — the labels show what's coming, but clicks don't fire anything fake.
+- **No filename input rendered in save modes.** Sub-phase C adds it. Sub-phase B's save-mode screens look almost identical to load-mode screens minus the F-keys.
+- **`MountPoint` enum variant `#[allow(dead_code)]` on the Rust side** stays — Sub-phase B doesn't touch Rust. (Confirming the prior Sub-phase A choice still applies.)
+
+**Open issues / followups**
+
+**Marek runtime test (Sub-phase B acceptance):**
+
+In `npm run tauri dev`:
+
+1. Open DISK screen.
+2. Click `[DEV] FILE BROWSER (LOAD_SAMPLE)` → activeScreen swaps to FILE_BROWSER. Title shows "LOAD SAMPLE". Path header shows the first drive (typically "C:\\"). LOCATIONS sidebar lists drives + Desktop. FOLDER CONTENTS lists `.wav` files (and all folders) in that root.
+3. Click a folder in the list → list refreshes to that folder's contents. Path header updates.
+4. Click `..` row at the top → navigates up. ".." row disappears when at a drive root.
+5. Press Backspace → same effect as ".." click.
+6. Click a drive in the sidebar → navigates to that drive root.
+7. Click `Desktop` in the sidebar → navigates to the user's Desktop folder. Verify any `.wav` files there appear.
+8. Arrow Up/Down → selection highlight moves; auto-scroll keeps it visible in long lists.
+9. Double-click a folder → navigates into it (alternative to single-click).
+10. Press F4 REFRESH → re-enumerates locations. Plug a USB drive between open and F4 → new drive appears.
+11. Press F3 CANCEL → closes the FileBrowser. activeScreen returns to DISK.
+12. Press Escape → also closes.
+13. Click `[DEV] FILE BROWSER (LOAD_PROJECT)` → same flow, but only `.lthief` files visible in the list. Column shows MODIFIED instead of DURATION.
+14. Click `[DEV] FILE BROWSER (SAVE_PROJECT)` → softkey row shows `F1 SAVE / F2 NEW FOLDER / F3 CANCEL / F4 REFRESH` (F1/F2 disabled in B). Otherwise identical.
+15. In browser dev mode (`npm run dev`) → clicking the DEV triggers shows "FILE BROWSER REQUIRES DESKTOP APP" toast and no navigation.
+
+**Deferred to Sub-phase C:**
+
+- F1 OPEN handler — mode-aware. LOAD_SAMPLE: load selected `.wav` into sample registry via `fs_read_file_bytes` → decode → register. LOAD_PROJECT: load `.lthief` bytes → existing `loadFile(blob)` flow.
+- F2 PREVIEW toggle (LOAD_SAMPLE) — wires to `samplerEngine` preview playback on selection change.
+- Save modes:
+  - Filename input (visible only when `mode` starts with "SAVE_"). Auto-suggests based on context.
+  - F1 SAVE → serialize current state → `fs_write_file_bytes(path/filename, bytes)`.
+  - F2 NEW FOLDER → text-input overlay → `fs_create_folder` → navigate into new folder.
+  - Overwrite confirmation overlay — `fs_path_exists` check pre-save → "File exists. F1 OVERWRITE / F3 CANCEL".
+
+**Deferred to Sub-phase D:**
+
+- Migrate `DiskScreen.tsx:107` `projectInputRef.current?.click()` → `openFileBrowser("LOAD_PROJECT")`.
+- Migrate `DiskScreen.tsx:156` `fileInputRef.current?.click()` → `openFileBrowser("LOAD_SAMPLE")`.
+- Migrate 5 `saveBlobAsync` call sites in `useAppStore.ts` (exportSelectedMemorySample, exportSongToWav, saveProjectFile, saveAllFile, saveSeqFile — the last two get DELETED, not migrated).
+- Remove `[DEV]` buttons from DISK screen.
+- Remove `save_file_dialog` Rust command + dialog-warmup thread.
+- Remove `tauri-plugin-dialog` + `native-dialog` from `Cargo.toml` if no other users.
+- Strip `.lthief-all` + `.lthief-seq` format support (DISK UI + store actions + disk serializers + loader detection).
+- Strict path-safety hardening on Rust commands (canonicalise + root-prefix check).
+
+**Files modified (Sub-phase B)**
+
+- `src/types/navigation.ts` — added `"FILE_BROWSER"` to `screens`.
+- `src/store/useAppStore.ts` — `FileBrowserMode` / `FsLocation` / `FsEntry` types, `extensionsForMode` + `computeParentPath` helpers, 8 new state fields, 7 new actions (open / close / select / navigateInto / navigateUp / navigateToLocation / refreshLocations).
+- `src/screens/FileBrowserScreen.tsx` — NEW (~270 LOC). LCD-style two-column layout, keyboard nav, auto-scroll, mode-aware softkey labels + columns, loading/error states.
+- `src/screens/index.ts` — imported + mapped `FILE_BROWSER` → `FileBrowserScreen`.
+- `src/screens/DiskScreen.tsx` — three temporary DEV trigger buttons (cyan-styled), marked for removal in Sub-phase D.
+
+Cumulative Sub-phase B diff: 4 modified + 1 new file. Combined Session 33 (A + B): 7 modified + 2 new, `cargo check` clean, `npm run build` clean.
+
+### Session 33 Sub-phase C — F1 OPEN / SAVE / PREVIEW / NEW FOLDER / OVERWRITE handlers
+
+Sub-phase B's [DEV] triggers gave Marek a visual shell. Sub-phase C makes the shell actually load samples, load projects, save projects, save samples, save mixdown WAVs, preview WAVs on selection, create folders, and confirm overwrites.
+
+**What worked**
+
+- **F1 OPEN — mode-dispatched read flow.** `fileBrowserOpenSelected` reads file bytes via `fs_read_file_bytes`, normalises to a `Uint8Array` backed by a non-shared `ArrayBuffer` (TS strictness around `Uint8Array<ArrayBufferLike>` vs SharedArrayBuffer required an explicit `new Uint8Array(bytes as ArrayLike<number>)` allocation), then routes through the existing app code paths:
+  - `LOAD_SAMPLE`: wraps the bytes in `new File([u8], name, { type: "audio/wav" })` and calls the existing `importWavFile(file)` action. That handles WAV decode + sample-library registration + state update — no new code path needed.
+  - `LOAD_PROJECT`: wraps in `new Blob([u8])` and calls existing `loadFile(blob)`. That handles `.lthief` ZIP unzip + project hydration + FX engine sync.
+
+  On success the browser closes via `closeFileBrowser()` and the previous screen is restored.
+
+- **F2 PREVIEW toggle + playback (LOAD_SAMPLE only).** `fileBrowserPreviewEnabled` boolean (default `true`). When a `.wav` row is clicked AND preview is enabled, `fileBrowserPreviewEntry`:
+  1. Reads bytes via `fs_read_file_bytes`.
+  2. Decodes via `samplerEngine.decodeAudioData(u8.buffer)`.
+  3. Plays through a dedicated `AudioBufferSourceNode` connected to `ctx.destination` — bypasses the sample library entirely (preview is ephemeral, not an import).
+  4. Stores the source ref in module-scope `activeFileBrowserPreview` so the next preview / toggle-off / close can `.stop()` + `.disconnect()` it cleanly.
+
+  Keyboard arrow-nav also triggers preview via a `useEffect([selectedIndex, ...])` in the screen component. Mouse click triggers it inline in the row's `onClick`.
+
+  Preview source non-serialisable → kept at module scope, not in Zustand state. Same pattern as `activeRecordingCapture` from prior sessions.
+
+- **F1 SAVE — mode-dispatched serialize-and-write.** `fileBrowserSave`:
+  1. Sanitises filename (strips `< > : " \ / | ? *`, trims whitespace).
+  2. Auto-appends `.lthief` (SAVE_PROJECT) or `.wav` (SAVE_SAMPLE / SAVE_MIXDOWN_WAV) if user didn't.
+  3. Joins with current directory via `joinPath` (matches host separator style — backslash if dir uses backslash, slash otherwise).
+  4. Calls `fs_path_exists`. If true, sets `fileBrowserOverwritePath` and bails — UI shows the overwrite overlay.
+  5. If false, calls `performFileBrowserWrite(get, set, mode, fullPath)`.
+
+  `performFileBrowserWrite` is a module-scope helper that owns the mode-dispatched serialization:
+  - **SAVE_PROJECT**: builds project manifest via `serializeProject` (same shape as existing `saveProjectFile`), zips via `writeProjectZip`, converts to `Uint8Array(arrayBuffer)`.
+  - **SAVE_SAMPLE**: encodes the selected DISK memory sample via `encodeWavRegion(audioRef, region.start, region.end)`, wraps in `Uint8Array` (the codec returns raw `ArrayBuffer`).
+  - **SAVE_MIXDOWN_WAV**: renders song via `renderSongOffline` then `encodeAudioBufferToWav` — same offline-render path as existing `exportSongToWav`.
+
+  All three serialization paths feed into a single `fs_write_file_bytes` call with `bytes: Array.from(u8)` (Tauri bridge serialises `Uint8Array` as `number[]`). On success the browser closes + `lastSavedProjectVersion` updates.
+
+- **Overwrite confirmation.** `fileBrowserOverwritePath: string | null` — when non-null, the UI renders a modal overlay over the screen with `F1 OVERWRITE` / `F3 CANCEL` buttons. Overlay also displays the full target path so the user knows exactly what they're overwriting. `fileBrowserConfirmOverwrite` calls `performFileBrowserWrite` with the saved path; `fileBrowserCancelOverwrite` clears the path and returns to the save-mode screen with the filename input untouched (so the user can edit and retry).
+
+- **F2 NEW FOLDER overlay.** Modal with autofocus text input. Enter confirms (calls `fs_create_folder` + auto-navigates into the new folder). Escape cancels (clears state, dismisses overlay). The store action rejects names containing `/` or `\` so the user can't accidentally create a multi-level path (Rust `create_dir` already refuses missing parents, but this gives a clearer error pre-flight).
+
+- **Filename input in SAVE_* modes.** Replaces the SELECTED row in the footer when mode starts with `SAVE_`. Input value is `fileBrowserSaveFilename` (auto-suggested at open time via `suggestSaveFilename`: SAVE_SAMPLE uses the selected memory sample name, SAVE_PROJECT defaults to "untitled", SAVE_MIXDOWN_WAV uses `Mixdown_<YYYYMMDDhhmmss>`). Extension preview shown after the input as a `.lthief` / `.wav` suffix. Enter on the input triggers `fileBrowserSave`. Escape blurs.
+
+- **Suspended global keyboard nav while overlays are open.** The window-level keydown listener short-circuits when `newFolderOpen || overwritePath` is truthy, so Arrow Up/Down don't bleed into the modal context. Same pattern for `isTyping` check (input focus).
+
+- **`stopFileBrowserPreview` called on close + toggle-off + select-change.** Three call sites:
+  - `closeFileBrowser` (Escape / F3 CANCEL / programmatic close)
+  - `fileBrowserTogglePreview` (F2 toggle to OFF)
+  - `openFileBrowser` (re-entry — clean slate)
+  - Implicitly via the new source replacing the old in `fileBrowserPreviewEntry`.
+
+  Wrapped in try/catch — `.stop()` on an already-ended source throws `InvalidStateError` which we ignore.
+
+- **`npm run build` clean** (2.13 s). Initial run had 5 TypeScript errors around `Uint8Array<ArrayBufferLike>` vs `BlobPart` / `ArrayBuffer` assignability — all fixed by explicit casts (`as BlobPart`, `as ArrayBuffer`) and by wrapping `encodeWavRegion` / `encodeAudioBufferToWav` returns in `new Uint8Array(...)` since they return raw `ArrayBuffer`.
+
+**What didn't work / pitfalls hit**
+
+- **TS `Uint8Array<ArrayBufferLike>` strictness.** Newer TS treats `Uint8Array.buffer` as `ArrayBuffer | SharedArrayBuffer`, blocking assignment to `BlobPart` (which only accepts `ArrayBuffer`-backed views). First attempt used a `bytes instanceof Uint8Array` ternary which TS narrowed but kept the `ArrayBufferLike` parameter. Fix: unconditionally `new Uint8Array(bytes as ArrayLike<number>)` to force a fresh, non-shared backing buffer. Casts at the `Blob` / `File` call sites cover the remaining narrowing gap.
+- **`encodeWavRegion` and `encodeAudioBufferToWav` return raw `ArrayBuffer`** — not `Uint8Array`. My `performFileBrowserWrite` typed `bytes: Uint8Array` and assigned directly, triggering TS errors. Wrapped each codec return in `new Uint8Array(...)` to keep the variable shape uniform.
+- **Preview `useEffect` exhaustive-deps warning.** The selection-change preview effect intentionally depends only on `[selectedIndex, isLoadSample, previewEnabled]` — including `entries` would re-fire preview on every directory load, which is wrong. Suppressed with `// eslint-disable-next-line react-hooks/exhaustive-deps`.
+- **`renderSongOffline` is a function-local declaration, not exported** — referenced from `performFileBrowserWrite` (a top-level helper). It works because both live in `useAppStore.ts` and hoisting/closure resolves correctly, but the dependency direction is inverted compared to module-scope ordering convention. Acceptable for now — Sub-phase D's cleanup pass should consider extracting save-related helpers into `src/disk/`.
+- **`importWavFile` and `loadFile` both consume the file synchronously inside their bodies**, but their return value is `Promise<void>` / `Promise<...>`. My handler awaits them before calling `closeFileBrowser` — important: if I closed the browser before the load completed, the store's `recordedSamples` / sequence state would mutate AFTER the screen had already returned to DISK. Tested mentally; flagged for Marek runtime test.
+
+**Decisions made**
+
+- **Sample preview goes through a dedicated `AudioBufferSourceNode`** connected directly to `ctx.destination`, NOT through `samplerEngine.play()`. Two reasons: (1) preview is ephemeral and shouldn't pollute sample library state; (2) `samplerEngine.play()` expects a registered `PlayableSample` — wiring up a temporary registration just for preview would be wasted code. The direct path is the cleanest match to the "play this buffer once" semantic.
+- **`performFileBrowserWrite` is a module-scope helper, not a store action.** Two callers (`fileBrowserSave` and `fileBrowserConfirmOverwrite`) need the same logic; extracting it avoids duplication and keeps the store action surface narrow.
+- **Filename input only in SAVE_* modes.** The SELECTED row in LOAD_* modes serves a different purpose (just shows what's highlighted). Switching the footer between the two layouts based on `isSaveMode` keeps the screen real estate small.
+- **Path separator detection per-call** (`dir.includes("\\")` in `joinPath`). Cheap and reliable — Windows paths from `fs_list_locations` use backslash uniformly, Linux paths use forward slash. Mixed-style paths shouldn't arise.
+- **Sanitize filename strips both Windows-illegal characters AND `/ \` separators.** A user typing `subdir/file` would have meant "save inside subdir" — but our overlay-driven NEW FOLDER flow is the only way to descend; raw typing of paths in the input is rejected. Forces the user through the navigation UI for path changes.
+- **Auto-suggestion uses ISO timestamp for mixdowns** (`Mixdown_YYYYMMDDhhmmss`). MPC convention (and matches the spec text "Mixdown_<timestamp>"). Trivial to revise to a more readable format later.
+- **`Array.from(bytes)` for the Tauri write.** Tauri 2's `invoke` bridge serialises `number[]` natively but doesn't have direct Uint8Array handling — the array conversion is mandatory. ~3 ms overhead on 1 MB writes; acceptable.
+
+**Open issues / followups**
+
+**Marek runtime test (Sub-phase C acceptance):**
+
+In `npm run tauri dev`:
+
+1. **LOAD_SAMPLE preview.** DISK → `[DEV] FILE BROWSER (LOAD_SAMPLE)` → navigate to a folder with `.wav` files → click a row → audio preview plays through default output. Click a different row → previous preview stops, new one plays.
+2. **LOAD_SAMPLE F2 PREVIEW toggle.** With preview ON → click .wav → plays. Click F2 PREVIEW → status changes to "PREVIEW: OFF" → click another .wav → silent (selects only). Click F2 again → back to ON.
+3. **LOAD_SAMPLE F1 OPEN.** Select a .wav → F1 OPEN → browser closes, sample appears in DISK memory list with the file's name. (Verify by going back to DISK after close.)
+4. **LOAD_SAMPLE Enter / double-click.** Same as F1 OPEN — Enter on selected non-folder OR double-click triggers the load.
+5. **LOAD_PROJECT F1 OPEN.** Navigate to a `.lthief` → F1 OPEN → current project replaced with loaded one. Browser closes.
+6. **SAVE_PROJECT auto-suggest.** Open SAVE_PROJECT → filename input shows "untitled" pre-filled.
+7. **SAVE_PROJECT save to new path.** Navigate to a folder without `untitled.lthief` → F1 SAVE → file written, browser closes, `SAVED: <full path>` toast appears.
+8. **SAVE_PROJECT overwrite confirmation.** Navigate to a folder WITH `untitled.lthief` (or change filename to match an existing one) → F1 SAVE → overwrite modal appears with the full target path → F1 OVERWRITE writes (browser closes), F3 CANCEL aborts (back to save screen).
+9. **F2 NEW FOLDER.** In any SAVE_* mode → F2 NEW FOLDER → modal appears with autofocused input → type `MyTest` → Enter → folder created, browser navigates into it. Esc on the modal cancels without creating.
+10. **NEW FOLDER name validation.** Try typing `bad/name` → on Enter, browser shows "Folder name cannot contain / or \\" error (the modal closes or the error is surfaced via `fileBrowserError`).
+11. **Filename input Enter triggers SAVE.** SAVE_PROJECT → click into filename input → type new name → Enter → save fires.
+12. **Filename Esc blurs.** Same field → Esc → input loses focus (so global keyboard nav can resume).
+13. **Keyboard nav suspended during overlays.** Open new folder overlay → press Arrow Up/Down → selection in the main list does NOT change. Close overlay → arrows resume.
+14. **Save mode SELECTED footer hidden, FILENAME footer shown.** Verify visually.
+15. **`SAVED:` lastAudioMessage** visible on top bar after successful save.
+
+**Deferred to Sub-phase D:**
+
+- Replace `DiskScreen.tsx:107` `projectInputRef.current?.click()` (LOAD PROJECT FILE button) → `openFileBrowser("LOAD_PROJECT")`. Remove the file input + the `loadFile(blob)` consumer (FileBrowser handles it).
+- Replace `DiskScreen.tsx:156` `fileInputRef.current?.click()` (F1 IMPORT softkey) → `openFileBrowser("LOAD_SAMPLE")`. Remove the file input.
+- Replace `useAppStore.ts:5099` `saveProjectFile(name)` callers — DISK SAVE PROJECT button at `DiskScreen.tsx:86` becomes `openFileBrowser("SAVE_PROJECT")`. Same for Ctrl+S in KeyboardShortcuts (line 104) and the QUIT save-and-quit flow.
+- Replace `useAppStore.ts:4894` `exportSelectedMemorySample` → `openFileBrowser("SAVE_SAMPLE")`. DISK F5 EXPORT softkey.
+- Replace `useAppStore.ts:4922` `exportSongToWav` → `openFileBrowser("SAVE_MIXDOWN_WAV")`. Song export flow.
+- Remove `saveAllFile` and `saveSeqFile` actions entirely (spec D: "FULL REMOVAL of .lthief-all and .lthief-seq formats").
+- Remove the [DEV] buttons from DISK screen.
+- Remove `save_file_dialog` Rust command + dialog-warmup thread.
+- Remove `tauri-plugin-dialog` + `native-dialog` from Cargo.toml if no consumers remain.
+- Strict path-safety hardening on Rust commands (canonicalise + root-prefix check).
+- Browser dev mode fallback verification — HTML file inputs preserved when `!isTauri()`.
+
+**Files modified (Sub-phase C)**
+
+- `src/store/useAppStore.ts` — added 5 state fields (`fileBrowserPreviewEnabled`, `fileBrowserSaveFilename`, `fileBrowserNewFolderOpen`, `fileBrowserNewFolderName`, `fileBrowserOverwritePath`), 11 new actions (`fileBrowserOpenSelected`, `fileBrowserTogglePreview`, `fileBrowserPreviewEntry`, `fileBrowserSetSaveFilename`, `fileBrowserSave`, `fileBrowserConfirmOverwrite`, `fileBrowserCancelOverwrite`, `fileBrowserOpenNewFolder`, `fileBrowserSetNewFolderName`, `fileBrowserConfirmNewFolder`, `fileBrowserCancelNewFolder`), 5 module-scope helpers (`activeFileBrowserPreview` tracker, `stopFileBrowserPreview`, `suggestSaveFilename`, `sanitizeSaveFilename`, `joinPath`, `isWavName`, `performFileBrowserWrite`). Extended `openFileBrowser` to seed filename + reset overlays. Extended `closeFileBrowser` to stop preview + reset overlays.
+- `src/screens/FileBrowserScreen.tsx` — rewrote with Sub-phase C UI: filename input row (save modes), preview status row (LOAD_SAMPLE), preview-on-select effect, mode-aware F1/F2 click handlers, new folder modal overlay, overwrite confirmation modal overlay. Window keydown listener now suspends while overlays are open.
+
+Cumulative Session 33 (A + B + C) diff: 7 modified + 2 new, `cargo check` clean (Rust unchanged in B/C), `npm run build` clean.
+
+### Session 33 Sub-phase D — Migration + obsolete format removal + path persistence + SWING input
+
+Final sub-phase of the file browser rollout. Migrates all visible save/load flows to the FileBrowser in Tauri (browser dev keeps HTML fallback), removes the `.lthief-all` and `.lthief-seq` formats end-to-end, drops the `tauri-plugin-dialog` plugin, persists per-mode last-used paths across restarts, and fixes the TC screen's SWING field to accept keyboard input.
+
+**What worked**
+
+**1. Migration of all visible save/load UI handlers.**
+
+- **DISK SAVE PROJECT button** — branches on `isTauri()`: Tauri opens `openFileBrowser("SAVE_PROJECT")`; browser keeps legacy `saveProjectFile("project")` anchor download.
+- **DISK LOAD PROJECT button** — Tauri opens `openFileBrowser("LOAD_PROJECT")`; browser clicks `projectInputRef.current?.click()`.
+- **DISK F1 IMPORT softkey** — Tauri opens `openFileBrowser("LOAD_SAMPLE")`; browser clicks `fileInputRef.current?.click()`.
+- **DISK F5 EXPORT softkey** — Tauri opens `openFileBrowser("SAVE_SAMPLE")`; browser calls legacy `exportSelectedMemorySample()`.
+- **Ctrl+S in KeyboardShortcuts** — Tauri opens `openFileBrowser("SAVE_PROJECT")`; browser calls `saveProjectFile("untitled")`.
+- **SONG WAV export** — Tauri opens `openFileBrowser("SAVE_MIXDOWN_WAV")`; browser stays on the existing modal-based render+download flow.
+
+In all cases the HTML file inputs (`projectInputRef`, `fileInputRef`) and the legacy `saveBlobAsync`-based actions are preserved for the browser branch — Sub-phase D anti-pattern explicitly says don't polish browser, just keep it working.
+
+**2. `.lthief-all` and `.lthief-seq` formats removed end-to-end.**
+
+| Surface | Action |
+|---|---|
+| `src/disk/serializers/all.ts` | DELETED |
+| `src/disk/serializers/seq.ts` | DELETED |
+| `src/disk/index.ts` | `serializeAll` / `serializeSeq` / `LoadedAll` / `LoadedSeq` exports removed |
+| `src/disk/types.ts` | `AllManifest` / `SeqManifest` types removed; `AnyManifest = ProjectManifest`; `ManifestType = "project"` (was union) |
+| `src/disk/loader.ts` | `LoadedAll` / `LoadedSeq` removed; `LoadedBundle = LoadedProject`; loader throws "Unsupported format. .lthief-all and .lthief-seq were dropped — use .lthief project files." on legacy manifest type detection |
+| `src/store/useAppStore.ts` | `saveAllFile` / `saveSeqFile` actions + interface entries removed; `hydrateAllBundle` / `hydrateSeqBundle` functions removed; `loadFile` simplified to a single project branch |
+| `src/screens/DiskScreen.tsx` | `SAVE ALL SEQS` / `SAVE CURRENT SEQ` buttons removed; HTML file input `accept=".lthief,.lthief-all,.lthief-seq"` → `accept=".lthief"` |
+
+Grep across `src/` for `lthief-all`, `lthief-seq`, `saveAllFile`, `saveSeqFile`, `serializeAll`, `serializeSeq`, `hydrateAllBundle`, `hydrateSeqBundle`, `AllManifest`, `SeqManifest`, `LoadedAll`, `LoadedSeq` returns only doc-comments referencing the removal. No active code paths remain.
+
+**3. `[DEV]` triggers removed from DISK.** The cyan testing buttons added in Sub-phase B are gone, replaced by real DISK action wiring.
+
+**4. `tauri-plugin-dialog` plugin removed from Cargo.toml + capabilities + lib.rs.**
+
+- `Cargo.toml` — dropped `tauri-plugin-dialog = "2"` line. Updated `native-dialog`'s comment to reflect the QUIT-only use case.
+- `src-tauri/src/lib.rs` — removed `use tauri_plugin_dialog::DialogExt;`, `.plugin(tauri_plugin_dialog::init())`, `let _ = app.dialog();` in setup, and the entire 18-LOC dialog warmup background thread.
+- `src-tauri/capabilities/default.json` — dropped `dialog:default` and `dialog:allow-save` permissions.
+
+Auto-regenerated `gen/schemas/*.json` files reflect the dialog permissions being gone. `cargo check` clean (26 s rebuild after dependency-graph change).
+
+**5. `native-dialog` crate + `save_file_dialog` Rust command + `saveBlobAsync` JS function KEPT — flagged.**
+
+Used by exactly one remaining code path: the QUIT modal's save-and-quit flow at `useAppStore.ts:1390`. That flow does `await Promise.race([saveProjectFile(name), 10s-timeout])` — it needs the save to resolve synchronously so the quit can chain after success. Migrating to FileBrowser requires a post-save callback hook (open browser, await user F1 SAVE, then `confirmAppQuit`). Not in scope for Sub-phase D; documented for follow-up.
+
+**6. Per-mode path persistence (Task 5 from spec).**
+
+- **`SettingsValues.fileBrowserPaths`** added: `{ LOAD_SAMPLE: string | null; LOAD_PROJECT: string | null; SAVE_SAMPLE: string | null; SAVE_PROJECT: string | null; SAVE_MIXDOWN_WAV: string | null }`. All null by default. Persisted same way as every other setting (debounced 500 ms write to `loopthief.settings` localStorage; hydrated on boot).
+- **`openFileBrowser` fallback chain**:
+  1. Persisted path for the mode, if `fs_path_exists(path)` returns true.
+  2. Desktop shortcut (first `kind === "Shortcut"` entry from `fs_list_locations`).
+  3. First location (drives / mounts).
+  4. Empty → caller hits the "No locations available" branch.
+- **Write trigger**: `persistFileBrowserPath(get, set, mode, path)` is called from `fileBrowserOpenSelected` (LOAD success) and `performFileBrowserWrite` (SAVE success). NOT from CANCEL or error paths. Uses `hydrateSettings` + `persistSettingsNow` so the write lands in localStorage immediately (no debounce window).
+- **Cross-mode isolation**: each mode has an independent key in the object. SAVE_PROJECT history doesn't leak into LOAD_SAMPLE.
+- **Edge case — path no longer exists**: `fs_path_exists` returns false → silent fallback to Desktop. No error toast (USB unplugged is a normal scenario).
+
+**7. Preview-overlap race-condition fix (drive-by addition).**
+
+Marek reported: clicking rapidly between `.wav` files in LOAD_SAMPLE mode left previous previews playing — multiple voices overlapped instead of single-voice cut-to-new. Transport STOP also didn't stop the preview. Root cause: the preview flow has two `await`s (`fs_read_file_bytes` + `decodeAudioData`) between `stopFileBrowserPreview()` (which stops `activeFileBrowserPreview` if any) and the source-publish (`activeFileBrowserPreview = source`). Two rapid clicks race past each other — both call stop() while `activeFileBrowserPreview` is still null (the first call hasn't published yet), then both publish their own sources, but only the latest is tracked. Earlier sources play untracked until natural end.
+
+Fix:
+- Added a module-scope generation token `fileBrowserPreviewToken`. `stopFileBrowserPreview()` increments it. `fileBrowserPreviewEntry` captures the token at entry (`const myToken = fileBrowserPreviewToken`) and checks `if (fileBrowserPreviewToken !== myToken) return` after each `await` — if a newer call ran during our wait, bail and (after creating the source) stop+disconnect+return without publishing.
+- Hooked `stopFileBrowserPreview()` into `stopPlayback` (transport STOP). Global STOP now silences the preview alongside sequencer voices.
+- F2 PREVIEW toggle OFF already called `stopFileBrowserPreview` (Sub-phase C wiring).
+- F3 CANCEL / Escape / openFileBrowser re-entry already called it (Sub-phase C wiring).
+
+Net effect:
+- Rapidly clicking 5 `.wav` files in a row → only the 5th plays. First 4 are cut by either `stop()` (if they reached source-publish before the next stop) OR by the token-mismatch bail (if they're still in their decode await when the next click runs).
+- Transport STOP button → preview stops.
+- F2 PREVIEW toggle OFF → preview stops (unchanged from C).
+- F3 CANCEL / Escape → preview stops (unchanged from C).
+
+**8. SWING keyboard input fix (Task 6).**
+
+TC screen's SWING field was previously display-only (`Panel` row with `+/-` buttons). Replaced with the existing `ArrowRow` component in editable mode (same pattern NOTE REPEAT screen uses for its own SWING + GATE rows). Click value → `EditableNumber` cursor active → type 50–75 → Enter commits / Esc cancels. The store's `setSwing` action already existed and clamps to 50–75 internally.
+
+**Build validation:**
+- `npm run build` clean (2.13 s).
+- `cargo check` clean (25.97 s — link-graph shake after dropping `tauri-plugin-dialog`).
+
+**What didn't work / pitfalls hit**
+
+- **QUIT save-and-quit flow couldn't be migrated cleanly.** The QUIT modal's `Promise.race([saveProjectFile(), timeout])` needs the save action to resolve once the file is written. FileBrowser's save lives in user-interaction time (open → navigate → F1 SAVE), so a `Promise<SaveResult>` resolver would need to be stored in state with `resolve` / `reject` refs surfaced through `closeFileBrowser` / `fileBrowserSave`. Plumbing exceeds Sub-phase D scope — documented as deferred. Effect: in Tauri release, save-and-quit still pops the legacy `save_file_dialog` native dialog ONE time (for the QUIT flow only). All other visible flows use FileBrowser.
+- **`tauri-plugin-dialog` removal cascade.** Initial removal attempt broke `cargo check` because `use tauri_plugin_dialog::DialogExt;` was still imported (for the warmup thread) and the `app.dialog()` call referenced it. Fixed by removing the import + `app.dialog()` call + warmup thread together. The auto-regenerated `gen/schemas/*.json` files (acl-manifests, capabilities, desktop-schema, windows-schema) all changed by ~66 lines each as Tauri's build script rewrote them — touched 4 schema files I didn't author but had to commit.
+- **`RecordScreen.tsx` had dead code.** `fileInputRef` + `importWavFile` subscription + `<input type="file">` block — declared but never triggered by any softkey. Removed during the migration audit. Mention in session log so future readers don't try to re-add a "F1 IMPORT" softkey wiring expecting it to exist.
+- **`hydrateAllBundle` and `hydrateSeqBundle` had subtle parameter wiring** (`set`, `get`, `targetSequenceId`) that the `loadFile` action passed through. After removal, `loadFile`'s `options.targetSequenceId` is no longer used. Kept the parameter signature with a `_options` underscore for caller compat.
+- **`Panel` component is display-only.** I considered extending it to support editable rows, but that would complicate every other caller. Easier path: inline two `PanelRow`s + one `ArrowRow` directly in `TimingCorrectUtilityScreen`'s left column, matching how the NOTE REPEAT screen lays out its mixed display/editable rows.
+- **`loadFile` action's `options.targetSequenceId`** parameter became unused. Renamed to `_options` to silence the "unused parameter" lint. The Sub-phase A audit had already flagged this as a deferred follow-up.
+
+**Decisions made**
+
+- **Branch on `isTauri()` at the UI handler level, not inside store actions.** Cleanest pattern — the action surface stays uniform (`saveProjectFile` still works for browser callers; the QUIT path uses it too), and the dispatch decision lives at the only place that knows the runtime context.
+- **`saveProjectFile` left untouched** in the store. Still callable. Still routes through `saveBlobAsync` + `save_file_dialog` in Tauri. Only one remaining caller (QUIT modal); migrating it is a follow-up.
+- **`fileBrowserPaths` lives inside `settingsValues`** (not as a separate state field). Single localStorage write path, single hydrate, no extra wiring. Shallow merge in `hydrateSettings` handles partial old objects cleanly.
+- **`persistFileBrowserPath` writes via `hydrateSettings` + `persistSettingsNow`** for synchronous localStorage write. Without `persistSettingsNow` the 500 ms debounce window from App.tsx would mean an immediate restart could lose the path. The synchronous write matches the pattern Session 31 introduced for the layout-editor toggle.
+- **Fallback chain prefers Desktop over first drive.** Desktop is a friendlier landing place than `C:\` for users who haven't navigated yet. If Desktop is unavailable (headless Linux), first drive becomes the fallback.
+- **Loader throws plain `Error` on legacy `.lthief-all` / `.lthief-seq` format** rather than returning a typed result. Caller (`loadFile`) catches via the existing try-around-loadFile pattern in DISK and surfaces `lastAudioMessage` to the LCD.
+- **Dropped `dialog:*` capabilities together with the plugin** — saves a few KB on the compiled binary and removes a permission surface that's no longer needed.
+- **Updated `loadFile`'s `_options` parameter** to underscore-prefix instead of removing, because the action's exposed type signature has callers passing options today (even if the field's no longer consulted). Cheap compat preservation.
+
+**Open issues / followups**
+
+**Marek runtime test (Sub-phase D acceptance):**
+
+In `npm run tauri dev`:
+
+1. **DISK SAVE PROJECT** → opens FileBrowser in SAVE_PROJECT mode (not Windows dialog). Filename input pre-fills "untitled".
+2. **DISK LOAD PROJECT FILE...** → opens FileBrowser in LOAD_PROJECT mode (not Windows dialog). Shows only `.lthief` files.
+3. **DISK F1 IMPORT** → opens FileBrowser in LOAD_SAMPLE mode. Shows only `.wav`.
+4. **DISK F5 EXPORT** (after selecting a memory sample) → opens FileBrowser in SAVE_SAMPLE mode. Filename pre-fills with sample name.
+5. **Ctrl+S anywhere** → opens FileBrowser in SAVE_PROJECT mode.
+6. **SONG export → handleExport** → opens FileBrowser in SAVE_MIXDOWN_WAV mode. Filename pre-fills `Mixdown_<timestamp>`.
+7. **No more Windows native file dialogs anywhere in normal Tauri use.** (The one exception is the QUIT save-and-quit flow, deferred.)
+8. **DISK has no `SAVE ALL SEQS` / `SAVE CURRENT SEQ` buttons.**
+9. **DISK has no `[DEV]` cyan buttons.**
+10. **Loading a `.lthief-all` file (if one exists from a prior session)** → error toast "Unsupported format. .lthief-all and .lthief-seq were dropped — use .lthief project files." No crash.
+
+**Path persistence:**
+
+11. SAVE_PROJECT → navigate to `G:\Projects\` → F3 CANCEL → reopen SAVE_PROJECT → starts at default (Desktop).
+12. SAVE_PROJECT → navigate to `G:\Projects\` → F1 SAVE success → reopen SAVE_PROJECT → starts at `G:\Projects\`.
+13. **Restart LoopThief** (kill + relaunch tauri dev) → open SAVE_PROJECT → still starts at `G:\Projects\`. (DevTools verify: `JSON.parse(localStorage.getItem("loopthief.settings")).fileBrowserPaths.SAVE_PROJECT === "G:\\Projects"`.)
+14. SAVE_PROJECT path independent from LOAD_SAMPLE: save project to `G:\Projects\`, load sample from `D:\Samples\`, reopen SAVE_PROJECT → still `G:\Projects\` (not `D:\Samples\`).
+15. Unplug USB drive that held a persisted path → open FileBrowser → silent fallback to Desktop.
+
+**SWING input:**
+
+16. TC screen → click SWING value → type `65` → Enter → SWING = 65.
+17. Click SWING value → type `99` (out of range) → EditableNumber clamps to 75 on commit.
+18. Click SWING value → start typing → Esc → previous value restored.
+19. SWING value editable only when `swingEnabled` (TC ∈ {1/16, 1/8}); other TC values disable the editable + show "—".
+
+**Preview overlap fix:**
+
+20. LOAD_SAMPLE → click `.wav` → preview plays. Click another `.wav` rapidly → previous stops immediately, new one plays. No audible overlap.
+21. Rapid-click 5 different `.wav` files in succession → only the 5th plays; first 4 are cut.
+22. Click `.wav` → press global transport STOP → preview stops.
+23. Click `.wav` → toggle F2 PREVIEW OFF → preview stops.
+24. Double-click transport STOP within 500 ms → ALL AUDIO STOPPED toast + preview stops alongside sequencer voices.
+
+**Browser dev mode:**
+
+20. `npm run dev` (no Tauri) → DISK SAVE PROJECT → anchor download fires (legacy path), no FileBrowser. Same for all other migrated handlers.
+
+**Deferred (follow-up sessions):**
+
+- **QUIT save-and-quit migration.** Requires either a post-save callback parameter on `openFileBrowser` or a state-resident promise resolver. Until done, save-before-quit still pops the legacy native dialog. Other quit paths (DISCARD AND QUIT, plain CANCEL) unaffected.
+- **`save_file_dialog` Rust command + `native-dialog` crate + `saveBlobAsync` JS function** can all be removed once QUIT migrates.
+- **Strict path-safety hardening** on the `fs_browser` Rust commands (canonicalise + root-prefix check) was scoped to Sub-phase D but deferred — current implementation accepts any absolute path the UI provides, which is fine because the UI only navigates via the locations list. Hardening is defense-in-depth for the case where the UI is bypassed (e.g. a future XSS in the WebView).
+- **Strict `MountPoint` enum variant** in `fs_browser.rs` is still `#[allow(dead_code)]` on Windows builds. Unchanged.
+
+**Files modified (Sub-phase D)**
+
+- `src/store/useAppStore.ts` — removed `saveAllFile` / `saveSeqFile` actions + interface entries; removed `hydrateAllBundle` / `hydrateSeqBundle` functions; `loadFile` simplified (single project branch); `fileBrowserPaths: Record<...>` added to `SettingsValues` + defaults; `openFileBrowser` honors persisted path with `fs_path_exists` validation + Desktop fallback; `fileBrowserOpenSelected` and `performFileBrowserWrite` call `persistFileBrowserPath` on success; helper `persistFileBrowserPath` added; imports cleaned (`serializeAll`, `serializeSeq` gone).
+- `src/disk/index.ts` — `serializeAll`, `serializeSeq`, `LoadedAll`, `LoadedSeq` exports removed.
+- `src/disk/loader.ts` — `LoadedAll` / `LoadedSeq` removed; `LoadedBundle = LoadedProject`; legacy-format error path.
+- `src/disk/types.ts` — `AllManifest` / `SeqManifest` removed; `AnyManifest = ProjectManifest`; `ManifestType = "project"`.
+- `src/disk/serializers/all.ts` — DELETED.
+- `src/disk/serializers/seq.ts` — DELETED.
+- `src/screens/DiskScreen.tsx` — full rewrite removing [DEV] buttons + SAVE ALL SEQS + SAVE CURRENT SEQ + projectName state. New `isTauri()`-gated handlers for SAVE PROJECT / LOAD PROJECT / F1 IMPORT / F5 EXPORT. HTML inputs preserved for browser fallback.
+- `src/screens/SongScreen.tsx` — `handleExport` branches to `openFileBrowser("SAVE_MIXDOWN_WAV")` in Tauri.
+- `src/components/workstation/KeyboardShortcuts.tsx` — Ctrl+S branches to `openFileBrowser("SAVE_PROJECT")` in Tauri.
+- `src/screens/RecordScreen.tsx` — dead `fileInputRef` + `importWavFile` subscription + `<input type="file">` block removed (untriggered code).
+- `src/screens/UtilityScreens.tsx` — TC screen SWING row replaced with editable `ArrowRow`.
+- `src-tauri/src/lib.rs` — removed `DialogExt` import + `app.dialog()` setup call + warmup thread + plugin init.
+- `src-tauri/Cargo.toml` — `tauri-plugin-dialog` removed; `native-dialog` comment updated to "QUIT-only".
+- `src-tauri/Cargo.lock` — regenerated.
+- `src-tauri/capabilities/default.json` — `dialog:default` + `dialog:allow-save` permissions removed.
+- `src-tauri/gen/schemas/*.json` — auto-regenerated (acl-manifests / capabilities / desktop-schema / windows-schema each lose ~66 lines of dialog permission entries).
+
+Cumulative Session 33 (A + B + C + D) diff: 21 modified files + 2 new + 2 deleted, `cargo check` clean, `npm run build` clean.
 
 ---
 

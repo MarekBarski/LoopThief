@@ -122,7 +122,13 @@ export function ProgramScreen() {
             </div>
 
             {programView === "PARAMS" ? (
-            <div className="grid min-h-0 content-start grid-cols-2 gap-x-[4%] gap-y-[6px] overflow-hidden">
+            // overflow-y-auto: the 11-field PARAMS grid overflows the parent
+            // section vertically once MUTE GRP lands at the bottom (6 rows ×
+            // ~2.6% padding-y each ≈ exceeds available height on smaller LCD
+            // scales). Global LCD-tinted scrollbar from src/styles/index.css
+            // applies automatically. min-h-0 already in place lets the grid
+            // shrink to the bounded parent so overflow actually triggers.
+            <div className="grid min-h-0 content-start grid-cols-2 gap-x-[4%] gap-y-[6px] overflow-y-auto">
               {currentPadMode === "STEP_INPUT" && (
                 <div className="col-span-2 border border-amber-300/50 bg-amber-200/10 px-[3%] py-[2.5%] text-amber-100">
                   STEP INPUT MODE: BASE PAD {selectedAssignment.pad}
@@ -180,9 +186,24 @@ export function ProgramScreen() {
                 onPlus={() => updateSelectedPadParam("chokeGroup", 1)}
                 editable={{ numericValue: selectedAssignment.chokeGroup, min: 0, max: 8, onCommit: (v) => setSelectedPadParam("chokeGroup", Math.round(v)) }}
               />
+              <Param
+                label="MUTE GRP"
+                value={formatMuteGroup(selectedAssignment.muteGroup)}
+                onMinus={() => updateSelectedPadParam("muteGroup", -1)}
+                onPlus={() => updateSelectedPadParam("muteGroup", 1)}
+                editable={{
+                  numericValue: selectedAssignment.muteGroup,
+                  format: formatMuteGroup,
+                  min: 0,
+                  max: 16,
+                  onCommit: (v) => setSelectedPadParam("muteGroup", Math.round(v)),
+                }}
+              />
             </div>
             ) : programView === "FILTER" ? (
-              <div className="grid min-h-0 content-start gap-[8px]">
+              // Defensive overflow-y-auto — current 3 filter params fit but
+              // future additions shouldn't clip silently.
+              <div className="grid min-h-0 content-start gap-[8px] overflow-y-auto">
                 <FilterParam
                   label="FILTER TYPE"
                   value={selectedAssignment.filterType}
@@ -215,7 +236,8 @@ export function ProgramScreen() {
                   setPadFxBus(selectedAssignment.pad, next);
                 };
                 return (
-                  <div className="grid min-h-0 content-start gap-[10px]">
+                  // Defensive overflow-y-auto matches PARAMS / FILTER siblings.
+                  <div className="grid min-h-0 content-start gap-[10px] overflow-y-auto">
                     <div className="grid grid-cols-2 gap-[8px]">
                       <Info label="SELECTED PAD" value={`${padBank}${selectedAssignment.pad.slice(1)}`} />
                       <Info label="FX BUS" value={padBus === 0 ? "OFF" : `FX${padBus}`} />
@@ -601,6 +623,13 @@ function formatPan(value: number) {
 }
 
 function formatChokeGroup(value: number) {
+  return value === 0 ? "OFF" : String(value).padStart(2, "0");
+}
+
+// Mute Group display formatter. 0 → "OFF"; 1-16 → zero-padded ("01"..."16").
+// Used by both the display value and the EditableNumber's format callback so
+// the typed-input field shows the same text as the static display.
+function formatMuteGroup(value: number) {
   return value === 0 ? "OFF" : String(value).padStart(2, "0");
 }
 

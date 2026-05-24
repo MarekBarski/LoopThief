@@ -1,6 +1,5 @@
 use serde::Deserialize;
 use tauri::{Emitter, Manager, State, WindowEvent};
-use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_fs::FsExt;
 
 mod audio;
@@ -254,7 +253,6 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AudioEngineState::new())
         .manage(LocationsCache::new())
@@ -279,29 +277,7 @@ pub fn run() {
             fs_browser::fs_path_exists,
         ])
         .setup(|app| {
-            let _ = app.dialog();
             let _ = app.fs();
-
-            // Best-effort dialog warmup on a background thread. Marek's
-            // timing logs (release .exe) localised the ~3 s freeze inside
-            // dialog.save() itself — the cost likely lives in cold-init of
-            // the `rfd` crate (COM init / WinRT / IFileSaveDialog plumbing)
-            // that tauri-plugin-dialog runs on first invocation. By
-            // constructing a FileDialogBuilder here (without ever calling
-            // .save_file() / .pick_file()), we try to pre-load rfd's
-            // library state without showing UI to the user. This may not
-            // warm COM itself (that happens inside the .show() call on the
-            // dialog's own thread), but it does at least force any
-            // lazily-initialised plugin / crate state to resolve before the
-            // user clicks anything.
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let _ = handle
-                    .dialog()
-                    .file()
-                    .add_filter("warmup", &["lthief"])
-                    .set_file_name("warmup");
-            });
 
             // Auto-open DevTools only in debug builds — keeps release .exe
             // clean for shipping users.

@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { ScreenId } from "../types/navigation";
 import { ChopScreen } from "./ChopScreen";
 import { DiskScreen } from "./DiskScreen";
+import { FileBrowserScreen } from "./FileBrowserScreen";
 import { MainScreen } from "./MainScreen";
 import { MixScreen } from "./MixScreen";
 import { PerformanceScreen } from "./PerformanceScreen";
@@ -60,4 +61,5 @@ export const screensById: Record<ScreenId, ComponentType> = {
   FX_SEND_WINDOW: FxSendWindowScreen,
   SAMPLE_EDIT_WINDOW: SampleEditWindowScreen,
   SAMPLE_KEEP_RETRY: SampleKeepRetryScreen,
+  FILE_BROWSER: FileBrowserScreen,
 };

@@ -27,6 +27,7 @@ export const screens = [
   "FX_SEND_WINDOW",
   "SAMPLE_EDIT_WINDOW",
   "SAMPLE_KEEP_RETRY",
+  "FILE_BROWSER",
 ] as const;
 
 export type ScreenId = (typeof screens)[number];
