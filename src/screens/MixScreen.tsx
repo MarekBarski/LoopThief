@@ -1,5 +1,5 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { isPadVisuallyTriggered, useAppStore } from "../store/useAppStore";
+import { memo, useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useAppStore } from "../store/useAppStore";
 import { samplerEngine } from "../audio/samplerEngine";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
@@ -12,16 +12,15 @@ export function MixScreen() {
   const selectedPad = useAppStore((state) => state.selectedPad);
   const channels = useAppStore((state) => state.padMixer[padBank]);
   const assignments = useAppStore((state) => state.padAssignments[padBank]);
-  const triggeredPads = useAppStore((state) => state.triggeredPads);
+  // triggeredPads no longer subscribed at screen level — Fix #4 of the
+  // Session 37 audit moved per-pad flash state into ChannelStrip's own
+  // per-key selector, so a single pad event no longer fans out a
+  // re-render across all 16 strips + the header.
   const selectedChannel = channels.find((channel) => channel.pad === selectedPad) ?? channels[0];
   const selectedAssignment = assignments.find((a) => a.pad === selectedPad) ?? assignments[0];
-  const selectMixerPad = useAppStore((state) => state.selectMixerPad);
   const setMixerChannelValue = useAppStore((state) => state.setMixerChannelValue);
   const toggleSelectedMixerMute = useAppStore((state) => state.toggleSelectedMixerMute);
   const toggleSelectedMixerSolo = useAppStore((state) => state.toggleSelectedMixerSolo);
-  const toggleMixerChannelMute = useAppStore((state) => state.toggleMixerChannelMute);
-  const toggleMixerChannelSolo = useAppStore((state) => state.toggleMixerChannelSolo);
-  const setPadFxBus = useAppStore((state) => state.setPadFxBus);
   const setPadFxSendLevel = useAppStore((state) => state.setPadFxSendLevel);
   const openFxSendWindow = useAppStore((state) => state.openFxSendWindow);
   const anySolo = channels.some((channel) => channel.solo);
@@ -78,31 +77,14 @@ export function MixScreen() {
           </section>
 
           <section className="grid min-h-0 grid-cols-16 gap-[0.6%] border border-[#46533b] bg-black/20 p-[1.2%]">
-            {channels.map((channel) => {
-              const audible = !channel.muted && (!anySolo || channel.solo);
-              const assignment = assignments.find((a) => a.pad === channel.pad);
-              const bus = assignment?.fxBus ?? 0;
-              const sendLevel = assignment?.fxSendLevel ?? 0;
-              return (
-                <ChannelStrip
-                  key={channel.pad}
-                  channel={channel}
-                  selected={channel.pad === selectedPad}
-                  audible={audible}
-                  meterActive={audible && isPadVisuallyTriggered(triggeredPads, padBank, channel.pad)}
-                  meterLevel={audible ? channel.level / 127 : 0}
-                  fxBus={bus}
-                  fxSendLevel={sendLevel}
-                  onSelect={() => selectMixerPad(channel.pad)}
-                  onLevel={(value) => setMixerChannelValue(channel.pad, "level", value)}
-                  onPan={(value) => setMixerChannelValue(channel.pad, "pan", value)}
-                  onFxBusCycle={() => setPadFxBus(channel.pad, ((bus + 1) % 5) as 0 | 1 | 2 | 3 | 4)}
-                  onSendCommit={(value) => setPadFxSendLevel(channel.pad, value)}
-                  onMute={() => toggleMixerChannelMute(channel.pad)}
-                  onSolo={() => toggleMixerChannelSolo(channel.pad)}
-                />
-              );
-            })}
+            {channels.map((channel) => (
+              <ChannelStrip
+                key={channel.pad}
+                pad={channel.pad}
+                selected={channel.pad === selectedPad}
+                anySolo={anySolo}
+              />
+            ))}
           </section>
         </div>
 
@@ -133,67 +115,56 @@ export function MixScreen() {
   );
 }
 
-type Channel = {
-  pad: string;
-  level: number;
-  pan: number;
-  muted: boolean;
-  solo: boolean;
-  fxSend: number;
-};
-
-function ChannelStrip({
-  channel,
+// memo'd + self-subscribing. Parent passes only primitive props
+// (pad, selected, anySolo) so React.memo's default shallow compare skips
+// re-render unless one of those three actually changes. All channel /
+// assignment / triggered data is read via per-key selectors INSIDE the
+// strip — Zustand's Object.is comparator gates each selector
+// independently, so a level change on pad 7 doesn't ripple into pad 5.
+const ChannelStrip = memo(function ChannelStrip({
+  pad,
   selected,
-  audible,
-  meterActive,
-  meterLevel,
-  fxBus,
-  fxSendLevel,
-  onSelect,
-  onLevel,
-  onPan,
-  onFxBusCycle,
-  onSendCommit,
-  onMute,
-  onSolo,
+  anySolo,
 }: {
-  channel: Channel;
+  pad: string;
   selected: boolean;
-  audible: boolean;
-  meterActive: boolean;
-  meterLevel: number;
-  fxBus: 0 | 1 | 2 | 3 | 4;
-  fxSendLevel: number;
-  onSelect: () => void;
-  onLevel: (value: number) => void;
-  onPan: (value: number) => void;
-  onFxBusCycle: () => void;
-  onSendCommit: (value: number) => void;
-  onMute: () => void;
-  onSolo: () => void;
+  anySolo: boolean;
 }) {
-  // L1 lag fix — direct samplerEngine writes during drag so the user hears
-  // the slider/knob move in real time WITHOUT forcing a per-pointermove
-  // Zustand mutation (which fans out to 16 ChannelStrip re-renders +
-  // syncCurrentProgram + recordUndo per drag pixel and starves the
-  // sequencer tickStepPlayback setInterval on the JS main thread).
-  //
-  // Channel key + audible state are read imperatively from the store on
-  // each call — cheap and avoids extra subscriptions. The store write
-  // happens once on pointerup via the existing onLevel / onPan callbacks
-  // which route through setMixerChannelValue (heavy-but-one-shot).
-  //
-  // Tradeoff: a voice that spawns mid-drag uses the PRE-drag store level
-  // for its initial gain (because playAssignedPadWithContext reads from
-  // store, not from the direct-audio path). The next pointermove sweeps
-  // it to the dragged level. Brief discontinuity is acceptable per spec.
+  const channel = useAppStore((s) =>
+    s.padMixer[s.padBank].find((c) => c.pad === pad),
+  );
+  const fxBus = useAppStore(
+    (s) =>
+      (s.padAssignments[s.padBank].find((a) => a.pad === pad)?.fxBus ?? 0) as
+        | 0
+        | 1
+        | 2
+        | 3
+        | 4,
+  );
+  const fxSendLevel = useAppStore(
+    (s) => s.padAssignments[s.padBank].find((a) => a.pad === pad)?.fxSendLevel ?? 0,
+  );
+  const meterActive = useAppStore((s) =>
+    Boolean(s.triggeredPads[`${s.padBank}:${pad}`]),
+  );
+
+  if (!channel) return null;
+
+  const audible = !channel.muted && (!anySolo || channel.solo);
+  const meterLevel = audible ? channel.level / 127 : 0;
+
+  // L1 lag fix preserved from Session 36 — direct samplerEngine writes
+  // during drag, store commit on release. See that session's SESSION_LOG
+  // entry for the full rationale and tradeoffs. `channel.pan` / `channel.level`
+  // closure-captured at render time; if values change mid-drag the existing
+  // drag instance keeps using its captured snapshot until release, then
+  // the next drag picks up fresh values.
   const directAudioLevel = (level: number) => {
-    const state = useAppStore.getState();
-    const key = state.currentProgramId
-      ? `${state.currentProgramId}:${state.padBank}:${channel.pad}`
-      : `${state.padBank}:${channel.pad}`;
-    // gain scaling matches syncMixerBankToAudio (level / 100, not / 127).
+    const s = useAppStore.getState();
+    const key = s.currentProgramId
+      ? `${s.currentProgramId}:${s.padBank}:${pad}`
+      : `${s.padBank}:${pad}`;
     samplerEngine.updateChannelMix(key, {
       gain: level / 100,
       pan: channel.pan / 64,
@@ -201,16 +172,34 @@ function ChannelStrip({
     });
   };
   const directAudioPan = (pan: number) => {
-    const state = useAppStore.getState();
-    const key = state.currentProgramId
-      ? `${state.currentProgramId}:${state.padBank}:${channel.pad}`
-      : `${state.padBank}:${channel.pad}`;
+    const s = useAppStore.getState();
+    const key = s.currentProgramId
+      ? `${s.currentProgramId}:${s.padBank}:${pad}`
+      : `${s.padBank}:${pad}`;
     samplerEngine.updateChannelMix(key, {
       gain: channel.level / 100,
       pan: pan / 64,
       audible,
     });
   };
+
+  // Action dispatchers — read fresh state per call, no subscriptions.
+  const onSelect = () => useAppStore.getState().selectMixerPad(pad);
+  const onLevel = (v: number) =>
+    useAppStore.getState().setMixerChannelValue(pad, "level", v);
+  const onPan = (v: number) =>
+    useAppStore.getState().setMixerChannelValue(pad, "pan", v);
+  const onFxBusCycle = () => {
+    const s = useAppStore.getState();
+    const current = s.padAssignments[s.padBank].find((a) => a.pad === pad)?.fxBus ?? 0;
+    const next = ((current + 1) % 5) as 0 | 1 | 2 | 3 | 4;
+    s.setPadFxBus(pad, next);
+  };
+  const onSendCommit = (v: number) =>
+    useAppStore.getState().setPadFxSendLevel(pad, v);
+  const onMute = () => useAppStore.getState().toggleMixerChannelMute(pad);
+  const onSolo = () => useAppStore.getState().toggleMixerChannelSolo(pad);
+
   return (
     <div
       onPointerDown={onSelect}
@@ -218,7 +207,7 @@ function ChannelStrip({
         selected ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
       } ${audible ? "" : "opacity-45"}`}
     >
-      <span>{channel.pad.slice(1)}</span>
+      <span>{pad.slice(1)}</span>
       <PanKnob value={channel.pan} onChange={onPan} onDragAudio={directAudioPan} />
       <Fader value={channel.level} onChange={onLevel} onDragAudio={directAudioLevel} />
       <div
@@ -283,7 +272,7 @@ function ChannelStrip({
       </div>
     </div>
   );
-}
+});
 
 function Fader({
   value,
