@@ -1,6 +1,6 @@
 [package]
 name = "loopthief"
-version = "1.1.0"
+version = "1.1.1"
 description = "LoopThief — MPC-style sampling instrument and groove workstation"
 authors = ["Marek Barski"]
 edition = "2021"
