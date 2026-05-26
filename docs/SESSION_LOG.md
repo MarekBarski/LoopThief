@@ -99,6 +99,59 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 38 — 2026-05-26 — FX + MIX persistence audit (.lthief save/load), NO code
+
+### What was attempted
+
+Verify what FX-engine state and MIX state actually survives a `.lthief` save / load cycle. Marek's scope: 4 buses × 2 blocks × all params, bus-to-bus chaining, Master EQ / Comp / bypass, per-pad FX routing (bus + send + mode), and per-pad MIX state (volume / pan / mute / solo / mute group / choke group / output / master volume). Walk a synthetic save-load trace end-to-end.
+
+### What worked
+
+End-to-end trace of `serializeProject` → `writeProjectZip` → `loadFromBlob` → `applyMigrations` → `hydrateProjectBundle` → `syncFxEngine`.
+
+**FX state — fully persisted.** All four buses' `blockA` + `blockB` shape (effect type, bypass, params), bus `direct` (SEND vs INSERT), chain flags (FX1→FX2, FX3→FX4), and master FX (EQ 4 bands × 3 params, Comp threshold/ratio/attack/release/makeupGain, both bypasses) all survive a round trip. `ensureFxBusesFromManifest` (`useAppStore.ts:7846`) and `ensureMasterFxFromManifest` (`useAppStore.ts:7880`) backfill defaults / merge missing keys for forward-compat. `syncFxEngine` (`useAppStore.ts:7913`) pushes the hydrated state into the audio engine. v2→v3 migration collapses single-effect-per-bus into blockA; v3→v4 fills missing param keys per effect type; v4→v5 backfills `muteGroup`. Migrations are at `disk/migrations/index.ts`.
+
+**MIX state — fully persisted via programs.** Per-pad level / pan / muted / solo / fxSend / output / group live in `MixerChannel` (`useAppStore.ts:867`); the full `Record<PadBank, MixerChannel[]>` is in `Program.padMixer` which gets pass-through serialised inside `manifest.programs[]`. Mute group + choke group + fxBus + fxSendLevel + per-pad sound-shaping params (tune, fineTune, attack, decay, filterType/Cutoff/Resonance, mode, voiceMode, loop) live in `PadAssignment` (`useAppStore.ts:694`), serialised under `programs[p].padAssignments[bank][i]`.
+
+**Persistence pattern is uniform.** Every mutation action that touches `padAssignments` or `padMixer` immediately runs `programs: syncCurrentProgram(state, { padAssignments })` or `{ padMixer }` so the active program's snapshot is always current — ~25 call sites all follow the same pattern. Save action's defensive `syncCurrentProgram(state)` at `useAppStore.ts:5614` is technically redundant; autosave at `App.tsx:131` doesn't bother and works correctly for the same reason.
+
+**Synthetic save-load trace verified.** User loads sample → A01 → vol 80 / pan R12 / FX1 send 50 / mute group 3 → REVERB on FX1 block A (size 70, damp 50) → SAVE. On restart + LOAD, every value above is restored from `manifest.programs[0]` + `manifest.fxBuses[0].blockA` exactly. Defaults backfilled where the saved file didn't include later-added keys.
+
+### What didn't work / pitfalls hit
+
+- **One real gap found: master volume is NOT in `.lthief`.** `collectGlobalSettings` (`useAppStore.ts:5749`) deliberately excludes `masterVolume`. The value lives only in `localStorage.loopthief.settings.masterVolume` (written via `persistSettingsNow` at `useAppStore.ts:5511`). Same user / same machine: survives app restart. Sharing a `.lthief` between users / machines: the receiver gets their own localStorage value (default 100), not the sender's. LOW severity for solo workflow; non-trivial for collaborative scenarios.
+- **Audit category mismatches (not real gaps):**
+  - "Send mode (SEND vs INSERT)" listed as per-pad — actually per-bus (`bus.direct`). Stored, persisted, restored, but at the bus level not the pad level. Marek's audit copy may need correction.
+  - "Master Compressor parameters (...knee)" — `knee` doesn't exist in `MASTER_COMP_DEFAULTS` (`fxEngine.ts:134`). Comp params are threshold/ratio/attack/release/makeupGain. Not a persistence gap; the feature simply isn't implemented.
+- **Dead state still persists.** `program.filter` and `program.fx` (legacy `ProgramFilterSettings` + `ProgramFxSettings`) are set on program creation (`useAppStore.ts:8044-8045`), pass-through serialised via the `unknown[]` type on `manifest.programs`, but read by zero consumers in `src/`. Same for `PadAssignment.fxSend` (singular, pre-bus-routing era), `MixerChannel.fxSend`, `MixerChannel.group`. Bloats the manifest slightly but no correctness impact.
+- **`MixerChannel.output` (MAIN / OUT1 / OUT2 / OUT3) persists but is decorative.** `samplerEngine.playInternal` (`samplerEngine.ts:193-197`) connects every voice to `masterGain` regardless of pad's output assignment. Save/load is correct, but the value currently has no audible effect. Fake-UI policy candidate distinct from the persistence audit.
+- **`unknown[]` typing on `serializeProject` inputs** (`disk/serializers/project.ts:22-27`) keeps the type surface narrow but means TypeScript can't validate field-level persistence at the serializer boundary. Schema correctness relies on the `ensure*FromManifest` validators on load + the migration chain — both are good but they're discipline-enforced, not type-enforced. Worth keeping in mind for future schema additions.
+
+### Decisions made
+
+None — audit only. Marek picks which gaps (if any) to fix.
+
+If a single gap warrants attention, it's #1 (master volume). Trivial fix:
+- Add `masterVolume: state.settingsValues.masterVolume` to `collectGlobalSettings`.
+- Add it to `GlobalSettings` type in `disk/types.ts`.
+- Add it to `applyGlobalSettings` to write back into `settingsValues` on load.
+- Bump `CURRENT_SCHEMA_VERSION` to 6 and add a v5→v6 migration that defaults masterVolume to 100 if absent.
+
+(Not coded — gap report only.)
+
+### Open issues / followups
+
+- **Gap #1 fix (master volume in `.lthief`)** — defer or apply per Marek's call.
+- **Dead legacy fields cleanup** (`program.filter`, `program.fx`, `PadAssignment.fxSend`, `MixerChannel.fxSend`, `MixerChannel.group`) — separate housekeeping pass; would touch the type, all program/pad creators, and old project compatibility. Don't bundle with persistence work.
+- **`MixerChannel.output` routing** — Fake-UI policy candidate. If shipping with MAIN/OUT1..3 dropdown that does nothing, surfaces to Marek as either "wire it" or "remove from UI".
+- **Type-safe serializer** — could replace the `unknown[]` inputs with the actual store types. Bigger refactor; current shape works but is duplication-prone. Mention only.
+
+### Files modified
+
+- None (audit only). Report delivered inline + this SESSION_LOG entry.
+
+---
+
 ## Session 37 — 2026-05-26 — Perf audit (re-render + voice pooling), NO code
 
 ### What was attempted
