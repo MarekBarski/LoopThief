@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { isPadAssigned, useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdSoftkeyHeight } from "./lcdLayout";
@@ -19,14 +19,15 @@ export function StepScreen() {
   const selectedEventIndex = useAppStore((state) => state.selectedEventIndex);
   const selectedEventId = useAppStore((state) => state.selectedEventId);
   const eventEditMode = useAppStore((state) => state.eventEditMode);
-  const currentStepIndex = useAppStore((state) => state.currentStepIndex);
-  const performanceTracks = useAppStore((state) => state.performanceTracks);
+  // currentStepIndex / performanceTracks are subscribed inside EventRow
+  // per-row now — see Fix #5 of the Session 37 audit. Pulling them out
+  // of the parent means StepScreen no longer re-renders 16 inline event
+  // rows on every 1/16 tick. The matching playing row updates itself.
   const padAssignments = useAppStore((state) => state.padAssignments);
   const padBank = useAppStore((state) => state.padBank);
   const setEventEditMode = useAppStore((state) => state.setEventEditMode);
   const adjustSelectedEvent = useAppStore((state) => state.adjustSelectedEvent);
   const setSelectedEvent = useAppStore((state) => state.setSelectedEvent);
-  const selectStepEvent = useAppStore((state) => state.selectStepEvent);
   const cycleStepTrack = useAppStore((state) => state.cycleStepTrack);
   const previousStepEvent = useAppStore((state) => state.previousStepEvent);
   const nextStepEvent = useAppStore((state) => state.nextStepEvent);
@@ -37,7 +38,6 @@ export function StepScreen() {
   const currentBar = useAppStore((state) => state.currentBar);
   const currentStep = useAppStore((state) => state.currentStep);
   const deleteSelectedEvent = useAppStore((state) => state.deleteSelectedEvent);
-  const toggleEventMuted = useAppStore((state) => state.toggleEventMuted);
   const armAddEvent = useAppStore((state) => state.armAddEvent);
   const createStepEventForPad = useAppStore((state) => state.createStepEventForPad);
   const addEventArmed = useAppStore((state) => state.addEventArmed);
@@ -131,44 +131,14 @@ export function StepScreen() {
               <span>M</span>
             </div>
             <div className="grid content-start min-h-0 overflow-y-auto">
-              {visibleEvents.map((event) => {
-                const trackMuted = performanceTracks.find((track) => track.name === event.trackId || track.id === event.trackId)?.muted ?? false;
-                const eventMuted = event.muted === true;
-                const dimmed = trackMuted || eventMuted;
-                const selected = event.id === selectedEventId;
-                const playing = !dimmed && eventStepIndex(event.step, currentSequenceObj) === currentStepIndex;
-                const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
-                const eventBank = event.padBank ?? "A";
-                const eventPadNumber = event.padNumber ?? (Number(event.pad.replace(/^P/, "")) || 1);
-                const eventPad = `P${String(eventPadNumber).padStart(2, "0")}`;
-                const assigned = isPadAssigned({ padAssignments, padBank: eventBank }, eventPad);
-                return (
-                  <div
-                    key={event.id}
-                    className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] items-center px-[3%] py-[1.35%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
-                      dimmed
-                        ? "text-[#556046]"
-                        : selected
-                          ? "bg-amber-200/15 text-amber-100"
-                          : playing
-                            ? "bg-[#d8e3b7]/10 text-[#eef6d8]"
-                            : "text-[#aab691]"
-                    }`}
-                  >
-                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{event.step}</button>
-                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{assigned ? `${eventBank}${String(eventPadNumber).padStart(2, "0")}` : "UNASSIGNED PAD"}</button>
-                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{String(event.velocity).padStart(3, "0")}</button>
-                    <button type="button" onClick={() => selectStepEvent(event.id)} className="text-left">{tag}</button>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); toggleEventMuted(event.id); }}
-                      className={`text-center ${eventMuted ? "text-amber-200" : "text-[#46533b] hover:text-[#91a477]"}`}
-                    >
-                      {eventMuted ? "M" : "·"}
-                    </button>
-                  </div>
-                );
-              })}
+              {visibleEvents.map((event) => (
+                <EventRow
+                  key={event.id}
+                  event={event}
+                  selected={event.id === selectedEventId}
+                  currentSequence={currentSequenceObj}
+                />
+              ))}
             </div>
           </section>
 
@@ -318,6 +288,92 @@ export function StepScreen() {
     </ScreenFrame>
   );
 }
+
+// Memo'd row — subscribes to currentStepIndex (per-row, primitive boolean
+// output via the eventStep === current comparison), performanceTracks
+// (per-row trackMuted derivation), and padAssignments (per-row assigned
+// derivation). All three resolve to primitives, so Object.is gates
+// re-renders independently. Net effect: during playback only the rows
+// whose `playing` flag flips (entering / leaving the current step)
+// actually re-render — the other 14-15 rows skip via memo.
+type EventRowEvent = {
+  id: string;
+  step: string;
+  pad: string;
+  padNumber?: number;
+  padBank?: "A" | "B" | "C" | "D";
+  velocity: number;
+  muted?: boolean;
+  noteRepeatGenerated?: boolean;
+  appliedParameter?: string;
+  type: string;
+  trackId: string;
+};
+
+type EventRowSequence = {
+  lengthBars: number;
+  timeSignatureChanges?: Array<{ fromBar: number; num: number; den: number }>;
+  timeSignature?: string;
+};
+
+const EventRow = memo(function EventRow({
+  event,
+  selected,
+  currentSequence,
+}: {
+  event: EventRowEvent;
+  selected: boolean;
+  currentSequence?: EventRowSequence;
+}) {
+  const eventStep = eventStepIndex(event.step, currentSequence);
+  const eventMuted = event.muted === true;
+  const trackId = event.trackId;
+  const trackMuted = useAppStore(
+    (s) =>
+      s.performanceTracks.find((t) => t.name === trackId || t.id === trackId)?.muted ?? false,
+  );
+  const dimmed = trackMuted || eventMuted;
+  const playing = useAppStore((s) => !dimmed && s.currentStepIndex === eventStep);
+  const eventBank = event.padBank ?? "A";
+  const eventPadNumber = event.padNumber ?? (Number(event.pad.replace(/^P/, "")) || 1);
+  const eventPad = `P${String(eventPadNumber).padStart(2, "0")}`;
+  const assigned = useAppStore((s) =>
+    isPadAssigned({ padAssignments: s.padAssignments, padBank: eventBank }, eventPad),
+  );
+  const tag = event.noteRepeatGenerated ? "NR" : event.appliedParameter ? "16" : event.type;
+
+  const handleSelect = () => useAppStore.getState().selectStepEvent(event.id);
+  const handleToggleMute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    useAppStore.getState().toggleEventMuted(event.id);
+  };
+
+  return (
+    <div
+      className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] items-center px-[3%] py-[1.35%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
+        dimmed
+          ? "text-[#556046]"
+          : selected
+            ? "bg-amber-200/15 text-amber-100"
+            : playing
+              ? "bg-[#d8e3b7]/10 text-[#eef6d8]"
+              : "text-[#aab691]"
+      }`}
+    >
+      <button type="button" onClick={handleSelect} className="text-left">{event.step}</button>
+      <button type="button" onClick={handleSelect} className="text-left">{assigned ? `${eventBank}${String(eventPadNumber).padStart(2, "0")}` : "UNASSIGNED PAD"}</button>
+      <button type="button" onClick={handleSelect} className="text-left">{String(event.velocity).padStart(3, "0")}</button>
+      <button type="button" onClick={handleSelect} className="text-left">{tag}</button>
+      <button
+        type="button"
+        onClick={handleToggleMute}
+        className={`text-center ${eventMuted ? "text-amber-200" : "text-[#46533b] hover:text-[#91a477]"}`}
+      >
+        {eventMuted ? "M" : "·"}
+      </button>
+    </div>
+  );
+});
 
 function Info({ label, value, active = false, onClick }: { label: string; value: string; active?: boolean; onClick?: () => void }) {
   return (
