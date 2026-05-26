@@ -305,6 +305,114 @@ If lag persists, the next priorities from the audit are: `tickPerformance` alloc
 
 Single file change. `npm run build` clean. No Rust changes.
 
+### Session 37 follow-up #2 — Applied Fixes #2-#5 from audit (HIGH-priority + decorative-state churn)
+
+Marek verified Fix #1 (LayoutElementView split) on the T410 — no regressions. Green-lit chaining the four remaining HIGH-priority audit findings, one commit per fix. Voice pooling deferred to a separate session as planned.
+
+**Commits landed in this follow-up:**
+
+| Hash | Subject | Files | LOC |
+|---|---|---|---|
+| `1c36620` | Fix #2 — per-key triggeredPads subscriptions in consumers | `src/screens/PadPlayScreen.tsx` | +48 / -24 |
+| `507a455` | Fix #3 — tickPerformance emits new performanceTracks only on real change | `src/store/useAppStore.ts` | +10 / -6 |
+| `e373fa5` | Fix #4 — ChannelStrip memo + per-pad subscriptions | `src/screens/MixScreen.tsx` | +83 / -94 |
+| `ea73b74` | Fix #5 — extract memo'd EventRow from StepScreen + move per-tick subscription into row | `src/screens/StepScreen.tsx` | +99 / -43 |
+
+#### Fix #2 — per-key triggeredPads consumers (`1c36620`)
+
+The audit identified two remaining whole-map `state.triggeredPads` consumers after Fix #1: `MixScreen` and `PadPlayScreen`. `MixScreen` is handled inside Fix #4 (the ChannelStrip memo refactor moves the subscription into the child anyway), so Fix #2 scope = `PadPlayScreen` only.
+
+Extracted `PadOverviewCell` (`React.memo`) for the 16-pad overview grid. Each cell subscribes to its own `${padBank}:${pad}` key via `state.triggeredPads[key]` → primitive boolean → Object.is gating. Cell props are three primitives (`pad`, `chokeGroup`, `muteTargetMode`), so changes to OTHER pads' params (e.g. user adjusts level on pad 7 → padAssignments map produces new array with one new object) don't ripple into the 15 unaffected cells.
+
+LayoutElementsBAK.tsx grep-hit ignored — it's an unused backup file from earlier prototyping. Left untouched per anti-pattern "no while-I'm-here edits".
+
+#### Fix #3 — tickPerformance allocation churn (`507a455`)
+
+The audit flagged `tickPerformance` allocating a fresh `performanceTracks` array (with new track objects via `.map(...)` spread) every 1/16 step, purely to refresh a decorative `activity: number` field. The audit's recommendation was approach A (emit new ref only on real change) or B (derive activity in consumers from `performancePulse`).
+
+Grep across `src/` confirmed **zero consumers actually read `track.activity`** anywhere. The field is initialized on track creation, mutated 8 × /s by `tickPerformance`, and read by nothing. Pure dead state being re-allocated. Approach B variant: stop emitting the map entirely. `performancePulse` (which IS consumed by `PerformanceScreen`'s LED viz at lines 47 + 89) is still bumped each tick.
+
+`performanceTracks` reference now changes only on genuine state edits — `toggleTrackMute`, `setTrackMute`, sequence load (`derivePerformanceTracks`), `addTrack`, etc. All four `performanceTracks` consumers (`PerformanceScreen`, `StepScreen`, `SongScreen`, `UTILITY_TRACK_MUTE` via `UtilityScreens`) get to skip re-renders during plain playback. Schema unchanged (the field stays on the type for compatibility with snapshots that already wrote it); only the per-tick allocation is gone.
+
+#### Fix #4 — ChannelStrip memo + per-pad subscriptions (`e373fa5`)
+
+`ChannelStrip × 16` had **13 props** drilled from parent (channel object, audible, meterActive, meterLevel, fxBus, fxSendLevel, 7 callbacks) plus parent's `triggeredPads` whole-map subscription gating the meter flash.
+
+Rewrote `ChannelStrip` as `React.memo` with **three primitive props**: `pad`, `selected`, `anySolo`. All channel / assignment / triggered data is now read inside the strip via per-key selectors:
+- `channel = state.padMixer[bank].find(c => c.pad === pad)` — same object ref preserved across renders when this pad's mix didn't change (`setMixerChannelValue` uses `.map()` which keeps non-matching entries' refs).
+- `fxBus`, `fxSendLevel` — primitive numbers from `state.padAssignments[bank].find(...)`.
+- `meterActive` — `Boolean(state.triggeredPads[`${bank}:${pad}`])`, primitive boolean.
+
+Action dispatchers (`onSelect`, `onLevel`, `onPan`, `onFxBusCycle`, `onSendCommit`, `onMute`, `onSolo`) go through `useAppStore.getState()` inline — no subscriptions, no useCallback churn. The Session 36 L1 drag pattern (`directAudioLevel` / `directAudioPan`) is preserved with the same tradeoffs.
+
+Parent (`MixScreen`) dropped: `triggeredPads` sub, `isPadVisuallyTriggered` import, six action subs (`selectMixerPad`, `toggleMixerChannelMute`, `toggleMixerChannelSolo`, `setPadFxBus`, `setPadFxSendLevel` for per-strip use — kept the one used by the header), and the per-strip prop drilling.
+
+Net effect: pad event during playback re-renders one ChannelStrip's meter, not all 16. Fader drag on pad 5 → release commits via `setMixerChannelValue` → parent re-renders once (cheap thin JSX) → memo skips 15 strips → only pad 5 strip re-renders. Same shape as Session 36 L1 but now also gated by memo for the other 15.
+
+#### Fix #5 — StepScreen EventRow extract + memo (`ea73b74`)
+
+`StepScreen` had 30+ atom subscriptions including per-tick fields (`currentStepIndex`, `currentBar`, `currentStep`, `bar`). Inline `visibleEvents.map(...)` built 16 event rows directly in JSX. Whole-screen re-render at 8 Hz during playback rebuilt all 16 rows even when only the playhead crossed one boundary.
+
+Extracted `EventRow` (`React.memo`) with three props: `event` (object), `selected` (bool), `currentSequence` (sequence shape passed for the `eventStepIndex` helper).
+
+Inside the row:
+- `trackMuted` — `state.performanceTracks.find((t) => t.name === trackId || t.id === trackId)?.muted ?? false` → primitive boolean.
+- `playing` — `!dimmed && state.currentStepIndex === eventStep` → primitive boolean. `eventStep` computed once outside the selector from props (closure-captured).
+- `assigned` — `isPadAssigned(...)` → primitive boolean from `state.padAssignments`.
+
+Handlers (`selectStepEvent`, `toggleEventMuted`) dispatch via `useAppStore.getState()` — no subs.
+
+Parent (`StepScreen`) dropped: `currentStepIndex`, `performanceTracks`, `selectStepEvent`, `toggleEventMuted` subs. Still subscribes to `padAssignments` (used in the right-column PAD STATUS Info — out of scope to extract that into its own memo'd component).
+
+Net effect during playback: parent still re-renders at 8 Hz (still subscribed to `bar`, `currentBar`, `currentStep` for the right-column display + StepNav), but its body is a thin JSX skeleton. The 16 row children memo-skip on tick changes — only the row whose `playing` flag flips on tick boundary crossing actually re-renders. **From "16 rows × 8 Hz" to "1-2 rows per boundary crossing".**
+
+**What didn't work / pitfalls hit**
+
+- **Bundle size barely moved.** Cumulative JS bundle grew ~0.2 kB over baseline despite four substantial refactors — the variants and per-key selectors compile to similar size as the original closures. Expected; not a concern.
+- **`activity` field — initial instinct was approach A** (emit new array only when activity changed). Caught the dead-state nature only after grepping for actual consumers. Approach B (skip the map entirely) was much cleaner. The function still computes `(performancePulse * 11 + index * 17) % 76` style values in the old `derivePerformanceTracks` factories — those are initialiser values, not per-tick, so left untouched.
+- **`useState`'s ref-stability in ChannelStrip's L1 drag** still works after memo. The L1 drag closures live in window pointermove/pointerup handlers, not as React props — memo on ChannelStrip doesn't tear them down mid-drag. Confirmed by reading the Session 36 L1 wiring (`Fader` / `PanKnob` own the drag state; ChannelStrip just provides `onChange` + `onDragAudio` callbacks recreated per render but captured into the drag closure at pointerDown time).
+- **`padAssignments` left subscribed at `StepScreen` parent** — the right column's `PAD STATUS` Info reads it. Could have extracted a tiny `<PadStatusInfo />` memo'd component subscribing only to the relevant key, but that's scope creep for Fix #5. Parent re-renders 8 Hz anyway from other per-tick subs (`bar`, `currentBar`, `currentStep`); pulling padAssignments out wouldn't change that.
+- **Per-tick header fields stayed in `StepScreen` parent** (`bar`, `currentBar`, `currentStep`). Moving these out would require extracting `<BarLabel />` / `<StepNavValue />` memo'd components for the right column and the StepNav values. Out of scope for the row-extraction fix; flagged for future polish if the parent's 8 Hz re-render shows up in profiling. Cost is small because parent's body is just JSX dispatch.
+- **`isPadAssigned` selector in EventRow** subscribes to whole `state.padAssignments` and computes a primitive boolean. The selector evaluates on every store change but returns the same boolean for the 99% of changes that don't touch this row's assignment — gated by `Object.is`. The cost is 16 cheap selector evaluations per store update vs. the previous 16 full row re-renders. Trade is correct.
+
+**Decisions made**
+
+- **One commit per fix.** Each commit is self-contained, validates `npm run build` clean, references the audit table by name in its message. Marek can revert any one of the four cleanly.
+- **`LayoutElementsBAK.tsx` not touched.** It's a dead backup; the active file is `LayoutElements.tsx`. No rationale to migrate dead code.
+- **Voice pooling deferred** as planned. samplerEngine is touchy; the audit-priority order was correct in flagging it MEDIUM. Separate session, more careful planning.
+- **`activity` field retained in the type definition.** Removing it would touch the PerformanceTrack type, its initialisers in `derivePerformanceTracks`, and any snapshot that might have written it. The cost (per-tick allocation) lives in `tickPerformance` and that's where the fix goes. Type can be cleaned up later if needed.
+- **`performanceTracks` ref-stability after Fix #3** unlocks a small bonus: any consumer who memoises derived data from `performanceTracks` (none currently, but future code) gets stable upstream refs through plain playback.
+- **`padAssignments` whole-map subscription kept at `StepScreen` parent.** Used by the right-column PAD STATUS Info. Extracting that Info into its own memo'd component is a future polish — not required by the current audit.
+
+**Open issues / followups**
+
+Marek runtime verification on the T410 release build:
+
+1. **PadPlayScreen** — Open PAD PLAY screen, trigger pads via mouse / playback. The 16-cell overview grid should highlight only the triggered pad's cell (amber border). When the same pad releases, only that one cell un-highlights. Other 15 stay un-rendered.
+2. **PerformanceScreen** — LED viz at the bottom still pulses with playback (`performancePulse` bar). Mute / solo toggles still work. Mute list updates correctly.
+3. **MIX screen** — 16 ChannelStrips render correctly. Selected strip shows amber border. Drag fader on one strip — only that strip's fader visual moves during drag (Session 36 L1 path), value commits on release. Pad flashes during playback highlight the right strip's meter, not all 16. Click M/S buttons toggle correctly.
+4. **STEP screen** — 16 event rows render with correct VEL/PAD/TR/M columns. Playhead highlight (cyan-ish bg) follows the current step during playback, only one row highlighted at a time. Editing an event value updates only that row's display. Toggling event mute updates only that row.
+5. **No console errors** beyond pre-existing favicon 404 + React DevTools tip.
+
+**Expected perf win on the T410**:
+- Plain playback: parent screens re-render at 8 Hz (cheap JSX skeleton), but the heavy work (16 strips / 16 rows / 16 overview cells) is gated by memo. **Per playback tick: 1-2 child re-renders instead of ~50.**
+- Pad event: only the affected pad/strip/row/cell re-renders. **No fan-out across 16 instances per event.**
+- Combined with Fix #1's LayoutElementView split (~800 re-renders/s → ~5-10/s on hardware shell), the total React reconciliation pressure during a typical drum pattern should drop by 30-50× vs. the pre-audit baseline.
+
+If lag persists on the T410 after Marek verifies all five fixes, the next likely targets are:
+- Voice pooling (deferred — `samplerEngine`).
+- Right-column header subscriptions in `StepScreen` parent (extract `<BarLabel>` etc.).
+- The 50-100 Hz `inputLevel` / `liveRecordingWaveform` writes during recording (scope: recording-only, unrelated to playback lag).
+
+### Files modified (Session 37 follow-up #2)
+
+- `src/screens/PadPlayScreen.tsx` (Fix #2)
+- `src/store/useAppStore.ts` (Fix #3)
+- `src/screens/MixScreen.tsx` (Fix #4)
+- `src/screens/StepScreen.tsx` (Fix #5)
+
+Four commits. Each builds clean (`npm run build` ✓). No Rust changes. No `cargo check` needed.
+
 ---
 
 ## Session 36 — 2026-05-24 — MIX slider/knob drag lag fix (L1: local drag state + direct samplerEngine, commit on release)
