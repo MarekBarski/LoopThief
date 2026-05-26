@@ -5208,22 +5208,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => {
       const performancePulse = (state.performancePulse + 1) % 16;
       const atBarBoundary = performancePulse === 0;
-      const performanceTracks = state.performanceTracks.map((track, index) => ({
-        ...track,
-        activity: track.muted ? 0 : 24 + ((state.performancePulse * 11 + index * 17) % 76),
-      }));
+      // performanceTracks NO LONGER re-emitted every tick. The old code
+      // rebuilt the whole array per tick to refresh a decorative `activity`
+      // field — but `activity` is read by zero consumers in src/. The
+      // allocation churned 8 × /s during playback and re-rendered every
+      // subscriber of state.performanceTracks (PerformanceScreen,
+      // StepScreen, SongScreen, UTILITY_TRACK_MUTE) for nothing.
+      // performancePulse is the only field actually consumed downstream
+      // (LED viz in PerformanceScreen). performanceTracks reference now
+      // changes ONLY when mute/solo/membership genuinely changes via
+      // toggleTrackMute / setTrackMute / sequence load etc.
       if (atBarBoundary && state.queuedSequence) {
         return {
           ...applyCurrentSequence(state, state.queuedSequence),
           performancePulse,
-          performanceTracks,
           queuedSequence: null,
           queuedSequenceBarsRemaining: 0,
         };
       }
       return {
         performancePulse,
-        performanceTracks,
         queuedSequenceBarsRemaining: state.queuedSequence ? 1 : 0,
       };
     }),
