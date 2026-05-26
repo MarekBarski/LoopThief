@@ -99,6 +99,214 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 37 — 2026-05-26 — Perf audit (re-render + voice pooling), NO code
+
+### What was attempted
+
+Marek reported lag during sequence playback in the release build on a Lenovo ThinkPad T410 (i5 1st-gen Arrandale, 2 cores / 4 threads, 4-8 GB RAM, Linux Mint 21.1, approximately 2010-era hardware). Two tasks scoped, both audit-only — explicit anti-pattern reminder from Session 35 disaster: **measure before code**.
+
+1. React re-render audit — find components re-rendering unnecessarily during sequence playback. No optimisation, just diagnosis.
+2. Voice pooling audit — characterise current AudioBufferSourceNode allocation pattern, design a pool.
+
+### What worked
+
+Audit-only session — no code edits. `npm run build` clean at start and unchanged at end (4.57 s).
+
+**1A — Static selector audit (grep across `src/`).**
+
+- `useAppStore` is called **666 times across 25 files**.
+- Every single call uses an atomic selector — `useAppStore((state) => state.someField)`. No object-literal selectors, no array-literal selectors, no derived-array selectors that would return a fresh reference on every change.
+- Zero matches for `React.memo`, `memo(`, `useShallow`, `from "zustand/shallow"`, `, shallow`, or `useAppStore()` (no-selector subscriptions).
+- `useCallback` + `useMemo` combined appear only **15 times across 6 files** (ChopScreen, RecordScreen, AppShell, ProgramScreen, StepScreen, useHoldRepeat). The codebase relies on Zustand's atomic selectors to gate re-renders, not on React's referential-stability primitives.
+
+**Conclusion (1A):** the selectors themselves are NOT the problem. They are correct. The problem is selector COUNT per component (some screens subscribe to 30-50 atoms) combined with absent component-level memoisation.
+
+**1B — Component memoisation audit.**
+
+ZERO components wrapped in `React.memo` anywhere in the codebase. Specifically:
+
+- `LayoutElementView` (renders each of 58 hardware-shell elements) — not memo'd, subscribes to **25 store atoms**.
+- `ChannelStrip` (MixScreen, 16 instances) — not memo'd; parent re-renders fan out.
+- `Fader` / `PanKnob` / `Meter` (MixScreen, inside each ChannelStrip) — not memo'd.
+- Pad list rows in `ProgramScreen` (16 inline buttons) — not memo'd, no row component.
+- Event rows in `StepScreen.visibleEvents` (16 inline `<div>` blocks) — not memo'd, no row component.
+- `TopBar` — not memo'd, subscribes to 12 atoms (mostly low-frequency, but `transportAnnouncement`, `lastAudioMessage`, `lastPerformanceMessage` are message strings that change during playback).
+
+**1C — High-frequency state sources during playback (no recording).**
+
+Traced from `RuntimeClock.tsx`:
+
+- `tickTransport(25 ms)` — fires at 40 Hz. During plain playback (no count-in, no rec-with-click) it returns `state` unchanged — no listener notification. Fine.
+- `tickStepPlayback()` — fires every 1/16 step (~125 ms at 120 BPM = 8 Hz; ~62 ms at 240 BPM = 16 Hz). Always mutates `currentStepIndex`, `currentBar`, `currentStep`, `currentEvent`, `bar` (formatted string), plus `selectedEventPatch` fields. May also mutate `stepEvents`, `sequences`, `recordSessionClearedSteps` during recording, and `isSequenceRecording` + `overdubEnabled` + `lastAudioMessage` at auto-overdub transition.
+- `tickPerformance()` — fires every 1/16 step. **Allocates a brand-new `performanceTracks` array every tick**, with brand-new track objects (`.map(...)` spread per track), even when nothing musically changed. `state.performanceTracks` identity changes 8× per second during plain playback.
+- `tickSongPlayback()` — fires every 500 ms. Low impact.
+- MIDI clock — only fires when CLOCK sync-out is active.
+
+Plus event-driven hot writes:
+- `markPadTriggered(...)` — spread of the entire `triggeredPads` object **every pad start AND every release** (~200 ms gap). Each spread = new reference.
+- `inputLevel` — `useAppStore.setState({ inputLevel })` from the native-audio onLevel callback during recording (~50-100 Hz).
+- `liveRecordingWaveform` — `concat + slice` every audio frame during recording → new array every callback.
+- `flashingButtons` — written on TAP TEMPO, PLAY START, STOP visual flashes.
+
+**Multiplication of pain:**
+
+`LayoutElementView` subscribes to **`triggeredPads`** (mutated on every pad start AND release) AND **`flashingButtons`**. There are **58 of these instances mounted at all times** (entire hardware shell). Every pad event triggers two `triggeredPads` mutations 200 ms apart → 2 × 58 = **116 `LayoutElementView` re-renders per pad event**. A modest drum pattern (kick on every quarter, hat on every 1/8, snare on 2&4 = 14 events/bar @ 120 BPM = 7 events/s) produces ~800 `LayoutElementView` re-renders per second of playback. All on the same JS main thread as the sequencer's `setInterval(tickStepPlayback, …)`. Same starvation pattern as the Session 36 MIX-drag lag, just driven by sequence events instead of drag events.
+
+`StepScreen` subscribes to `currentStepIndex` (per-step), `currentBar`, `currentStep`, `bar`, `performanceTracks` (new array per tick) — re-renders 8 × /s during plain playback, repaints 16 inline event rows each time.
+
+`MixScreen` subscribes to `triggeredPads` (for meter activity flash) — also re-renders every pad event, fanning out to 16 ChannelStrips with new inline callbacks.
+
+**2 — Voice pooling audit (samplerEngine.ts, 414 LOC, single file).**
+
+`playInternal` allocates per voice trigger:
+- 1× `AudioBufferSourceNode` (createBufferSource)
+- 2× `GainNode` (envelopeGain + channelGain)
+- 1× `StereoPannerNode`
+- Optionally 1× `BiquadFilterNode`
+- 1× plain object (Voice metadata)
+- Plus 4-5 `.connect()` graph mutations
+
+**Allocation rate during typical playback:** 6-10 events/s × 4-5 nodes = ~25-50 Web Audio node allocations/s. Note Repeat at 1/32 on a single pad = 16 retriggers/s = 64-80 nodes/s. Voice lifetime varies (short drum hits ~100-200 ms before `onended`, sustained samples longer).
+
+**Voice steal:** `maxVoices = 32`, `stealOldestVoice` evicts oldest when capped.
+
+**Constraint:** `AudioBufferSourceNode` CANNOT be reused. Web Audio spec: once `start()` is called, the source is single-use. **Source nodes MUST be re-allocated per trigger.** Other nodes (Gain, Pan, Filter) can be reused (disconnect, reset values, reconnect to new source).
+
+**Pool design proposal (Marek decides if/when):**
+
+- Slot count: 32 (matches existing `maxVoices`).
+- Each slot pre-allocates: `envelopeGain`, `channelGain`, `pan` (long-lived, reused across triggers).
+- Each slot has state: `FREE` | `ACTIVE` | `RELEASING`.
+- Acquire: pick first FREE slot (or steal oldest ACTIVE if all busy). State → ACTIVE.
+- Trigger: create fresh `AudioBufferSourceNode`, connect through existing slot nodes, schedule envelope, call `source.start()`.
+- Release path: `source.onended` returns slot to FREE state, calls `disconnect()` on source only.
+- BiquadFilter handling option A: pool one filter per slot, set `.type` per trigger (cheap, .type is a setter). Option B: allocate filter per-trigger only when filterOptions present (current behaviour). Option A is uniform but creates filter overhead for voices that don't need filtering; Option B keeps the conditional. Recommend Option B (allocate filter on demand, reuse other nodes).
+- `updateChannelMix` / `updateChannelFilter` already iterate `this.voices` — would iterate slots in ACTIVE state instead. Same complexity.
+
+**Edge cases that must be preserved:**
+
+- Mono mode (`options.mono + voiceGroup`) — stop existing voice on same group before acquire. Pool: enumerate ACTIVE slots, predicate by voiceGroup, return them to FREE.
+- Choke groups (`stopVoiceGroups`) — same path, hard stop.
+- Mute groups (cross-bank, 8 ms release) — soft stop, slot transitions ACTIVE → RELEASING → FREE.
+- Voice steal (`stealOldestVoice`) — hard-stops oldest ACTIVE, slot returns to FREE immediately.
+- Live filter add/remove during drag (`updateVoiceFilter` rewires the graph mid-voice) — pool slot's filter ref needs to be settable, same logic carries over.
+- FX routing (`fxEngine.routeVoice`) — runs per-trigger; the pan node is the entry, and FX routing connects from pan to bus / dry. Slot's pan node is reused across triggers — needs `pan.disconnect()` between uses to avoid accumulating bus connections.
+- Sustain timer (`voice.sustainStopTimer`) — slot needs to clear and re-set.
+
+**Expected win:** modest. Web Audio node allocation is cheaper than people assume (the heavy cost is `.connect()` graph mutations, not the allocation itself), so reusing 3 of 4-5 nodes saves the allocator pressure but not the graph-mutation cost. Estimated 30-50% reduction in per-trigger overhead. **Lower-impact than Task 1's component fixes.**
+
+### Findings table — React re-renders
+
+| Location | Pattern | Frequency | Severity | Proposed fix |
+|---|---|---|---|---|
+| `src/components/layout/LayoutElements.tsx:34` `LayoutElementView` | 58 instances, each subscribes to 25 atoms incl. `triggeredPads` + `flashingButtons` (high-churn objects). Not memo'd. | Per pad start AND release → 2 × 58 re-renders per event. ~800/s during typical drum pattern. | **CRITICAL** | Split by element.type (pad, bank, mode, padMode, button, mascot, lcd) — each variant subscribes only to atoms it actually reads. Pad variant: triggeredPads + selected bank only. Button variant: flashingButtons[element.id] only (atomic boolean, not the whole map). Also wrap variants in `React.memo` with default shallow compare. Most variants need zero subscriptions (lcd, logo, mascot). |
+| `src/store/useAppStore.ts:5207` `tickPerformance` | Allocates new `performanceTracks` array every tick, even when no activity values change. | 8 Hz during playback | **HIGH** | Only emit new array when activity values actually changed (compare per-track). Or stop animating `activity` during plain playback (it's a fake meter that just modulates by tick number anyway — pure decoration; can be derived in the component from `performancePulse`). |
+| `src/store/useAppStore.ts:7587` `markPadTriggered` | Returns `{ ...triggeredPads, [key]: active }` for every press/release. All `triggeredPads` subscribers re-render. | 2 × per pad event | **HIGH** | Either (a) use a Map and dispatch a single bumped epoch so subscribers can compare on epoch + key, or (b) split per-pad: `triggeredPads[bank][pad]` → 64 atomic booleans with stable keys; subscribers grab one specific entry via a parametric selector. Simpler middle ground: keep the object, but make consumers subscribe via `useAppStore((s) => s.triggeredPads[key])` instead of the whole map — only the one consumer for the changed key re-renders. |
+| `src/screens/MixScreen.tsx:80-105` `ChannelStrip` × 16 | Not memo'd. Inline callbacks (`onSelect: () => ...`, etc.) recreated every parent render. Parent subscribes to `triggeredPads` (per pad event). | Per pad event during playback | **HIGH** | Wrap ChannelStrip in `React.memo`. Hoist callbacks to `useCallback` keyed on `channel.pad` (or accept that an inline-callback that calls `setMixerChannelValue(channel.pad, …)` can be stable per-pad). Read `triggeredPads[key]` inside ChannelStrip directly so only the one strip whose meter activity changed re-renders. |
+| `src/components/layout/TopBar.tsx` | Subscribes to 12 atoms including `transportAnnouncement`, `lastAudioMessage`, `lastPerformanceMessage`. Not memo'd. | When any of those messages changes (semi-frequent) | MEDIUM | Memo. Lower priority — TopBar is small and the messages don't fire at audio rate. |
+| `src/screens/StepScreen.tsx:10` whole screen | 30+ atoms subscribed including `currentStepIndex`, `currentBar`, `currentStep`, `bar`, `performanceTracks`. Re-renders 8 Hz during playback. 16 inline event rows re-built each render. | 8 Hz during playback | **HIGH** | Extract `EventRow` into a memo'd component. Move `currentStepIndex` consumption to the row only (each row compares `eventStepIndex(event) === currentStepIndex`). Right-column "Selected Event" panel could split into its own memo'd subtree. |
+| `src/screens/ProgramScreen.tsx:88-106` 16 pad buttons | Inline; no row component; no memo. Re-renders on any of 30+ parent atoms. | Whenever parent re-renders | MEDIUM | Extract `PadRow` → `React.memo`. Lower priority — ProgramScreen isn't on screen during pure playback as often as MixScreen / StepScreen. |
+| `src/screens/RecordScreen.tsx:40` `liveRecordingWaveform` | New array every audio frame (`.concat().slice(-128)`), 50-100 Hz during recording. Subscribers re-render at that rate. | 50-100 Hz during recording | MEDIUM | Out of scope for sequence-playback-lag bug, but worth noting. Can use ref + manual render schedule for the waveform display. Lower priority unless Marek also sees lag during recording. |
+| `src/store/useAppStore.ts:2081` `inputLevel` writes | `useAppStore.setState({ inputLevel })` per audio frame. Each setState walks subscriber list. | 50-100 Hz during recording | MEDIUM | Same scope as above — recording-time only. |
+
+### Findings table — Voice pooling
+
+| Location | Pattern | Frequency | Severity | Proposed fix |
+|---|---|---|---|---|
+| `src/audio/samplerEngine.ts:154` `playInternal` | 4-5 fresh Web Audio nodes per trigger (source + 2 gains + pan + optional filter) + 4-5 graph connects. | 6-10/s typical, 16-32/s with note repeat | MEDIUM | Pool envelopeGain + channelGain + pan per slot (32 slots). Source must be re-allocated per trigger (Web Audio spec). Filter remains per-trigger. State machine FREE → ACTIVE → RELEASING → FREE driven by existing `source.onended`. Estimated 30-50% reduction in per-trigger node allocations. |
+| `src/audio/samplerEngine.ts:225` `source.onended` | Per-voice closure captures voice ref, deletes from Set. Allocator pressure from voice object itself is small. | Per voice end | LOW | Pool entry transition replaces Set delete. Cleanup is the same shape, just slot-indexed. |
+| `src/audio/samplerEngine.ts:171` `createBiquadFilter` only when filterOptions present | Already conditional. Fine. | Per filtered trigger | LOW | Keep conditional. Don't preallocate a filter per slot (wastes memory and graph nodes for the common no-filter case). |
+
+### Decisions made
+
+None — audit only. Marek picks which fixes to apply.
+
+**One firm recommendation if a single fix has to be picked first:** split `LayoutElementView` by `element.type` and memo each variant. That single change probably accounts for most of the perceived sequence-playback lag, because it's the only known mechanism that produces 800 React re-renders per second on a low-spec CPU. The rest are secondary.
+
+### Open issues / followups
+
+**Awaiting Marek decision (per ABSOLUTE RULE — no code until you see and approve):**
+
+1. CRITICAL — `LayoutElementView` split + memo.
+2. HIGH — `markPadTriggered` consumer pattern (subscribe per-key, not whole map).
+3. HIGH — `tickPerformance` allocation churn.
+4. HIGH — `ChannelStrip` memo.
+5. HIGH — `StepScreen` event-row memo split.
+6. MEDIUM — voice pooling (envelopeGain + channelGain + pan reuse).
+
+Recording-path bugs (`inputLevel`, `liveRecordingWaveform`) are documented but probably out of scope for the "lag during sequence playback" bug — they only fire while recording.
+
+### Files modified
+
+- None (audit only).
+
+### Session 37 follow-up — Applied Fix #1: LayoutElementView split + memo
+
+Marek picked the CRITICAL audit finding and asked for a single-fix commit, no other changes.
+
+**What worked**
+
+- `LayoutElementView` reduced to a pure `switch (element.type)` dispatcher. No store subscriptions in the dispatcher itself — so layout-store changes that re-render the parent `LayoutElements()` no longer fan out 25-atom subscriptions × 58 instances.
+- Ten variant components extracted, each wrapped in `React.memo`:
+  - `LcdVariant`, `LcdContentVariant`, `StatusVariant`, `LogoVariant` — zero `useAppStore` subscriptions. Render once at mount and only re-render if `element` or `editMode` props change (rare — layout edit only).
+  - `MascotVariant` — subscribes to `activeScreen` only (1 atom, low churn). Internal blink timer is component-local state, unchanged from the original `MascotElement`.
+  - `PadVariant` — subscribes to **a primitive boolean** via `state.triggeredPads[`${state.padBank}:${label}`]`. The previous "spread the whole `triggeredPads` map on every press/release → all 58 elements re-render" pattern is replaced by per-key reads: only the pad whose key changed (one pad in the current bank, plus one un-triggered when bank switches) re-renders. Inline handlers read `useAppStore.getState()` imperatively (same pattern Session 36 used for `directAudioLevel`).
+  - `BankVariant` — subscribes to `padBank` only. Re-renders 4 buttons on bank switch; doesn't care about `triggeredPads`, `flashingButtons`, etc.
+  - `ModeVariant` — `active = useAppStore((state) => label === state.activeScreen)` composed selector returns a primitive boolean per instance. Only the mode whose active state flipped re-renders.
+  - `PadModeVariant` — `active` selector returns a primitive boolean derived per-label. Each instance subscribes to exactly the atoms its label cares about (e.g. `noteRepeatEnabled` only matters for the NOTE REPEAT button; `transportPhase` only for COUNT IN). Other padMode buttons ignore those churnable atoms.
+  - `ButtonVariant` — same pattern. The default branch reads `state.flashingButtons[id]` as a primitive boolean (per-key), so a `flashButton(id)` write to the map causes only the one button whose key changed to re-render. STOP / TAP TEMPO / PLAY START flashes no longer cascade across all hardware buttons.
+- `MascotElement` renamed to `MascotVariant` and accepts the LayoutElement directly (computing style internally) instead of taking a pre-computed `{ style }` prop. Same internal behaviour: random-interval blink with `useEffect`, headphones swap when `activeScreen === "RECORD"`.
+- Click handlers in all interactive variants use `useAppStore.getState()` imperatively — no action subscriptions needed since actions are stable refs in Zustand. Confirmed pattern from Session 36 L1 fix.
+- Build clean (`npm run build` → 2.15 s, no TS errors). Bundle JS grew by ~1.2 kB (713.14 kB vs 711.94 kB baseline) — the variant split is slightly more verbose, expected.
+
+**What didn't work / pitfalls hit**
+
+- Initial draft tried `import type { AppState } from "../../store/useAppStore"` to type the smart selectors. `AppState` is declared inside the store file but **not exported**. Dropped the explicit type and relied on inference — the inline `(state) => ...` selectors get their parameter type from `useAppStore`'s generic, which is what Zustand callers do everywhere else in the codebase.
+- `setActiveScreen` cast in `ModeVariant` needs to keep the original `Parameters<typeof setActiveScreen>[0]` cast or the union-of-screens type leaks. Fix: destructure the action from `useAppStore.getState()` into a local `setActiveScreen` const inside the handler, then the cast works the same as the pre-refactor inline subscription.
+- Considered hoisting click handlers via `useCallback` for "memo purity". Not needed — handlers are attached to native DOM elements, not propagated as React props to children. memo compares the variant's INCOMING props (element + editMode), not handler refs created during render.
+- Considered registering `onMouseDown` / `onMouseUp` / `onMouseLeave` only when `label === "ERASE"`. Left them unconditional on `ButtonVariant` — handler bodies no-op for non-ERASE labels, identical to the pre-refactor behaviour. Splitting `ErasePressHoldButton` from `OtherButton` would be one extra component for one specific label, not worth it.
+
+**Decisions made**
+
+- **Per-key boolean selectors instead of useShallow / Maps.** Cheapest possible primitive: `state.triggeredPads[key]` returns `boolean | undefined`, wrapped in `Boolean(...)` → strict primitive. `Object.is` compares cleanly. No shallow-compare cost. No Map API churn.
+- **Imperative action dispatch via `useAppStore.getState()` inside handlers.** Zero action subscriptions per variant → variants only resubscribe when their state atom changes. Matches the Session 36 L1 pattern.
+- **`MascotVariant` kept the random-interval blink intact.** The blink schedule (6-12 s idle + 150-250 ms blink) is decorative and shouldn't change. Internal `useState` for `isBlinking` re-renders only the mascot, not the rest of the shell.
+- **No `useCallback` / `useMemo` added beyond what's already there.** Variants are small; handler recreation per render is negligible. memo gates the actual re-render.
+- **`QuitButton` case still returns null** — same as pre-refactor. The real button is in AppShell.
+- **No changes to `layout.json`, layout positions, element ordering, click semantics, hover behaviour, or pad event payloads.** Pure refactor — behaviour-preserving.
+
+**Open issues / followups**
+
+Marek runtime verification on the T410 (`npm run tauri dev` + a real beat playing):
+1. All 58 elements render in correct positions — hardware shell looks identical to pre-refactor.
+2. Pad clicks trigger sounds; pad image flips to `padActive` on press, `padIdle` on release.
+3. Sequence playback flashes pads as events fire, same visual feedback as before.
+4. Bank A/B/C/D switch works; selected bank shows amber.
+5. Transport buttons: PLAY toggles, REC toggles (red idle vs active), STOP works, OVERDUB toggles.
+6. STEP < / STEP > / BAR < / BAR > nav buttons work; TAP TEMPO and PLAY START flash on click.
+7. Mode buttons (MAIN, RECORD, CHOP, PROGRAM, STEP, MIX, DISK, SETTINGS, FX) switch screens correctly.
+8. PadMode buttons: PAD PLAY / STEP INPUT toggle; FULL LEVEL, WAIT PAD, COUNT IN, 16 LEVELS, TRACK MUTE, PAD MUTE, NEXT SEQ, NOTE REPEAT all open their utility screens / toggle their state.
+9. ERASE button: press-and-hold engages erase mode (mouseDown sets `eraseHoldActive`, mouseUp/Leave clears).
+10. F7 layout editor still opens (dev-only, not in Tauri); element drag/resize via `LayoutEditorOverlay` still works.
+11. Mascot blinks randomly; swaps to headphones-idle/blink on RECORD screen.
+12. Logo and LCD viewport render correctly.
+
+**Expected perf win** (Marek verifies on the T410 release build):
+- Pad event during playback: re-renders 1-2 PadVariants (one triggered, optionally one released 200 ms later) instead of 58 `LayoutElementView` instances. **~30-50× fewer re-renders per pad event.**
+- Button flash: re-renders 1 ButtonVariant instead of 58. **58× reduction.**
+- Bank switch: re-renders 4 BankVariants + the pads whose `(bank, pad)` key now resolves differently. Bounded; was unbounded before.
+- React reconciliation pressure on the sequencer tick thread drops correspondingly. Lag-on-play symptom should go away or at least move down the priority list.
+
+If lag persists, the next priorities from the audit are: `tickPerformance` allocation churn (#3), `markPadTriggered` consumer pattern was largely solved by this commit but the spread itself still allocates a new object — could be a follow-up.
+
+### Files modified (Session 37 follow-up)
+
+- `src/components/layout/LayoutElements.tsx` — `LayoutElementView` reduced to a dispatcher; 10 memo'd variants added (`LcdVariant`, `LcdContentVariant`, `StatusVariant`, `LogoVariant`, `MascotVariant`, `PadVariant`, `BankVariant`, `ModeVariant`, `PadModeVariant`, `ButtonVariant`); `MascotElement` renamed and reshaped to take `element` directly; original `getButtonVisual` / `isRedTransportButton` helpers inlined into `ButtonVariant` (the per-label switch already determines red-vs-grey).
+
+Single file change. `npm run build` clean. No Rust changes.
+
+---
+
 ## Session 36 — 2026-05-24 — MIX slider/knob drag lag fix (L1: local drag state + direct samplerEngine, commit on release)
 
 ### What was attempted
