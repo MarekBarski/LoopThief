@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { isPadVisuallyTriggered, useAppStore } from "../store/useAppStore";
+import { memo, useEffect, useState } from "react";
+import { useAppStore } from "../store/useAppStore";
 import { ScreenFrame } from "./ScreenFrame";
 import { lcdContentHeight, lcdSoftkeyHeight } from "./lcdLayout";
 
@@ -13,7 +13,9 @@ export function PadPlayScreen() {
   const lastTriggeredPad = useAppStore((state) => state.lastTriggeredPad);
   const lastPadVelocity = useAppStore((state) => state.lastPadVelocity);
   const assignments = useAppStore((state) => state.padAssignments[padBank]);
-  const triggeredPads = useAppStore((state) => state.triggeredPads);
+  // triggeredPads NOT subscribed at screen level — Fix #2 of Session 37 audit
+  // pushed the read into PadOverviewCell so a single pad press doesn't fan
+  // out a re-render across all 16 cells + every other consumer in this screen.
   const isPlaying = useAppStore((state) => state.isPlaying);
   const selectedAssignment =
     assignments.find((assignment) => assignment.pad === lastTriggeredPad) ??
@@ -65,27 +67,14 @@ export function PadPlayScreen() {
           <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
             <p className="text-[#91a477]">PAD OVERVIEW</p>
             <div className="grid grid-cols-4 gap-[8px]">
-              {assignments.map((assignment) => {
-                const active = isPadVisuallyTriggered(triggeredPads, padBank, assignment.pad);
-                const muted = assignment.muteTargetMode !== "OFF" || assignment.chokeGroup > 0;
-                return (
-                  <div
-                    key={assignment.pad}
-                    className={`grid gap-[4px] border px-[8%] py-[7%] ${
-                      active
-                        ? "border-amber-300 bg-amber-200/15 text-amber-100"
-                        : muted
-                          ? "border-[#46533b] bg-black/25 text-[#70805c]"
-                          : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
-                    }`}
-                  >
-                    <span>{assignment.pad}</span>
-                    <span className="text-[clamp(8px,0.66vw,10px)] text-[#91a477]">
-                      {assignment.chokeGroup > 0 ? `G${String(assignment.chokeGroup).padStart(2, "0")}` : "--"}
-                    </span>
-                  </div>
-                );
-              })}
+              {assignments.map((assignment) => (
+                <PadOverviewCell
+                  key={assignment.pad}
+                  pad={assignment.pad}
+                  chokeGroup={assignment.chokeGroup}
+                  muteTargetMode={assignment.muteTargetMode}
+                />
+              ))}
             </div>
           </section>
         </div>
@@ -105,6 +94,41 @@ export function PadPlayScreen() {
     </ScreenFrame>
   );
 }
+
+// Per-cell subscription so a single pad press re-renders only the one cell
+// whose `${padBank}:${pad}` key flipped, not all 16. Props are primitives,
+// so React.memo's default shallow compare skips re-render when chokeGroup /
+// muteTargetMode are unchanged elsewhere in the parent's assignments array.
+const PadOverviewCell = memo(function PadOverviewCell({
+  pad,
+  chokeGroup,
+  muteTargetMode,
+}: {
+  pad: string;
+  chokeGroup: number;
+  muteTargetMode: "OFF" | "PAIR" | "GROUP";
+}) {
+  const active = useAppStore((state) =>
+    Boolean(state.triggeredPads[`${state.padBank}:${pad}`]),
+  );
+  const muted = muteTargetMode !== "OFF" || chokeGroup > 0;
+  return (
+    <div
+      className={`grid gap-[4px] border px-[8%] py-[7%] ${
+        active
+          ? "border-amber-300 bg-amber-200/15 text-amber-100"
+          : muted
+            ? "border-[#46533b] bg-black/25 text-[#70805c]"
+            : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
+      }`}
+    >
+      <span>{pad}</span>
+      <span className="text-[clamp(8px,0.66vw,10px)] text-[#91a477]">
+        {chokeGroup > 0 ? `G${String(chokeGroup).padStart(2, "0")}` : "--"}
+      </span>
+    </div>
+  );
+});
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
