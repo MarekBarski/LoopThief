@@ -5613,32 +5613,43 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     const programs = syncCurrentProgram(state);
     const sanitized = sanitizeProjectName(name);
-    const { manifest, sampleEntries } = serializeProject({
-      name: sanitized,
-      appVersion: APP_VERSION,
-      samples: state.recordedSamples.map((sample) => ({
-        id: sample.id,
-        name: sample.name,
-        audioBufferId: sample.audioBufferId,
-        durationMs: sample.durationMs,
-        duration: sample.duration,
-        sampleRate: sample.sampleRate,
-        channelCount: sample.channelCount,
-        waveform: sample.waveform,
-        keptSlices: sample.keptSlices,
-        editState: sample.editState,
-      })),
-      programs,
-      sequences: state.sequences,
-      songs: state.songSteps,
-      globalSettings: collectGlobalSettings(state),
-      fxBuses: state.fxBuses,
-      masterFx: state.masterFx,
-      fxChainFX1ToFX2: state.fxChainFX1ToFX2,
-      fxChainFX3ToFX4: state.fxChainFX3ToFX4,
-      resolveAudioBuffer: (id) => getSampleBuffer(id),
-    });
-    const blob = await writeProjectZip(manifest, sampleEntries);
+    // serializeProject + writeProjectZip can now throw (strict buffer +
+    // integrity guard). Wrap so the failure surfaces as a clean status
+    // message instead of an unhandled rejection (DiskScreen calls this with
+    // `void saveProjectFile(...)`).
+    let blob: Blob;
+    try {
+      const { manifest, sampleEntries } = serializeProject({
+        name: sanitized,
+        appVersion: APP_VERSION,
+        samples: state.recordedSamples.map((sample) => ({
+          id: sample.id,
+          name: sample.name,
+          audioBufferId: sample.audioBufferId,
+          durationMs: sample.durationMs,
+          duration: sample.duration,
+          sampleRate: sample.sampleRate,
+          channelCount: sample.channelCount,
+          waveform: sample.waveform,
+          keptSlices: sample.keptSlices,
+          editState: sample.editState,
+        })),
+        programs,
+        sequences: state.sequences,
+        songs: state.songSteps,
+        globalSettings: collectGlobalSettings(state),
+        fxBuses: state.fxBuses,
+        masterFx: state.masterFx,
+        fxChainFX1ToFX2: state.fxChainFX1ToFX2,
+        fxChainFX3ToFX4: state.fxChainFX3ToFX4,
+        resolveAudioBuffer: (id) => getSampleBuffer(id),
+      });
+      blob = await writeProjectZip(manifest, sampleEntries);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "SAVE FAILED";
+      set({ lastAudioMessage: `SAVE FAILED: ${message}` });
+      return { ok: false, reason: message };
+    }
     const result = await saveBlobAsync(blob, {
       defaultName: sanitized,
       extension: "lthief",
