@@ -171,7 +171,11 @@ export function FileBrowserScreen() {
                 <div className="px-[3%] py-[5%] text-red-300">ERROR: {error}</div>
               )}
               {loading && !error && (
-                <div className="px-[3%] py-[5%] text-[#91a477]">LOADING...</div>
+                <div className="px-[3%] py-[5%] text-[#91a477]">
+                  {mode === "SAVE_PROJECT" || mode === "SAVE_SAMPLE" || mode === "SAVE_MIXDOWN_WAV"
+                    ? "SAVING..."
+                    : "LOADING..."}
+                </div>
               )}
               {!loading && !error && (
                 <>
