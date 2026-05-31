@@ -99,6 +99,66 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 41 — 2026-05-31 — Metronome polish (vol 200 + DURING PLAY) + SAVING status text (2 commits)
+
+### What was attempted
+
+Two small UI polish fixes, one commit each.
+1. Metronome: raise CLICK VOL cap 100→200; add DURING PLAY toggle (clicks during plain PLAY, default OFF).
+2. Fix save flows showing "LOADING..." instead of "SAVING...".
+
+### What worked
+
+Two commits, both `npm run build` clean. Separate docs commit for this log.
+
+| Hash | Subject | Files |
+|---|---|---|
+| `9ff64ca` | metronome vol→200 + DURING PLAY toggle | `useAppStore.ts`, `disk/types.ts`, `App.tsx`, `screens/UtilityScreens.tsx` |
+| `da6d950` | save shows SAVING not LOADING | `screens/FileBrowserScreen.tsx` |
+
+**Fix 1 — metronome.**
+- CLICK VOL cap raised to 200 at all three clamp sites (`adjustCountInClickVolume:2017`, `adjustMetronomeVolume:2054`, `setMetronomeVolume:2063`), the ArrowRow editable `max` (UtilityScreens), and the F3 VOL wrap (`>= 100 ? -100` → `>= 200 ? -200`). Gain formula `metronomeVolume/100` (`playMetronomeClick:8629`) now reaches 2.0 (×2 accent → 4.0, engine clamps to 2) — audibly louder, no new code there.
+- New `metronomeDuringPlay: boolean` (default OFF) mirrors `metronomeDuringRecord` EVERYWHERE: AppState interface, SettingsValues type, both defaults, `toggleMetronomeDuringPlay` action + interface decl, `collectGlobalSettings`, `applyGlobalSettings` (with `?? false` backward-compat), `metronomeSettingPatch`, `disk/types.ts GlobalSettings` (optional field for old-file compat), App.tsx autosave globalSettings.
+- Tick gate: `tickTransport:5237` was `isPlaying && (recording) && shouldClickDuringRecord(state)`. Replaced `shouldClickDuringRecord` with new `shouldClickDuringTransport(state)` — `metronomeEnabled && (recording ? metronomeDuringRecord : metronomeDuringPlay)`. Plain PLAY now clicks iff DURING PLAY on; REC path unchanged.
+- UI: `StatusRow` extended with optional `onClick` (renders a clickable button only when passed; DURING REC row left untouched). DURING PLAY added as a clickable StatusRow directly below DURING REC, toggling `toggleMetronomeDuringPlay` — mouse-first, no softkey needed (F1-F6 already full).
+
+**Fix 2 — SAVING text.** `FileBrowserScreen.tsx:174` always rendered `LOADING...` whenever `fileBrowserLoading` was true, both directions. Now conditional on `mode`: SAVE_PROJECT / SAVE_SAMPLE / SAVE_MIXDOWN_WAV → "SAVING...", else "LOADING...". `mode` was already subscribed. This is the only save-path LOADING literal (the other `importStatus: "LOADING"` sites are import/record/restore, confirmed by grep).
+
+### What didn't work / pitfalls hit
+
+- **`metronomeDuringRecord` localStorage persistence is half-wired (pre-existing, not fixed).** `hydrateSettings` (`useAppStore.ts:5519`) only merges into `settingsValues`, NOT into the top-level AppState fields the tick reads. So localStorage restore of DURING REC/PLAY lands in settingsValues but not the live top-level flag; the working persistence path is `.lthief` via `applyGlobalSettings` (mirrors to top-level on load) + in-session toggle (updates both). I mirrored `metronomeDuringPlay` to behave IDENTICALLY to DURING REC per spec ("same way as DURING REC") — did NOT fix the underlying localStorage/top-level split, since that would change DURING REC's existing behavior too (out of scope, would need Marek's call).
+- **Softkeys full (F1-F6).** Couldn't add a DURING PLAY softkey without removing an existing one. Solved by making the StatusRow itself clickable — minimal, mouse-first, doesn't touch DURING REC's F5 softkey or its (non-clickable) row.
+- **MainScreen `clickStatus`** still reads `metronomeDuringRecord ? "REC" : "COUNT"` — left as-is (display only, not requested, DURING PLAY not surfaced there).
+
+### Decisions made
+
+- **DURING PLAY default OFF** — preserves current behavior (metronome only during REC/count-in).
+- **Volume cap 200, not higher.** Matches the "louder" ask; gain still clamps at engine level.
+- **StatusRow gets optional onClick** rather than a new component — only the new row becomes interactive; existing rows unchanged.
+- **Did not fix the hydrateSettings top-level mirror gap** — pre-existing, would alter DURING REC, separate decision.
+- Committed on `main` locally per Marek's workflow. Not pushed (Marek reviews + pushes).
+
+### Open issues / followups
+
+- **Manual runtime validation pending Marek:**
+  1. DURING PLAY ON, PLAY without REC → metronome clicks.
+  2. DURING PLAY OFF, PLAY → silent (default preserved).
+  3. CLICK VOL goes to 200, audibly louder.
+  4. SAVE_PROJECT shows "SAVING..." during write.
+  5. Song WAV mixdown export shows "SAVING..." during render.
+- **hydrateSettings top-level mirror gap** for metronome flags (localStorage restore) — flag for a future session if cross-restart metronome-flag persistence (without a .lthief load) is wanted.
+
+### Files modified
+
+- `src/store/useAppStore.ts` (Fix 1)
+- `src/disk/types.ts` (Fix 1)
+- `src/App.tsx` (Fix 1)
+- `src/screens/UtilityScreens.tsx` (Fix 1)
+- `src/screens/FileBrowserScreen.tsx` (Fix 2)
+- `docs/SESSION_LOG.md` (this entry — separate docs commit)
+
+---
+
 ## Session 40 — 2026-05-31 — Sample-WAV save data-loss fixes (4 commits, from Session 39 audit)
 
 ### What was attempted
