@@ -139,7 +139,17 @@ export function DiskScreen() {
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 event.currentTarget.value = "";
-                if (file) void loadFile(file);
+                // Browser-dev was the only load path that swallowed errors
+                // (Tauri load paths all catch). Mirror them: surface failures
+                // to the LCD STATUS line instead of an unhandled rejection.
+                if (file) {
+                  void loadFile(file).catch((err: unknown) => {
+                    useAppStore.setState({
+                      importStatus: "ERROR",
+                      importMessage: err instanceof Error ? err.message : "LOAD FAILED",
+                    });
+                  });
+                }
               }}
             />
             <Info label="SELECTED SAMPLE" value={selectedMemoryRow?.name ?? "---"} />
