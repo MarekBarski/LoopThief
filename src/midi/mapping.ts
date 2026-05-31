@@ -23,6 +23,20 @@ const BANK_BASE: Record<PadBank, number> = {
 
 const BANK_ORDER: PadBank[] = ["A", "B", "C", "D"];
 
+// MPC hardware numbers pads bottom-to-top (note 36 = bottom-left pad), but
+// LoopThief's pad grid is numbered top-to-bottom (P01 = top-left). For the
+// MPC_NATIVE preset we flip the ROW within a 4×4 bank while keeping the column,
+// so a physical pad press lights the LCD pad in the same physical position.
+// This is an involution (applying it twice returns the original index), so the
+// single transform serves both directions — note-offset→padIndex in noteToPad
+// and padIndex→note-offset in padToNote. GM_36_51 stays ascending (GM drum-map
+// convention) and is NOT flipped.
+function flipRowWithinBank(index: number): number {
+  const row = Math.floor(index / 4);
+  const col = index % 4;
+  return (3 - row) * 4 + col;
+}
+
 export function noteToPad(note: number, preset: PadMappingPreset): PadAddress | null {
   if (preset === "GM_36_51") {
     if (note < 36 || note > 51) return null;
@@ -32,7 +46,7 @@ export function noteToPad(note: number, preset: PadMappingPreset): PadAddress | 
   for (const bank of BANK_ORDER) {
     const base = BANK_BASE[bank];
     if (note >= base && note < base + 16) {
-      return { bank, padIndex: note - base };
+      return { bank, padIndex: flipRowWithinBank(note - base) };
     }
   }
   return null;
@@ -44,7 +58,7 @@ export function padToNote(bank: PadBank, padIndex: number, preset: PadMappingPre
     if (bank !== "A") return null;
     return 36 + padIndex;
   }
-  return BANK_BASE[bank] + padIndex;
+  return BANK_BASE[bank] + flipRowWithinBank(padIndex);
 }
 
 export function padIdToIndex(padId: string): number {

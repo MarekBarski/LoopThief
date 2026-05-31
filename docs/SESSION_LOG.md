@@ -99,6 +99,78 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 43 — 2026-05-31 — MPC Native pad mapping row-inversion fix (from Session 42 audit)
+
+### What was attempted
+
+Apply the BUG 1 fix from Session 42: MPC_NATIVE preset used linear `padIndex = note - base` (note 36 → P01 top-left), wrong vs MPC convention (note 36 = bottom-left pad). Marek confirmed with a factory-reset M-Audio Axiom AIR 25: all 16 pads emit chromatic 36-51 bottom-left→top-right. Single commit.
+
+### What worked
+
+`src/midi/mapping.ts` — added `flipRowWithinBank(index)`: `(3 - floor(index/4))*4 + index%4`. Flips the row within a 4×4 bank, keeps the column. It's an **involution** (self-inverse), so the one helper serves both directions: `noteToPad` flips `note - base` → padIndex; `padToNote` flips padIndex → note offset. They stay exact inverses (round-trip verified: P01↔note48, P13↔note36).
+
+Applied to MPC_NATIVE branch only, all 4 banks (base 36/52/68/84). **GM_36_51 left untouched** — stays ascending linear per GM drum-map convention (decision flagged in Session 42 followup).
+
+Verified Bank A table matches spec exactly: 36→P13, 37→P14, 38→P15, 39→P16, 40→P09…43→P12, 44→P05…47→P08, 48→P01, 49→P02, 50→P03, 51→P04. Banks B/C/D same pattern. `npm run build` clean.
+
+Both consumers benefit automatically: NOTE_ON handler (`useAppStore.ts:5568`) via `noteToPad`, MIDI-OUT pad echo (`useAppStore.ts:8818`/`:8827`) via `padToNote`.
+
+### What didn't work / pitfalls hit
+
+- None. Single-file, ~12 lines incl. comment. The involution property let me avoid writing a separate inverse and risking desync between the two functions.
+
+### Decisions made
+
+- Row flipped, column NOT flipped (left-to-right identical on MPC and LoopThief).
+- GM_36_51 stays ascending — only MPC_NATIVE gets the flip.
+- BUG 2 (duplicate P#) — no code, per Session 42: LoopThief table was already complete + duplicate-free; the Axiom factory-reset now confirmed to emit 16 distinct notes 36-51, so BUG 1's flip alone resolves the mapping. No further change.
+
+### Open issues / followups
+
+- Marek runtime test with Axiom AIR 25 (factory reset): pad 1 (bottom-left)→P13, pad 4→P16, pad 13→P01, pad 16→P04, all 16 unique + position-matched; then switch to General preset and confirm it still ascends (note 36→P01).
+
+### Files modified
+
+- `src/midi/mapping.ts` — added `flipRowWithinBank`; applied to MPC_NATIVE in `noteToPad` + `padToNote`.
+
+---
+
+## Session 42 — 2026-05-31 — MPC native pad-mapping audit (Axiom AIR 25), NO code
+
+### What was attempted
+
+Marek tested the MPC_NATIVE MIDI pad preset with an Axiom AIR 25 and reported two bugs. Audit-only: read the mapping, confirm/deny each, report the table verbatim, confirm fix direction. No code.
+
+### What worked
+
+All pad mapping lives in one file: `src/midi/mapping.ts`. `noteToPad` (26-39) and `padToNote` (41-48) are exact inverses. The NOTE_ON handler `useAppStore.ts:5567-5575` derives the visual pad purely from `padIndex` → `P${padIndex+1}` (bank-agnostic). MIDI-OUT echo uses `padToNote` at `useAppStore.ts:8818` / `:8827`. P01 = top-left confirmed by CLAUDE.md + prior session log (16-LEVELS: "P01 on top, P13-P16 on bottom").
+
+Current MPC_NATIVE: `BANK_BASE = {A:36,B:52,C:68,D:84}`; `padIndex = note - base`, linear ascending. So Bank A: note 36→P01(top-left), 37-39→P02-04, 40-43→P05-08, 44-47→P09-12, 48-51→P13-16. 64 unique pads, no modulo.
+
+**BUG 1 — row inversion — CONFIRMED, real.** note 36→P01 (top-left), but MPC/Axiom note 36 = bottom-left physical pad. Pressing bottom-left lights top-left. Fix = Option A (physical position wins): invert the ROW within each bank (col unchanged). Formula `padIndex = (3 - floor(off/4))*4 + off%4` where `off = note-base`. Gives Bank A: 36-39→P13-16, 40-43→P09-12, 44-47→P05-08, 48-51→P01-04 — exactly Marek's proposed table. Must apply to BOTH `noteToPad` and `padToNote` (keep them inverses or MIDI-OUT pad echo desyncs). ~10 lines, one file.
+
+**BUG 2 — duplicate P# — NOT reproduced in mapping.ts.** Table is complete (36-51 = 16 notes, one padIndex each), no modulo, no fallback. The `for` loop iterates BANKS not notes. note 46→P11, note 41→P06 — distinct. No two distinct notes in 36-99 collide. So the duplicate symptom does not originate in LoopThief's table. Likely upstream: (a) Axiom AIR 25 has only 8 physical pads — "pads 11-16" implies a device pad-bank/preset that re-emits low notes (36-41); (b) `midiAutoBankSwitch` (`useAppStore.ts:5571`) — the 16-square LCD grid highlights by bank-agnostic padId, so a Bank-B note lights the same square as the Bank-A note at the same index → reads as a dupe if bank indicator unwatched (doesn't explain within-Bank-A 46-vs-41, but explains cross-bank).
+
+### What didn't work / pitfalls hit
+
+- Could not confirm BUG 2 as a LoopThief bug — the code contradicts the "incomplete table + modulo" hypothesis. Recommended Marek capture actual incoming note numbers (MIDI monitor / watch per-pad emission) BEFORE any BUG-2 code. If the Axiom sends 16 distinct notes, BUG 1's row-flip alone fixes everything; if it repeats notes, the fix is device-side (reconfigure Axiom pad notes), not in mapping.ts. Do NOT rewrite a table that's already complete + duplicate-free.
+
+### Decisions made
+
+None — audit only. Confirmed fix DIRECTION: BUG 1 = Option A (row-inversion in noteToPad + padToNote). BUG 2 = no table change justified; pending note-capture. Marek picks scope.
+
+### Open issues / followups
+
+- BUG 1 fix (row-inversion, both functions, `src/midi/mapping.ts`) — apply per Marek's GO.
+- BUG 2 — capture Axiom's actual note output first; likely device config, not LoopThief.
+- Consideration for BUG 1 implementation: `GM_36_51` preset uses the same linear `note-36` (line 29) — decide whether GM preset also gets the row-flip or stays GM-standard ascending (GM drum map is a separate convention; probably leave GM as-is, flip MPC_NATIVE only). Flag for the fix session.
+
+### Files modified
+
+- None (audit only). Report delivered inline + this SESSION_LOG entry.
+
+---
+
 ## Session 41 — 2026-05-31 — Metronome polish (vol 200 + DURING PLAY) + SAVING status text (2 commits)
 
 ### What was attempted
