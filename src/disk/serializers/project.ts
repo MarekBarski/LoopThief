@@ -41,6 +41,15 @@ function sanitizeFilename(value: string): string {
 
 export function serializeProject(input: ProjectSerializationInput): SerializedProjectBundle {
   const sampleEntries: SampleEntry[] = [];
+  // CHOP slices share their parent's audioBufferId (the slice is a region of
+  // the parent buffer, carved by editState). Previously each slice encoded
+  // the FULL parent WAV under its own path, multiplying archive size by the
+  // slice count — large enough to hang or truncate writes on weak hardware
+  // (Session 39). Dedupe by audioBufferId: write each unique buffer once and
+  // point every sample that shares it at the same path. The loader already
+  // tolerates repeated paths (it re-reads + decodes per manifest entry), so
+  // no loader or schema change is required.
+  const pathByBufferId = new Map<string, string>();
   const serializedSamples: SerializedSample[] = input.samples.map((sample, index) => {
     const buffer = input.resolveAudioBuffer(sample.audioBufferId);
     // Strict: a sample listed in the manifest MUST have its WAV bytes in the
@@ -54,9 +63,12 @@ export function serializeProject(input: ProjectSerializationInput): SerializedPr
           `Sample may be corrupted or still loading.`,
       );
     }
-    const filename = `${String(index).padStart(3, "0")}_${sanitizeFilename(sample.name)}.wav`;
-    const path = filename;
-    sampleEntries.push({ path, bytes: encodeAudioBufferToWav(buffer) });
+    let path = pathByBufferId.get(sample.audioBufferId);
+    if (!path) {
+      path = `${String(index).padStart(3, "0")}_${sanitizeFilename(sample.name)}.wav`;
+      pathByBufferId.set(sample.audioBufferId, path);
+      sampleEntries.push({ path, bytes: encodeAudioBufferToWav(buffer) });
+    }
     return {
       id: sample.id,
       name: sample.name,
