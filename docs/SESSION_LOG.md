@@ -99,6 +99,85 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 48 — 2026-05-31 — Canvas blur: transform:scale vs CSS zoom audit, NO code
+
+### What was attempted
+
+Post-Session-46 fonts are correct size but blurry at sub-1920 (non-integer transform:scale interpolation). Investigate replacing `transform: scale()` with CSS `zoom`; assess interaction breakage + cross-webview risk. No code.
+
+### What worked
+
+**Premise correction (important):** prompt assumed "Tauri WebView is Chromium-based" — only on Windows (WebView2). On Linux it's **WebKitGTK**, on macOS WKWebView. Marek's T410 runs Linux Mint (Session 37) → **WebKitGTK, not Chromium**. This is decisive for the zoom decision.
+
+**Current impl:** `AppShell.tsx:16` scale state, `:19-30` `updateScale` = `min((winW−32)/2527,(winH−32)/1610,1)`, `:51-63` `shellStyle` applies `transform: scale()` + `transformOrigin:"top center"` to the whole-shell `<section>`. DOM laid out at natural 2527×1610, GPU bitmap-scales the rasterized layer by a non-integer factor → text interpolation blur. Masked pre-46 (text tiny/sub-pixel); now visible because text is correctly sized.
+
+**zoom fixes blur** (layout-level scale → glyphs re-rastered at final size). Interaction impact by mechanism:
+- Plain clicks (pads/softkeys/modes/banks/buttons) — native DOM hit-test, safe under both.
+- CHOP waveform drag (`ChopScreen.tsx:139,162,209`) — RATIO `(clientX−rect.left)/rect.width`, dimensionless, safe IF clientX & getBoundingClientRect share a coordinate space.
+- MIX fader/knob drag (`MixScreen.tsx:393,399,416,419`) — RAW px delta × sensitivity (1.2/0.7); works under zoom but sensitivity becomes zoomed-px → may need re-tune.
+- Layout editor (`LayoutEditorOverlay.tsx:100-104`) — `(clientX−start)×(2859/rect.width)`; coord-consistency dependent; DEV-ONLY (disabled in Tauri).
+
+**The risk:** the two clientX↔getBoundingClientRect-dependent paths (CHOP ratio, dev layout editor). On WebView2/Chromium (Windows ship target) CSS zoom was standardized (~Chrome 128, 2024) with consistent coords → low risk. On **WebKitGTK (the T410)** zoom has a long history of zoom↔event-coordinate / getBoundingClientRect mismatches that outlived Chromium's fixes → genuine risk, unverifiable from code, MUST be tested on the actual T410.
+
+### Decisions made
+
+None — audit only. Reported best approach:
+- **Prototype CSS `zoom`** on the AppShell wrapper (swap transform:scale + transformOrigin → `zoom`; keep width/height 2527×1610). Only true crisp DOM fix; solid on Windows. ~3-line change, cheap to try/revert.
+- **Gate on empirical T410 (WebKitGTK) validation** — pad/softkey clicks, CHOP waveform drag, MIX fader/knob drag — NOT a dev-Chromium test alone. Expect to re-tune fader sensitivity constants (MixScreen.tsx:400,420).
+- Alternatives if WebKit breaks coords: `image-rendering` (NO — images only, not text), `text-rendering`/smoothing (NO — not the texture-scale issue), 2× internal render (partial, 4× paint cost — bad on weak T410), `--ui-scale` calc() layout refactor (crisp + engine-agnostic but massive). If zoom rejected and blur unacceptable → calc() refactor is the only engine-agnostic crisp path; else accept blur.
+
+### Open issues / followups
+
+- Marek prototypes zoom + tests on T410 (WebKitGTK) AND a Windows WebView2 build. Decide from real results.
+- If shipping Windows-only, zoom is much safer (Chromium); Linux/T410 is a test rig — clarify whether Linux is a ship target (changes the risk tolerance).
+- Fader/knob drag sensitivity (1.2/0.7) likely needs re-tune under zoom.
+
+### Files modified
+
+- None (audit only). Report inline + this SESSION_LOG entry.
+
+---
+
+## Session 47 — 2026-05-31 — Font legibility audit @ sub-1920 (post-Session-46), NO code
+
+### What was attempted
+
+Marek resized window to ≈1366×768; FX parameter values still microscopic despite Session 46 token migration. Audit token assignment per element on FX + MIX/STEP/PROGRAM/MAIN, find what's illegible at the 0.457 canvas scale, propose fixes. No code.
+
+### What worked
+
+Computed effective on-screen px = token × canvas-scale. Scale `min((winW−32)/2527,(winH−32)/1610,1)`: **0.457 @1366**, 0.651 @1920. So tokens render at: 2xs 9→4.1px, xs 10→4.6, sm 11→5.0, md 12→5.5, lg 13→5.9, xl 14→6.4, 2xl 16→7.3, 3xl 24→11.0, 4xl 28→12.8, 5xl 48→21.9 (all @1366).
+
+**Readability cliff ≈5.5–6px** per Marek's report (lg 5.9 "readable", md 5.5 "microscopic", sm 5.0 "borderline"). → every tier ≤ md (≤12px design) is at/below the cliff at 1366; 2xs/xs (4.1–4.6px) firmly illegible.
+
+**FX screen (UtilityScreens.tsx) token map:** Panel1 BUSES `--lcd-sm` (1596), bus sub-row `--lcd-xs` (1605), chain row `--lcd-2xs` (1633); Panel2 SELECTED BUS/BLOCK incl BUS/BLOCK/EFFECT/MODE `--lcd-lg` (1671, 5.9px "readable"); Panel3 PARAMETERS labels+values `--lcd-md` (1718, 5.5px "microscopic"). ArrowRow + EditableNumber inherit the panel font — no hidden smaller token, so FX param values are NOT mis-tagged; the panel just sits one tier under the cliff and its content is dense data ("8000Hz") that fails before known words do.
+
+**Worst offender app-wide:** MIX channel strip — the ENTIRE strip (pad #, VOL/PAN readouts, MUTE/SOLO) is `--lcd-2xs` (MixScreen:206) → 4.1px. Also illegible: STEP event rows `--lcd-xs` (StepScreen:102,118,126,353 → 4.6), PROGRAM pad rows `--lcd-xs` (ProgramScreen:94,296,613 → 4.6), FX chain row `--lcd-2xs` (4.1). MAIN POSITION readout `--lcd-5xl` (48→21.9) is fine; its surrounding field values `sm`/`lg` are 5–5.9 borderline.
+
+### Diagnosis
+
+Not a miscategorization — FX params are correctly `--lcd-md`, consistent with peers. Root cause is the Session 44 prediction: Session 46 made fonts uniform but not bigger; at 0.457 scale the whole body-text band (9–12px) lands 4.1–5.5px, under the floor. Token bumps are a band-aid because the transform scales everything — reaching comfortable ~9px @1366 needs ~20px design fonts, which oversizes 1920 and overflows dense panels.
+
+### Decisions made
+
+None — audit only. Two levers reported:
+- **Lever 1 (per-element bumps, surgical):** MIX strip 2xs→md, FX PARAMETERS md→lg/xl, FX chain/sub-rows 2xs/xs→sm, STEP rows xs→md, PROGRAM rows xs→sm/md. Can lift worst offenders 1–2 tiers; can't fully fix 1366 without distorting 1920.
+- **Lever 2 (global +~2px in index.css, recommended primary):** raise every token once — exploits Session 46 centralization, keeps consistency. Tradeoff: ~15–20% bigger text @1920; dense panels (FX 3-col, MIX 16-strip) may need spacing tweaks.
+- Recommended: Lever 2 primary + Lever 1 on MIX strip (lone 2xs outlier). Re-test T410; fix panel spacing only if overflow.
+
+Root-cause flag (out of scope): 2527×1610 canvas + 920×512 LCD is too dense for 0.457 scale; true low-res support needs a higher scale floor (less density) — separate decision if T410 is first-class.
+
+### Open issues / followups
+
+- Marek picks lever(s) + magnitude. If Lever 2, decide per-tier new px (e.g. +2 uniform, or compress the small end: 2xs/xs/sm/md → 11/12/13/14).
+- After bump, watch FX 3-column panel + MIX 16-strip for overflow; may need gap/padding adjust on those panels only.
+
+### Files modified
+
+- None (audit only). Report inline + this SESSION_LOG entry.
+
+---
+
 ## Session 46 — 2026-05-31 — LCD font clamp()→CSS tokens (Option 3: Extended + Centralized)
 
 ### What was attempted
