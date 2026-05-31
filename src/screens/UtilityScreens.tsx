@@ -75,7 +75,7 @@ export function SixteenLevelsScreen() {
     <ScreenFrame title="16 LEVELS" subtitle="Pad parameter spread">
       {shell(
         <div className="grid h-full grid-cols-[0.8fr_1.2fr] gap-[2.3%]">
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
             <PanelRow
               label="SOURCE PAD"
               value={sourceArmed ? `${sourcePad} ← SELECT PAD` : sourcePad}
@@ -115,7 +115,7 @@ export function SixteenLevelsScreen() {
               </>
             )}
           </section>
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
             <p className="text-[#91a477]">PREVIEW VALUES</p>
             <div className="grid grid-cols-4 gap-[8px]">
               {Array.from({ length: 16 }, (_, index) => {
@@ -142,7 +142,7 @@ export function SixteenLevelsScreen() {
               })}
             </div>
             {parameter === "FILTER" && effectiveType === "OFF" && (
-              <p className="text-[clamp(8px,0.6vw,10px)] text-amber-300">
+              <p className="text-[length:var(--lcd-xs)] text-amber-300">
                 Filter OFF — click FILTER TYPE above to enable LP / HP / BP.
               </p>
             )}
@@ -272,7 +272,7 @@ export function TrackMuteUtilityScreen() {
     <ScreenFrame title="TRACK MUTE" subtitle="Live performance mute">
       {shell(
         <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
-          <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
+          <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-sm)] tracking-[0.12em]">
             {Array.from({ length: 16 }, (_, index) => {
               const track = tracks[index];
               const groupView = mode === "GROUP" || mode === "UNGROUP";
@@ -308,7 +308,7 @@ export function TrackMuteUtilityScreen() {
                   <span className="truncate">{track?.name ?? "EMPTY"}</span>
                   <div className="flex items-center justify-between gap-[6px]">
                     {groupView ? (
-                      <span className="text-[clamp(11px,1vw,16px)] font-semibold tracking-[0.2em]">
+                      <span className="text-[length:var(--lcd-2xl)] font-semibold tracking-[0.2em]">
                         {groupLabel}
                       </span>
                     ) : (
@@ -353,7 +353,7 @@ export function PadMuteUtilityScreen() {
     <ScreenFrame title="PAD MUTE" subtitle={`Bank ${bank} — live pad mute`}>
       {shell(
         <div className="grid h-full grid-cols-[1.15fr_0.7fr] gap-[2.3%]">
-          <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
+          <section className="grid grid-cols-4 grid-rows-4 gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-sm)] tracking-[0.12em]">
             {pads.map((pad) => {
               const groupView = mode === "GROUP" || mode === "UNGROUP";
               const audible = !pad.muted && (!anySolo || pad.solo);
@@ -387,7 +387,7 @@ export function PadMuteUtilityScreen() {
                   <span>{pad.pad}</span>
                   <div className="flex items-center justify-between gap-[4px]">
                     {groupView ? (
-                      <span className="text-[clamp(11px,1vw,16px)] font-semibold tracking-[0.2em]">
+                      <span className="text-[length:var(--lcd-2xl)] font-semibold tracking-[0.2em]">
                         {groupLabel}
                       </span>
                     ) : (
@@ -484,7 +484,7 @@ export function NoteRepeatUtilityScreen() {
   return (
     <ScreenFrame title="NOTE REPEAT" subtitle="Repeat timing utility">
       {shell(
-        <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+        <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
           <ArrowRow label="RATE" value={timingCorrect === "OFF" ? "1/16" : timingCorrect} onPrev={cycleNoteRepeatRateBack} onNext={cycleNoteRepeatRate} />
           <ArrowRow
             label="GATE"
@@ -548,7 +548,7 @@ export function TimingCorrectUtilityScreen() {
           {/* Replaced the display-only Panel SWING row with an inline
               ArrowRow so the value is keyboard-typeable (range 50–75,
               MPC convention). Mirrors NOTE REPEAT's SWING pattern. */}
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <PanelRow label="NOTE VALUE" value={timingCorrect} />
             <ArrowRow
               label="SWING"
@@ -566,7 +566,7 @@ export function TimingCorrectUtilityScreen() {
             />
             <PanelRow label="APPLY TO" value={timingApplyTo} />
           </section>
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[5%] text-[length:var(--lcd-lg)]">
             <UtilityAction label="DO IT" onClick={applyTimingCorrectToEvents} />
           </section>
         </div>,
@@ -613,7 +613,7 @@ export function CountInUtilityScreen() {
     <ScreenFrame title="COUNT IN / METRONOME" subtitle="Transport utility">
       {shell(
         <div className="grid h-full grid-cols-[1fr_0.62fr] gap-[2.3%]">
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">SETTINGS</p>
             <StatusRow label="METRONOME" value={metronomeEnabled ? "ON" : "OFF"} />
             <StatusRow label="DURING REC" value={metronomeDuringRecord ? "ON" : "OFF"} />
@@ -650,7 +650,7 @@ export function CountInUtilityScreen() {
             <StatusRow label="WAIT PAD COMPAT" value={waitPadCompatEnabled ? "ON" : "OFF"} />
           </section>
 
-          <section className="grid content-start gap-[14px] border border-[#46533b] bg-black/20 p-[6%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[14px] border border-[#46533b] bg-black/20 p-[6%] text-[length:var(--lcd-lg)]">
             <p className="text-[#91a477]">METRONOME</p>
             <div className="grid grid-cols-4 gap-[8px]">
               {Array.from({ length: 4 }, (_, index) => (
@@ -719,7 +719,7 @@ export function GoToUtilityScreen() {
     <ScreenFrame title="GO TO" subtitle="Locate event">
       {shell(
         <div className="grid h-full grid-cols-[1fr_0.72fr] gap-[2.3%]">
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
             {rows.map((row) => (
               <div
                 key={row.label}
@@ -751,7 +751,7 @@ export function GoToUtilityScreen() {
             ))}
             <span className="text-[10px] text-[#91a477]">(current seq: {`A${sequence.padStart(2, "0")}`})</span>
           </section>
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[length:var(--lcd-lg)]">
             <p className="text-[#91a477]">TARGET</p>
             <p className="text-xl tracking-[0.18em] text-[#eef6d8]">{goToTarget}</p>
             <div className="mt-[8px] grid grid-cols-2 gap-[8px]">
@@ -794,7 +794,7 @@ export function EraseUtilityScreen() {
               ["AUTOMATION", eraseMode === "AUTOMATION" ? "ERASE AUTOMATION" : ""],
             ]}
           />
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[5%] text-[length:var(--lcd-lg)]">
             <p className="text-[#91a477]">ARMED MODE</p>
             <p className="text-xl tracking-[0.18em] text-[#eef6d8]">{eraseMode}</p>
             <p className="mt-[8px] leading-relaxed text-[#aab691]">
@@ -850,7 +850,7 @@ export function UndoUtilityScreen() {
               ["REDO DEPTH", String(redoHistory.length)],
             ]}
           />
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
             <p className="text-[#91a477]">RECENT OPERATIONS</p>
             {recentActions.length === 0 ? (
               <p className="text-[#46533b]">—</p>
@@ -912,7 +912,7 @@ export function SequenceEditUtilityScreen() {
 }
 
 function Panel({ rows }: { rows: [string, string][] }) {
-  return <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">{rows.map(([a,b])=><div key={a}><p className="text-[#91a477]">{a}</p><p>{b}</p></div>)}</section>;
+  return <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">{rows.map(([a,b])=><div key={a}><p className="text-[#91a477]">{a}</p><p>{b}</p></div>)}</section>;
 }
 
 function SelectablePanel({
@@ -925,7 +925,7 @@ function SelectablePanel({
   onSelect?: (label: string) => void;
 }) {
   return (
-    <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+    <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
       {rows.map(([label, value]) => {
         const className = `grid grid-cols-[1fr_auto] border px-[4%] py-[3%] text-left ${
           label === active
@@ -982,7 +982,7 @@ function Softkeys({ labels, onExit }: { labels: Softkey[]; onExit?: () => void }
             key={index}
             type="button"
             onClick={onClick}
-            className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-[clamp(8px,0.7vw,11px)]"
+            className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-[length:var(--lcd-sm)]"
           >
             {label}
           </button>
@@ -1183,7 +1183,7 @@ export function BarEditorScreen() {
         <div className="grid h-full grid-cols-[0.7fr_1fr_1fr] gap-[2.3%]">
           {/* PANEL 1: BARS LIST */}
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
-            <div className="border-b border-[#46533b] px-[6%] py-[3%] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em] text-[#91a477]">BARS</div>
+            <div className="border-b border-[#46533b] px-[6%] py-[3%] text-[length:var(--lcd-sm)] tracking-[0.14em] text-[#91a477]">BARS</div>
             <div className="grid content-start overflow-hidden">
               {visibleBars.map((idx) => {
                 const ts = tsAtBar(idx);
@@ -1193,7 +1193,7 @@ export function BarEditorScreen() {
                     key={idx}
                     type="button"
                     onClick={() => setSelectedBar(idx)}
-                    className={`grid grid-cols-[28px_1fr_auto] gap-[8px] px-[6%] py-[3%] text-left text-[clamp(9px,0.72vw,11px)] tracking-[0.12em] ${
+                    className={`grid grid-cols-[28px_1fr_auto] gap-[8px] px-[6%] py-[3%] text-left text-[length:var(--lcd-sm)] tracking-[0.12em] ${
                       isSelected ? "bg-amber-200/15 text-amber-100" : "text-[#d8e3b7]"
                     }`}
                   >
@@ -1204,7 +1204,7 @@ export function BarEditorScreen() {
                 );
               })}
               {barCount > 12 && (
-                <div className="px-[6%] py-[3%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] text-[#46533b]">
+                <div className="px-[6%] py-[3%] text-[length:var(--lcd-xs)] tracking-[0.12em] text-[#46533b]">
                   ({window_start + 1}–{window_end} of {barCount})
                 </div>
               )}
@@ -1212,7 +1212,7 @@ export function BarEditorScreen() {
           </section>
 
           {/* PANEL 2: SELECTED BAR DETAILS */}
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">SELECTED BAR</p>
             <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">BAR</span><span className="text-[#eef6d8]">{String(selectedBar + 1).padStart(3, "0")}</span></div>
             <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">TIME SIG</span><span className="text-[#eef6d8]">{selectedTs.num}/{selectedTs.den}</span></div>
@@ -1226,9 +1226,9 @@ export function BarEditorScreen() {
           </section>
 
           {/* PANEL 3: ACTION SETTINGS */}
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">ACTION</p>
-            <p className="text-amber-100 text-[clamp(13px,1vw,16px)]">{ACTION_LABELS[action]}</p>
+            <p className="text-amber-100 text-[length:var(--lcd-2xl)]">{ACTION_LABELS[action]}</p>
             {action === "EDIT_TS" && (
               <>
                 <ArrowRow
@@ -1311,13 +1311,13 @@ export function BarEditorScreen() {
                   onNext={() => setCopyCount((p) => Math.min(99, p + 1))}
                   editable={{ numericValue: copyCount, min: 1, max: 99, onCommit: (v) => setCopyCount(Math.round(v)) }}
                 />
-                <p className="text-[#91a477] text-[clamp(9px,0.74vw,11px)]">
+                <p className="text-[#91a477] text-[length:var(--lcd-sm)]">
                   {copyLastBar - copyFirstBar + 1} bar(s) × {copyCount} = +{(copyLastBar - copyFirstBar + 1) * copyCount} bars
                 </p>
               </>
             )}
             {action === "VIEW" && (
-              <p className="text-[#46533b] text-[clamp(9px,0.74vw,11px)]">Browse bars with UP/DOWN. Press F1 ACTION to enable edits.</p>
+              <p className="text-[#46533b] text-[length:var(--lcd-sm)]">Browse bars with UP/DOWN. Press F1 ACTION to enable edits.</p>
             )}
           </section>
         </div>,
@@ -1593,7 +1593,7 @@ export function FxScreen() {
       {shell(
         <div className="grid h-full grid-cols-[1.05fr_1.1fr_1.6fr] gap-[1.6%]">
           {/* PANEL 1 — Bus list (expanded with Block A/B + chain indicators) + Master */}
-          <section className="grid min-h-0 content-start gap-[4px] overflow-auto border border-[#46533b] bg-black/20 p-[3%] text-[clamp(8px,0.7vw,11px)] tracking-[0.1em]">
+          <section className="grid min-h-0 content-start gap-[4px] overflow-auto border border-[#46533b] bg-black/20 p-[3%] text-[length:var(--lcd-sm)] tracking-[0.1em]">
             <p className="text-[#91a477]">BUSES</p>
             {fxBuses.map((bus, idx) => {
               const isFx1 = bus.id === 1;
@@ -1602,7 +1602,7 @@ export function FxScreen() {
               const showChainAfter = bus.id === 1 || bus.id === 3;
               return (
                 <div key={bus.id} className="grid gap-[2px]">
-                  <div className={`grid grid-cols-[1fr_auto] items-center px-[4px] text-[#91a477] text-[clamp(8px,0.7vw,10px)] ${idx > 0 ? "mt-[4px]" : ""}`}>
+                  <div className={`grid grid-cols-[1fr_auto] items-center px-[4px] text-[#91a477] text-[length:var(--lcd-xs)] ${idx > 0 ? "mt-[4px]" : ""}`}>
                     <span>FX{bus.id}</span>
                     <span>{bus.direct ? "SEND" : "INSERT"}</span>
                   </div>
@@ -1630,7 +1630,7 @@ export function FxScreen() {
                     <button
                       type="button"
                       onClick={() => toggleFxChain(isFx1 ? "FX1_FX2" : "FX3_FX4")}
-                      className={`grid grid-cols-[auto_1fr_auto] items-center gap-[4px] px-[6px] py-[2px] text-[clamp(7px,0.6vw,9px)] ${
+                      className={`grid grid-cols-[auto_1fr_auto] items-center gap-[4px] px-[6px] py-[2px] text-[length:var(--lcd-2xs)] ${
                         chainBelow ? "text-amber-200" : "text-[#91a477]"
                       } hover:bg-black/30`}
                     >
@@ -1668,7 +1668,7 @@ export function FxScreen() {
           </section>
 
           {/* PANEL 2 — Selected bus/block details + actions */}
-          <section className="grid min-h-0 content-start gap-[8px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.82vw,13px)] tracking-[0.12em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.12em]">
             {selection.kind === "bus-block" && selectedBus && selectedBlock ? (
               <>
                 <p className="text-[#91a477]">SELECTED BUS / BLOCK</p>
@@ -1715,7 +1715,7 @@ export function FxScreen() {
           </section>
 
           {/* PANEL 3 — Effect parameters for the selected block / master section */}
-          <section className="grid min-h-0 content-start gap-[6px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.78vw,12px)] tracking-[0.12em]">
+          <section className="grid min-h-0 content-start gap-[6px] overflow-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-md)] tracking-[0.12em]">
             <p className="text-[#91a477]">PARAMETERS</p>
             {selection.kind === "bus-block" && selectedBus && selectedBlock ? (
               selectedBlock.effect ? (
@@ -1880,7 +1880,7 @@ export function FxSendWindowScreen() {
     <ScreenFrame title="FX SEND" subtitle={`Pad ${padLabel}`}>
       {shell(
         <div className="grid h-full grid-cols-[1fr_1fr] gap-[2.3%]">
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(11px,0.9vw,14px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-xl)] tracking-[0.14em]">
             <p className="text-[#91a477]">ROUTING</p>
             <ArrowRow
               label="FX BUS"
@@ -1901,10 +1901,10 @@ export function FxSendWindowScreen() {
               }}
             />
             {sendDisabled && busId !== 0 ? (
-              <p className="text-[#91a477] text-[clamp(9px,0.7vw,11px)]">Bus is INSERT mode — send disabled.</p>
+              <p className="text-[#91a477] text-[length:var(--lcd-sm)]">Bus is INSERT mode — send disabled.</p>
             ) : null}
           </section>
-          <section className="grid content-start gap-[6px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[6px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">CONTEXT</p>
             <div className="grid grid-cols-[1fr_auto]"><span>PAD</span><span className="text-[#eef6d8]">{padLabel}</span></div>
             <div className="grid grid-cols-[1fr_auto]"><span>BUS</span><span className="text-[#eef6d8]">{busId === 0 ? "OFF" : `FX${busId}`}</span></div>
@@ -1998,7 +1998,7 @@ export function TimeSigWindowScreen() {
     <ScreenFrame title="TIME SIGNATURE" subtitle={`Bar ${barLabel}`}>
       {shell(
         <div className="grid h-full grid-cols-[1fr_1fr] gap-[2.3%]">
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(11px,0.9vw,14px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-xl)] tracking-[0.14em]">
             <p className="text-[#91a477]">TIME SIG</p>
             <ArrowRow
               label="NUM"
@@ -2009,9 +2009,9 @@ export function TimeSigWindowScreen() {
             />
             <ArrowRow label="DEN" value={String(den)} onPrev={() => cycleDen(-1)} onNext={() => cycleDen(1)} />
             <p className="mt-[8%] text-[#91a477]">PREVIEW</p>
-            <p className="text-[#eef6d8] text-[clamp(20px,1.6vw,28px)]">{num} / {den}</p>
+            <p className="text-[#eef6d8] text-[length:var(--lcd-4xl)]">{num} / {den}</p>
           </section>
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">CONTEXT</p>
             <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">BAR</span><span className="text-[#eef6d8]">{barLabel}</span></div>
             <div className="grid grid-cols-[1fr_auto]"><span className="text-[#91a477]">TOTAL BARS</span><span className="text-[#eef6d8]">{totalBars}</span></div>
@@ -2106,7 +2106,7 @@ export function SampleEditWindowScreen() {
         <div className="grid h-full grid-rows-[auto_1fr] gap-[10px]">
           {/* Operation selector */}
           <section className="grid grid-cols-[1fr_1fr] gap-[2.3%] border border-[#46533b] bg-black/20 p-[2.4%]">
-            <div className="grid content-start gap-[6px] text-[clamp(10px,0.84vw,13px)] tracking-[0.14em]">
+            <div className="grid content-start gap-[6px] text-[length:var(--lcd-lg)] tracking-[0.14em]">
               <p className="text-[#91a477]">OPERATION</p>
               <ArrowRow
                 label=""
@@ -2115,7 +2115,7 @@ export function SampleEditWindowScreen() {
                 onNext={() => cycleOp(1)}
               />
             </div>
-            <div className="grid content-start gap-[4px] text-[clamp(10px,0.78vw,12px)] tracking-[0.12em]">
+            <div className="grid content-start gap-[4px] text-[length:var(--lcd-md)] tracking-[0.12em]">
               <p className="text-[#91a477]">SOURCE</p>
               <div className="grid grid-cols-[1fr_auto]"><span>SAMPLE</span><span className="text-[#eef6d8]">{sampleName}</span></div>
               <div className="grid grid-cols-[1fr_auto]"><span>LENGTH</span><span className="text-[#eef6d8]">{source ? `${source.durationMs} ms` : "---"}</span></div>
@@ -2125,7 +2125,7 @@ export function SampleEditWindowScreen() {
           </section>
 
           {/* Per-op params */}
-          <section className="grid min-h-0 content-start gap-[8px] overflow-auto border border-[#46533b] bg-black/20 p-[3%] text-[clamp(10px,0.84vw,13px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-auto border border-[#46533b] bg-black/20 p-[3%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">PARAMETERS</p>
             {renderOpParams(op, params, setSampleEditParam)}
           </section>
@@ -2223,7 +2223,7 @@ function renderOpParams(
           onNext={() => setParam("warpSpeed", Math.min(200, (params.warpSpeed ?? 100) + 1))}
           editable={{ numericValue: params.warpSpeed ?? 100, format: (n) => `${n}%`, min: 50, max: 200, onCommit: (v) => setParam("warpSpeed", Math.round(v)) }}
         />
-        <p className="text-[#91a477] text-[clamp(9px,0.72vw,11px)]">Vinyl-style: changes pitch + tempo together.</p>
+        <p className="text-[#91a477] text-[length:var(--lcd-sm)]">Vinyl-style: changes pitch + tempo together.</p>
       </>
     );
   }
@@ -2355,7 +2355,7 @@ export function SampleKeepRetryScreen() {
     <ScreenFrame title="NEW SAMPLE" subtitle={`${pending.opLabel} applied to ${pending.sourceSampleName}`}>
       {shell(
         <div className="grid h-full grid-rows-[auto_1fr] gap-[12px]">
-          <section className="grid grid-cols-[1fr_1fr] gap-[2.3%] border border-[#46533b] bg-black/20 p-[3%] text-[clamp(10px,0.84vw,13px)] tracking-[0.14em]">
+          <section className="grid grid-cols-[1fr_1fr] gap-[2.3%] border border-[#46533b] bg-black/20 p-[3%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <div className="grid content-start gap-[6px]">
               <p className="text-[#91a477]">NEW SAMPLE NAME</p>
               <input
@@ -2365,9 +2365,9 @@ export function SampleKeepRetryScreen() {
                 maxLength={24}
                 className="border border-[#46533b] bg-black/30 px-[8px] py-[4px] text-[#eef6d8] tracking-[0.14em] outline-none focus:border-amber-100"
               />
-              <p className="text-[#91a477] text-[clamp(9px,0.72vw,11px)]">Max 24 chars. Collisions auto-resolved with _N suffix.</p>
+              <p className="text-[#91a477] text-[length:var(--lcd-sm)]">Max 24 chars. Collisions auto-resolved with _N suffix.</p>
             </div>
-            <div className="grid content-start gap-[4px] text-[clamp(10px,0.78vw,12px)]">
+            <div className="grid content-start gap-[4px] text-[length:var(--lcd-md)]">
               <p className="text-[#91a477]">RESULT</p>
               <div className="grid grid-cols-[1fr_auto]"><span>OP</span><span className="text-[#eef6d8]">{pending.opLabel}</span></div>
               <div className="grid grid-cols-[1fr_auto]"><span>LENGTH</span><span className="text-[#eef6d8]">{pending.newDurationMs} ms</span></div>
@@ -2375,7 +2375,7 @@ export function SampleKeepRetryScreen() {
               <div className="grid grid-cols-[1fr_auto]"><span>CHANNELS</span><span className="text-[#eef6d8]">{pending.newChannelCount}</span></div>
             </div>
           </section>
-          <section className="grid min-h-0 content-center gap-[10px] border border-[#46533b] bg-black/20 p-[3%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-center gap-[10px] border border-[#46533b] bg-black/20 p-[3%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477] text-center">F2 PLAY · F3 OVERWRITE · F4 RETRY · F5 KEEP</p>
             <p className="text-center text-[#d8e3b7]">
               KEEP saves as new sample. OVERWRITE replaces the original (all pads using it play the new audio).

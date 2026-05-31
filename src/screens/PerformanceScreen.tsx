@@ -33,7 +33,7 @@ export function PerformanceScreen() {
         style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
       >
         <div className="grid min-h-0 grid-cols-[0.9fr_1.1fr_0.9fr] gap-[2.3%] overflow-hidden">
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">MUTE SCENE</p>
             <Info label="MODE" value={trackMuteMode} />
             <Info label="LIVE TRACKS" value={`${tracks.filter((track) => !track.muted).length}/${tracks.length}`} />
@@ -41,7 +41,7 @@ export function PerformanceScreen() {
             <Info label="PAD BANK" value={padBank} />
           </section>
 
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <div className="flex items-center justify-between">
               <span className="text-[#91a477]">NEXT SEQ</span>
               <span className={`h-[10px] w-[10px] ${isPlaying && performancePulse % 2 === 0 ? "bg-[#eef6d8]" : "bg-[#46533b]"}`} />
@@ -64,7 +64,7 @@ export function PerformanceScreen() {
                     }`}
                   >
                     <span className="block">{item.name}</span>
-                    <span className="mt-[4%] block text-[clamp(8px,0.66vw,10px)] text-[#91a477]">
+                    <span className="mt-[4%] block text-[length:var(--lcd-xs)] text-[#91a477]">
                       {isActive ? "ACTIVE" : isQueued ? "QUEUED" : "READY"}
                     </span>
                   </button>
@@ -73,7 +73,7 @@ export function PerformanceScreen() {
             </div>
           </section>
 
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <Info label="CURRENT SEQ" value={activeSequenceName} />
             <Info label="QUEUED SEQ" value={queuedSequenceName} />
             <Info label="CHANGE" value={queuedSequence ? `BAR END / ${queuedSequenceBarsRemaining}` : "NONE"} />
@@ -104,7 +104,7 @@ export function PerformanceScreen() {
                 if (button === "F2 NEXT SEQ") openUtilityWorkflow("UTILITY_NEXT_SEQ");
                 if (button === "F4 NOTE REPEAT") setNoteRepeatEnabled(!noteRepeatEnabled);
               }}
-              className={`border px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] ${
+              className={`border px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] ${
                 button === "F4 NOTE REPEAT" && noteRepeatEnabled
                   ? "border-amber-300 bg-amber-200/15 text-amber-100"
                   : "border-[#46533b] bg-black/25 text-[#d8e3b7]"

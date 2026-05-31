@@ -134,10 +134,10 @@ export function FileBrowserScreen() {
         <div className="grid min-h-0 grid-cols-[0.22fr_1fr] gap-[2.3%] overflow-hidden">
           {/* LOCATIONS sidebar */}
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
-            <div className="border-b border-[#46533b] px-[6%] py-[4%] text-[clamp(9px,0.7vw,11px)] tracking-[0.16em] text-[#91a477]">
+            <div className="border-b border-[#46533b] px-[6%] py-[4%] text-[length:var(--lcd-sm)] tracking-[0.16em] text-[#91a477]">
               LOCATIONS
             </div>
-            <div className="grid min-h-0 content-start gap-[4px] overflow-y-auto p-[4%] text-[clamp(10px,0.78vw,12px)] tracking-[0.14em]">
+            <div className="grid min-h-0 content-start gap-[4px] overflow-y-auto p-[4%] text-[length:var(--lcd-md)] tracking-[0.14em]">
               {locations.length === 0 ? (
                 <p className="text-[#91a477]">—</p>
               ) : (
@@ -161,12 +161,12 @@ export function FileBrowserScreen() {
 
           {/* FOLDER CONTENTS list */}
           <section className="grid min-h-0 grid-rows-[auto_1fr_auto] border border-[#46533b] bg-black/20">
-            <div className="grid grid-cols-[1fr_auto_auto] gap-[3%] border-b border-[#46533b] px-[2%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
+            <div className="grid grid-cols-[1fr_auto_auto] gap-[3%] border-b border-[#46533b] px-[2%] py-[2%] text-[length:var(--lcd-xs)] tracking-[0.16em] text-[#91a477]">
               <span>NAME</span>
               <span>{mode === "LOAD_PROJECT" || mode === "SAVE_PROJECT" ? "MODIFIED" : "DURATION"}</span>
               <span>SIZE</span>
             </div>
-            <div className="grid min-h-0 content-start overflow-y-auto text-[clamp(9px,0.74vw,11px)] tracking-[0.12em]">
+            <div className="grid min-h-0 content-start overflow-y-auto text-[length:var(--lcd-sm)] tracking-[0.12em]">
               {error && (
                 <div className="px-[3%] py-[5%] text-red-300">ERROR: {error}</div>
               )}
@@ -247,7 +247,7 @@ export function FileBrowserScreen() {
                 </>
               )}
             </div>
-            <div className="grid gap-[6px] border-t border-[#46533b] px-[2%] py-[1.5%] text-[clamp(9px,0.7vw,11px)] tracking-[0.14em] text-[#91a477]">
+            <div className="grid gap-[6px] border-t border-[#46533b] px-[2%] py-[1.5%] text-[length:var(--lcd-sm)] tracking-[0.14em] text-[#91a477]">
               {/* SAVE_* modes get a filename input here. LOAD_* modes show
                   the selected entry name + (LOAD_SAMPLE only) preview status. */}
               {isSaveMode ? (
@@ -309,7 +309,7 @@ export function FileBrowserScreen() {
                 type="button"
                 onClick={onClick}
                 disabled={!isLive}
-                className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7] disabled:opacity-40"
+                className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7] disabled:opacity-40"
               >
                 {label}
               </button>
@@ -320,7 +320,7 @@ export function FileBrowserScreen() {
         {/* New-folder overlay. Modal-ish: blocks softkey + keyboard nav. */}
         {newFolderOpen && (
           <div className="absolute inset-0 z-30 grid place-items-center bg-black/65 p-[5%]">
-            <section className="w-[min(480px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
+            <section className="w-[min(480px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
               <p className="mb-[10px] text-[#eef6d8]">NEW FOLDER NAME</p>
               <input
                 type="text"
@@ -366,7 +366,7 @@ export function FileBrowserScreen() {
             finds an existing file at the target path. */}
         {overwritePath && (
           <div className="absolute inset-0 z-30 grid place-items-center bg-black/65 p-[5%]">
-            <section className="w-[min(520px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
+            <section className="w-[min(520px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
               <p className="mb-[8px] text-[#eef6d8]">FILE EXISTS</p>
               <p className="mb-[14px] truncate text-[10px] text-[#91a477]">
                 {overwritePath}

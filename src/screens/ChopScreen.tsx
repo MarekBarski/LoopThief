@@ -225,7 +225,7 @@ export function ChopScreen() {
     <ScreenFrame title="CHOP" subtitle="Sample edit">
       <div className="grid h-full min-h-0 gap-[12px]" style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}>
         <div className="relative grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-[10px] overflow-hidden">
-        <div className="grid grid-cols-[1fr_auto] gap-[3%] border border-[#46533b] bg-black/20 px-[2.5%] py-[1.7%] text-[clamp(10px,0.82vw,13px)] tracking-[0.14em]">
+        <div className="grid grid-cols-[1fr_auto] gap-[3%] border border-[#46533b] bg-black/20 px-[2.5%] py-[1.7%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
           <div className="grid grid-cols-4 gap-[3%]">
             <div className="grid gap-[4%]">
               <span className="text-[#91a477]">SAMPLE</span>
@@ -268,7 +268,7 @@ export function ChopScreen() {
             className="relative min-h-0 overflow-hidden border border-[#46533b] bg-black/25"
           >
             {waveform.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-[clamp(10px,0.8vw,13px)] tracking-[0.18em] text-[#91a477]">
+              <div className="flex h-full items-center justify-center text-[length:var(--lcd-lg)] tracking-[0.18em] text-[#91a477]">
                 RECORD A SAMPLE TO BEGIN CHOPPING
               </div>
             ) : (
@@ -350,7 +350,7 @@ export function ChopScreen() {
                   ))}
                 </div>
 
-                <div className="absolute inset-x-[2.5%] bottom-[3%] flex justify-between text-[clamp(8px,0.68vw,10px)] tracking-[0.18em] text-[#91a477]">
+                <div className="absolute inset-x-[2.5%] bottom-[3%] flex justify-between text-[length:var(--lcd-xs)] tracking-[0.18em] text-[#91a477]">
                   <span>{formatPercent(waveformOffset)}</span>
                   <span>{formatPercent(waveformOffset + visibleLength * 0.25)}</span>
                   <span>{formatPercent(waveformOffset + visibleLength * 0.5)}</span>
@@ -361,7 +361,7 @@ export function ChopScreen() {
             )}
           </section>
 
-          <aside className="grid min-h-0 content-start gap-[8px] overflow-hidden border border-[#46533b] bg-black/20 p-[10px] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
+          <aside className="grid min-h-0 content-start gap-[8px] overflow-hidden border border-[#46533b] bg-black/20 p-[10px] text-[length:var(--lcd-sm)] tracking-[0.12em]">
             <Info label="SELECTED" value={formatSelectedMarker(selectedMarker)} />
             {chopEditMode === "TRIM" && (
               <>
@@ -518,7 +518,7 @@ function Marker({
         }`}
       />
       <span
-        className={`absolute left-2 top-[4%] whitespace-nowrap text-[clamp(8px,0.68vw,10px)] tracking-[0.14em] ${
+        className={`absolute left-2 top-[4%] whitespace-nowrap text-[length:var(--lcd-xs)] tracking-[0.14em] ${
           selected ? "text-amber-200" : "text-[#9cab84]"
         }`}
       >
@@ -605,7 +605,7 @@ function MiniButton({ label, onClick }: { label: string; onClick: () => void }) 
     <button
       type="button"
       onClick={onClick}
-      className="border border-[#46533b] bg-black/25 px-2 py-2 text-center text-[clamp(8px,0.66vw,10px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+      className="border border-[#46533b] bg-black/25 px-2 py-2 text-center text-[length:var(--lcd-xs)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
     >
       {label}
     </button>
@@ -652,7 +652,7 @@ function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
     >
       {label}
     </button>
@@ -676,7 +676,7 @@ function KeepChopsPopup({
 }) {
   return (
     <div className="absolute inset-0 z-20 grid place-items-center bg-black/45 p-[5%]">
-      <section className="w-[min(420px,72%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_18px_rgba(0,0,0,0.55)]">
+      <section className="w-[min(420px,72%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_18px_rgba(0,0,0,0.55)]">
         <p className="mb-[14px] text-[#eef6d8]">KEEP CHOPS?</p>
         <div className="grid gap-[10px]">
           <label className="grid grid-cols-[1fr_1.1fr] items-center gap-[12px]">

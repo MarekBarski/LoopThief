@@ -9,6 +9,25 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* ============================================================
+     LCD font-size scale (T410 readability — Session 45 Option 3).
+     Replaces ~140 per-component clamp(min, Xvw, max) declarations.
+     Values = the unique max() px from the old clamps. Fonts now scale
+     uniformly via AppShell's canvas transform: scale() instead of vw,
+     so they no longer over-shrink/smear below 1920×1080.
+     Tune any tier here once instead of editing every component.
+     ============================================================ */
+  --lcd-2xs: 9px;
+  --lcd-xs: 10px;
+  --lcd-sm: 11px;
+  --lcd-md: 12px;
+  --lcd-lg: 13px;
+  --lcd-xl: 14px;
+  --lcd-2xl: 16px;
+  --lcd-3xl: 24px;
+  --lcd-4xl: 28px;
+  --lcd-5xl: 48px;
 }
 
 * {

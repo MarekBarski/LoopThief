@@ -37,7 +37,7 @@ export function PadPlayScreen() {
         style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
       >
         <div className="grid min-h-0 grid-cols-[0.82fr_1fr_1fr] gap-[2.3%] overflow-hidden">
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <Info label="PROGRAM" value={activeProgram} />
             <Info label="BANK" value={padBank} />
             <Info label="POLY / MONO" value={selectedAssignment.chokeGroup > 0 ? "MONO" : "POLY"} />
@@ -45,10 +45,10 @@ export function PadPlayScreen() {
             <Info label="ACTIVE SEQ" value={`SEQ ${sequence}`} />
           </section>
 
-          <section className="grid content-start gap-[12px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[12px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">ACTIVE PAD</p>
             <div className="border border-[#46533b] bg-black/15 p-[5%]">
-              <p className="text-[clamp(17px,1.35vw,24px)] font-semibold tracking-[0.16em] text-[#eef6d8]">
+              <p className="text-[length:var(--lcd-3xl)] font-semibold tracking-[0.16em] text-[#eef6d8]">
                 {selectedAssignment.assignment}
               </p>
             </div>
@@ -64,7 +64,7 @@ export function PadPlayScreen() {
             </div>
           </section>
 
-          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[10px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">PAD OVERVIEW</p>
             <div className="grid grid-cols-4 gap-[8px]">
               {assignments.map((assignment) => (
@@ -84,7 +84,7 @@ export function PadPlayScreen() {
             <button
               key={button}
               type="button"
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}
             </button>
@@ -123,7 +123,7 @@ const PadOverviewCell = memo(function PadOverviewCell({
       }`}
     >
       <span>{pad}</span>
-      <span className="text-[clamp(8px,0.66vw,10px)] text-[#91a477]">
+      <span className="text-[length:var(--lcd-xs)] text-[#91a477]">
         {chokeGroup > 0 ? `G${String(chokeGroup).padStart(2, "0")}` : "--"}
       </span>
     </div>

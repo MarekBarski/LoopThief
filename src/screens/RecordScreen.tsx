@@ -56,7 +56,7 @@ export function RecordScreen() {
         style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
       >
         <div className="grid min-h-0 grid-cols-[0.95fr_1.05fr] gap-[12px] overflow-hidden">
-          <section className="grid min-h-0 grid-cols-2 content-start gap-x-[14px] gap-y-[10px] overflow-hidden border border-[#46533b] bg-black/20 p-[14px] text-[clamp(9px,0.72vw,11px)] tracking-[0.12em]">
+          <section className="grid min-h-0 grid-cols-2 content-start gap-x-[14px] gap-y-[10px] overflow-hidden border border-[#46533b] bg-black/20 p-[14px] text-[length:var(--lcd-sm)] tracking-[0.12em]">
             <Info label="SOURCE" value={inputSource} />
             <ThresholdInfo
               value={threshold}
@@ -79,7 +79,7 @@ export function RecordScreen() {
           </section>
 
           <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-[10px] overflow-hidden border border-[#46533b] bg-black/20 p-[14px]">
-            <div className="flex items-center justify-between text-[clamp(10px,0.8vw,13px)] tracking-[0.16em]">
+            <div className="flex items-center justify-between text-[length:var(--lcd-lg)] tracking-[0.16em]">
               <span className="text-[#91a477]">REC STATUS</span>
               <span className={isSampling ? "text-red-300" : "text-[#eef6d8]"}>
                 {isSampling ? formatMs(recordingMs) : samplingStatus}
@@ -90,7 +90,7 @@ export function RecordScreen() {
               <Meter label="R" active={isSampling} level={inputLevel} />
               <Waveform bars={latestWaveform} />
             </div>
-            <div className="grid grid-cols-2 gap-[10px] border-t border-[#46533b]/70 pt-[8px] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em]">
+            <div className="grid grid-cols-2 gap-[10px] border-t border-[#46533b]/70 pt-[8px] text-[length:var(--lcd-sm)] tracking-[0.14em]">
               <Info label="LAST SAMPLE" value={latestSample?.name ?? "---"} />
               <Info label="LENGTH" value={latestSample ? formatMs(latestSample.durationMs) : "--:--.---"} />
             </div>
@@ -112,7 +112,7 @@ export function RecordScreen() {
                 if (button === "F6 SAVE") keepSampling();
                 if (button === "F6 KEEP") keepSampling();
               }}
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}
             </button>
@@ -220,7 +220,7 @@ function Meter({ label, active, level: externalLevel }: { label: string; active:
 
   return (
     <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-[6px]">
-      <span className="text-[clamp(9px,0.72vw,11px)] text-[#91a477]">{label}</span>
+      <span className="text-[length:var(--lcd-sm)] text-[#91a477]">{label}</span>
       <div className="relative overflow-hidden border border-[#46533b] bg-black/30">
         <div className="absolute bottom-0 left-0 w-full bg-[linear-gradient(to_top,#7ea85f_0%,#d0b34d_68%,#b94a38_100%)] transition-[height] duration-100" style={{ height: `${level * 100}%` }} />
         <div className="absolute left-0 h-[2px] w-full bg-[#eef6d8]" style={{ bottom: `${peak * 100}%` }} />
@@ -234,7 +234,7 @@ function Waveform({ bars }: { bars: number[] }) {
   return (
     <div className="flex min-h-0 min-w-0 items-center gap-[1px] overflow-hidden border border-[#46533b] bg-black/30 px-[8px]">
       {preview.length === 0 ? (
-        <span className="mx-auto text-[clamp(9px,0.72vw,11px)] text-[#91a477]">NO SAMPLE</span>
+        <span className="mx-auto text-[length:var(--lcd-sm)] text-[#91a477]">NO SAMPLE</span>
       ) : (
         preview.slice(0, 160).map((value, index) => (
           <span key={index} className="block w-[2px] bg-[#d8e3b7]" style={{ height: `${value * 100}%` }} />

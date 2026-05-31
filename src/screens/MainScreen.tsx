@@ -121,7 +121,7 @@ export function MainScreen() {
               <ValueRow label="TC" value={timingCorrect} onPrevious={cycleTimingCorrect} onNext={cycleTimingCorrect} />
             </div>
             {timeSignature !== "4/4" && (
-              <p className="text-[clamp(8px,0.6vw,10px)] text-amber-300">
+              <p className="text-[length:var(--lcd-xs)] text-amber-300">
                 {timeSignature} partially supported — count-in and accent only. Full step grid in future update.
               </p>
             )}
@@ -129,12 +129,12 @@ export function MainScreen() {
 
           <div className="grid min-h-0 grid-cols-[1fr_0.42fr] items-center gap-[4%] border-t border-[#46533b] pt-[3%]">
             <div>
-              <p className="text-[clamp(9px,0.72vw,11px)] tracking-[0.18em] text-[#91a477]">POSITION</p>
-              <p className="mt-[4px] font-mono text-[clamp(22px,2.6vw,48px)] leading-none tracking-[0.06em] text-[#d8e3b7]">
+              <p className="text-[length:var(--lcd-sm)] tracking-[0.18em] text-[#91a477]">POSITION</p>
+              <p className="mt-[4px] font-mono text-[length:var(--lcd-5xl)] leading-none tracking-[0.06em] text-[#d8e3b7]">
                 {bar}
               </p>
             </div>
-            <div className="grid gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.16em]">
+            <div className="grid gap-[10px] text-[length:var(--lcd-lg)] tracking-[0.16em]">
               <StatusBox label="TRANSPORT" value={status} active={isPlaying || isSequenceRecording || transportPhase === "COUNT_IN"} />
               <StatusBox
                 label="METRO"
@@ -159,7 +159,7 @@ export function MainScreen() {
                 if (button === "F5 SONG") openUtilityWorkflow("SONG");
                 if (button === "F6 TS") openTimeSigWindow();
               }}
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}
             </button>
@@ -192,7 +192,7 @@ function ValueRow({
   };
 }) {
   return (
-    <div className="grid grid-cols-[auto_1fr] items-center gap-[8px] text-[clamp(9px,0.72vw,12px)] tracking-[0.14em]">
+    <div className="grid grid-cols-[auto_1fr] items-center gap-[8px] text-[length:var(--lcd-md)] tracking-[0.14em]">
       <span className="text-[#91a477]">{label}</span>
       {editable ? (
         <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
@@ -230,7 +230,7 @@ function EditableRow({
   onRename: (name: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-[76px_1fr] items-center gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+    <div className="grid grid-cols-[76px_1fr] items-center gap-[10px] text-[length:var(--lcd-lg)] tracking-[0.14em]">
       <span className="text-left text-[#91a477]">{label}</span>
       <div className="grid grid-cols-[24px_1fr_24px] items-center gap-[4px]">
         <StepButton label="<" onClick={onPrevious} />

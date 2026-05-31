@@ -65,7 +65,7 @@ export function QuitDialog() {
   return (
     <div className="absolute inset-0 z-50 grid place-items-center bg-black/65 p-[5%]">
       {quitStep === "CONFIRM" ? (
-        <section className="w-[min(480px,80%)] border border-[#91a477] bg-[#0a0d08] p-[20px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_24px_rgba(0,0,0,0.7)]">
+        <section className="w-[min(480px,80%)] border border-[#91a477] bg-[#0a0d08] p-[20px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_24px_rgba(0,0,0,0.7)]">
           <p className="mb-[8px] text-[#eef6d8]">QUIT LOOPTHIEF?</p>
           <p className="mb-[16px] text-[10px] text-[#91a477]">
             Unsaved changes will be lost.
@@ -105,7 +105,7 @@ export function QuitDialog() {
           </p>
         </section>
       ) : (
-        <section className="w-[min(480px,80%)] border border-[#91a477] bg-[#0a0d08] p-[20px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_24px_rgba(0,0,0,0.7)]">
+        <section className="w-[min(480px,80%)] border border-[#91a477] bg-[#0a0d08] p-[20px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_24px_rgba(0,0,0,0.7)]">
           <p className="mb-[12px] text-[#eef6d8]">SAVE PROJECT BEFORE QUIT</p>
           <label className="mb-[14px] grid grid-cols-[1fr_1.6fr] items-center gap-[10px]">
             <span className="text-[#91a477]">FILENAME</span>

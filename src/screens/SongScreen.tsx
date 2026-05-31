@@ -82,7 +82,7 @@ export function SongScreen() {
           style={{ gridTemplateRows: "minmax(0, 1fr)" }}
         >
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
-            <div className="grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] border-b border-[#46533b] px-[4%] py-[3%] text-[clamp(9px,0.7vw,11px)] text-[#91a477]">
+            <div className="grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] border-b border-[#46533b] px-[4%] py-[3%] text-[length:var(--lcd-sm)] text-[#91a477]">
               <span>STEP</span><span>SEQ</span><span>REPEATS</span><span>BARS</span>
             </div>
             <div className="grid content-start min-h-0 overflow-y-auto">
@@ -95,7 +95,7 @@ export function SongScreen() {
                   <div
                     key={`${step.sequenceId}-${index}`}
                     onPointerDown={() => useAppStore.setState({ selectedSongStepIndex: index })}
-                    className={`grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] items-center px-[4%] py-[3%] text-left text-[clamp(9px,0.72vw,11px)] ${
+                    className={`grid grid-cols-[0.55fr_1fr_0.8fr_0.65fr] items-center px-[4%] py-[3%] text-left text-[length:var(--lcd-sm)] ${
                       active ? "bg-amber-200/15 text-amber-100" : playing ? "bg-[#d8e3b7]/10 text-[#eef6d8]" : "text-[#aab691]"
                     }`}
                   >
@@ -123,7 +123,7 @@ export function SongScreen() {
             </div>
           </section>
 
-          <section className="grid min-h-0 content-start gap-[10px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid min-h-0 content-start gap-[10px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
             <div className="grid gap-[4%]">
               <span className="text-[#91a477]">TOTAL BARS</span>
               <EditableNumber
@@ -141,7 +141,7 @@ export function SongScreen() {
             <Info label="LIVE TRACKS" value={`${String(liveTrackCount).padStart(2, "0")}/${String(performanceTracks.length).padStart(2, "0")}`} />
           </section>
 
-          <section className="grid min-h-0 content-start gap-[10px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)]">
+          <section className="grid min-h-0 content-start gap-[10px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)]">
             <Info label="SELECTED STEP" value={String(selectedSongStepIndex + 1).padStart(2, "0")} />
             <Info label="SEQUENCE" value={sequences.find((item) => item.id === selectedStep.sequenceId)?.name ?? "---"} />
             <Info label="REPEATS" value={String(selectedStep.repeats).padStart(2, "0")} />
@@ -156,7 +156,7 @@ export function SongScreen() {
             <button
               type="button"
               onClick={() => setExportOpen(true)}
-              className="mt-[6px] border border-amber-300 bg-amber-200/10 px-[6%] py-[8%] text-center text-[clamp(10px,0.86vw,13px)] font-semibold tracking-[0.18em] text-amber-100 hover:bg-amber-200/20"
+              className="mt-[6px] border border-amber-300 bg-amber-200/10 px-[6%] py-[8%] text-center text-[length:var(--lcd-lg)] font-semibold tracking-[0.18em] text-amber-100 hover:bg-amber-200/20"
             >
               WAV
             </button>
@@ -179,7 +179,7 @@ export function SongScreen() {
                 if (button === "F5 CONVERT") convertSongToSequence();
                 if (button === "F6 EXIT") setActiveScreen("MAIN");
               }}
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}
             </button>
@@ -187,7 +187,7 @@ export function SongScreen() {
         </div>
         {exportOpen && (
           <div className="absolute inset-0 z-30 grid place-items-center bg-black/55 p-[5%]">
-            <section className="w-[min(440px,80%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.6)]">
+            <section className="w-[min(440px,80%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.6)]">
               <p className="mb-[12px] text-[#eef6d8]">EXPORT SONG TO WAV</p>
               <label className="grid grid-cols-[1fr_1.4fr] items-center gap-[10px]">
                 <span className="text-[#91a477]">FILENAME</span>

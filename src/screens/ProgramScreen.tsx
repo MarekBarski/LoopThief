@@ -79,7 +79,7 @@ export function ProgramScreen() {
       >
         <div className="relative grid min-h-0 grid-cols-[1fr_0.92fr] gap-[2.5%] overflow-hidden">
           <section className="grid min-h-0 grid-rows-[auto_1fr] gap-[3%] border border-[#46533b] bg-black/20 p-[2.8%]">
-            <div className="grid grid-cols-4 text-[clamp(9px,0.72vw,11px)] tracking-[0.14em] text-[#91a477]">
+            <div className="grid grid-cols-4 text-[length:var(--lcd-sm)] tracking-[0.14em] text-[#91a477]">
               <span>PAD</span>
               <span>ASSIGNMENT</span>
               <span>MODE</span>
@@ -91,7 +91,7 @@ export function ProgramScreen() {
                   key={assignment.pad}
                   type="button"
                   onClick={() => selectPad(assignment.pad)}
-                  className={`grid min-h-0 grid-cols-[auto_1fr] content-center gap-x-[8px] border px-[7%] py-[5%] text-left text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
+                  className={`grid min-h-0 grid-cols-[auto_1fr] content-center gap-x-[8px] border px-[7%] py-[5%] text-left text-[length:var(--lcd-xs)] tracking-[0.12em] ${
                     assignment.pad === selectedPad
                       ? "border-amber-300 bg-amber-200/10 text-[#f1e7c8]"
                       : "border-[#46533b] bg-black/15 text-[#d8e3b7]"
@@ -106,7 +106,7 @@ export function ProgramScreen() {
             </div>
           </section>
 
-          <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-[2.4%] overflow-hidden border border-[#46533b] bg-black/20 p-[3.2%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-[2.4%] overflow-hidden border border-[#46533b] bg-black/20 p-[3.2%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <div className="grid grid-cols-2 gap-x-[3%] gap-y-[6px] border-b border-[#46533b] pb-[2.4%]">
               <ProgramSwitcher
                 value={activeProgram}
@@ -293,14 +293,14 @@ export function ProgramScreen() {
                     }
                   />
                 </div>
-                <p className="text-[clamp(8px,0.66vw,10px)] leading-tight text-[#91a477]">
+                <p className="text-[length:var(--lcd-xs)] leading-tight text-[#91a477]">
                   In PAIR mode, press pads to add/remove up to two mute targets.
                 </p>
               </div>
             )}
           </section>
           {assignOpen && (
-            <section className="absolute inset-0 z-20 grid grid-cols-[0.72fr_1fr_0.88fr] gap-[12px] border border-[#91a477] bg-[#090c07]/95 p-[14px] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
+            <section className="absolute inset-0 z-20 grid grid-cols-[0.72fr_1fr_0.88fr] gap-[12px] border border-[#91a477] bg-[#090c07]/95 p-[14px] text-[length:var(--lcd-md)] tracking-[0.14em]">
               <AssignColumn title="SOURCE TYPE">
                 {(["SAMPLES", "SLICES", "PROGRAM POOL"] as const).map((type) => (
                   <button
@@ -371,7 +371,7 @@ export function ProgramScreen() {
                 }
                 if (button === "F6 SAVE PGM") createProgram();
               }}
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}
             </button>
@@ -446,7 +446,7 @@ function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
     >
       {label}
     </button>
@@ -610,7 +610,7 @@ function MiniAction({ label, onClick }: { label: string; onClick: () => void }) 
     <button
       type="button"
       onClick={onClick}
-      className="border border-[#46533b] bg-black/25 px-2 py-2 text-center text-[clamp(8px,0.66vw,10px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+      className="border border-[#46533b] bg-black/25 px-2 py-2 text-center text-[length:var(--lcd-xs)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
     >
       {label}
     </button>

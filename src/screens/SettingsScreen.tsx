@@ -57,7 +57,7 @@ export function SettingsScreen() {
         style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}
       >
         <div className="grid min-h-0 grid-cols-[0.72fr_1.6fr] gap-[2.3%] overflow-hidden">
-          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid content-start gap-[8px] border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">CATEGORY</p>
             {categories.map((category) => (
               <button
@@ -89,7 +89,7 @@ export function SettingsScreen() {
           </section>
 
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
-            <div className="border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(9px,0.7vw,11px)] tracking-[0.16em] text-[#91a477]">
+            <div className="border-b border-[#46533b] px-[3%] py-[2%] text-[length:var(--lcd-sm)] tracking-[0.16em] text-[#91a477]">
               {activeCategory.label}
             </div>
             <div className="min-h-0 overflow-y-auto p-[3%]">
@@ -138,7 +138,7 @@ export function SettingsScreen() {
                   }
                 }}
                 title={audioDisabled ? "Available in desktop app only" : undefined}
-                className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-40 ${
+                className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-40 ${
                   isActive
                     ? "bg-amber-200/15 text-amber-100"
                     : "bg-black/25 text-[#d8e3b7]"
@@ -164,7 +164,7 @@ function MasterVolumePanel({
   onAdjust: (delta: number) => void;
 }) {
   return (
-    <div className="grid content-start gap-[14px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+    <div className="grid content-start gap-[14px] text-[length:var(--lcd-lg)] tracking-[0.14em]">
       <div className="grid grid-cols-[1fr_auto] items-center gap-[14px] border border-[#46533b] bg-black/15 px-[3%] py-[3%]">
         <span className="text-[#91a477]">MASTER VOL</span>
         <div className="flex items-center gap-[10px]">
@@ -180,7 +180,7 @@ function MasterVolumePanel({
           <button type="button" tabIndex={-1} onClick={() => onAdjust(1)} className="border border-[#46533b] px-[8px] text-[#d8e3b7]">+</button>
         </div>
       </div>
-      <p className="text-[clamp(9px,0.7vw,11px)] tracking-[0.14em] text-[#91a477]">
+      <p className="text-[length:var(--lcd-sm)] tracking-[0.14em] text-[#91a477]">
         Range 0–200%. Affects all output. Persisted across sessions.
       </p>
     </div>
@@ -241,7 +241,7 @@ function AutosavePanel({
       : "LOAD LAST AUTOSAVE";
 
   return (
-    <div className="relative grid content-start gap-[14px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+    <div className="relative grid content-start gap-[14px] text-[length:var(--lcd-lg)] tracking-[0.14em]">
       <button
         type="button"
         onClick={() => {
@@ -274,7 +274,7 @@ function AutosavePanel({
           <button type="button" tabIndex={-1} onClick={(e) => { e.stopPropagation(); onIntervalAdjust(1); }} className="border border-[#46533b] px-[8px] text-[#d8e3b7]">+</button>
         </div>
       </div>
-      <p className="text-[clamp(9px,0.7vw,11px)] tracking-[0.14em] text-[#91a477]">
+      <p className="text-[length:var(--lcd-sm)] tracking-[0.14em] text-[#91a477]">
         When ON, project state writes to IndexedDB every INTERVAL seconds.
         Writes are skipped while playing / recording / sampling.
       </p>
@@ -287,14 +287,14 @@ function AutosavePanel({
         {loadLabel}
       </button>
       {loadStatus === "done" && (
-        <p className="text-[clamp(9px,0.7vw,11px)] text-amber-200">{loadMessage}</p>
+        <p className="text-[length:var(--lcd-sm)] text-amber-200">{loadMessage}</p>
       )}
       {loadStatus === "error" && (
-        <p className="text-[clamp(9px,0.7vw,11px)] text-red-300">{loadMessage}</p>
+        <p className="text-[length:var(--lcd-sm)] text-red-300">{loadMessage}</p>
       )}
       {confirmOpen && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-black/65 p-[5%]">
-          <section className="w-[min(440px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
+          <section className="w-[min(440px,90%)] border border-[#91a477] bg-[#0a0d08] p-[18px] text-[length:var(--lcd-lg)] tracking-[0.14em] shadow-[0_0_20px_rgba(0,0,0,0.7)]">
             <p className="mb-[8px] text-[#eef6d8]">RESTORE AUTOSAVED PROJECT?</p>
             <p className="mb-[14px] text-[10px] text-[#91a477]">Current work will be lost.</p>
             {loadStatus === "error" && (
@@ -346,7 +346,7 @@ function MidiPlaceholder() {
 
   if (!midiAvailable) {
     return (
-      <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em] text-[#aab691]">
+      <div className="grid content-start gap-[10px] text-[length:var(--lcd-lg)] tracking-[0.14em] text-[#aab691]">
         <p className="text-amber-200">MIDI not available in this browser.</p>
         <p className="text-[#d8e3b7]">Use Chrome, Edge, or Brave for MIDI support.</p>
         <p className="mt-[6px] text-[#91a477] text-[10px]">
@@ -357,7 +357,7 @@ function MidiPlaceholder() {
   }
 
   return (
-    <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+    <div className="grid content-start gap-[10px] text-[length:var(--lcd-lg)] tracking-[0.14em]">
       <MidiSelectRow
         label="INPUT DEVICE"
         value={settings.midiInputDeviceId ?? ""}
@@ -542,7 +542,7 @@ function KeyboardReference() {
   ];
 
   return (
-    <div className="grid grid-cols-2 content-start gap-x-[18px] gap-y-[14px] text-[clamp(9px,0.72vw,11px)] tracking-[0.10em]">
+    <div className="grid grid-cols-2 content-start gap-x-[18px] gap-y-[14px] text-[length:var(--lcd-sm)] tracking-[0.10em]">
       {groups.map((group) => (
         <div key={group.title} className="grid content-start gap-[5px]">
           <p className="text-[#91a477]">{group.title}</p>
@@ -583,7 +583,7 @@ function SystemInfo() {
   ];
 
   return (
-    <div className="grid content-start gap-[8px] text-[clamp(10px,0.78vw,12px)] tracking-[0.12em]">
+    <div className="grid content-start gap-[8px] text-[length:var(--lcd-md)] tracking-[0.12em]">
       {rows.map(([label, value]) => (
         <div key={label} className="grid grid-cols-[140px_1fr] gap-[12px] border border-[#46533b]/60 bg-black/15 px-[10px] py-[5px]">
           <span className="text-[#91a477]">{label}</span>
@@ -624,7 +624,7 @@ function AudioPanel() {
 
   if (!isTauri()) {
     return (
-      <div className="grid content-start gap-[8px] text-[clamp(10px,0.78vw,12px)] tracking-[0.14em] text-[#91a477]">
+      <div className="grid content-start gap-[8px] text-[length:var(--lcd-md)] tracking-[0.14em] text-[#91a477]">
         <p className="text-amber-200">AUDIO settings available in desktop app only.</p>
         <p className="text-[#d8e3b7]">Browser dev mode uses getDisplayMedia / getUserMedia fallback.</p>
       </div>
@@ -653,7 +653,7 @@ function AudioPanel() {
   };
 
   return (
-    <div className="grid content-start gap-[10px] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+    <div className="grid content-start gap-[10px] text-[length:var(--lcd-lg)] tracking-[0.14em]">
       <AudioRow label="INPUT DEVICE">
         <select
           value={audioConfig.inputDeviceId ?? ""}

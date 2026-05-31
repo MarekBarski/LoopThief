@@ -31,7 +31,7 @@ export function MixScreen() {
     <ScreenFrame title="MIX" subtitle={`Pad mixer / bank ${padBank}`}>
       <div className="grid h-full gap-[12px]" style={{ gridTemplateRows: `${lcdContentHeight} ${lcdSoftkeyHeight}px` }}>
         <div className="grid min-h-0 grid-rows-[auto_1fr] gap-[8px] overflow-hidden">
-          <section className="grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] items-center gap-[10px] border border-[#46533b] bg-black/20 px-[2.2%] py-[1.4%] text-[clamp(9px,0.72vw,11px)] tracking-[0.14em]">
+          <section className="grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] items-center gap-[10px] border border-[#46533b] bg-black/20 px-[2.2%] py-[1.4%] text-[length:var(--lcd-sm)] tracking-[0.14em]">
             <span className="text-[#91a477]">BANK {padBank} / 16 PAD CHANNELS</span>
             <span>{selectedChannel.pad}</span>
             <span className="inline-flex items-center gap-[4px]">
@@ -101,7 +101,7 @@ export function MixScreen() {
                   if (button === "F2 SOLO") toggleSelectedMixerSolo();
                   if (button === "F3 FX SEND") openFxSendWindow();
                 }}
-                className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] ${
+                className={`border border-[#46533b] px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] ${
                   isEmpty ? "bg-black/10 text-[#46533b]" : "bg-black/25 text-[#d8e3b7]"
                 }`}
               >
@@ -203,7 +203,7 @@ const ChannelStrip = memo(function ChannelStrip({
   return (
     <div
       onPointerDown={onSelect}
-      className={`grid min-h-0 grid-rows-[auto_auto_1fr_auto_auto_auto_auto_auto] gap-[3px] border px-[3px] py-[4px] text-center text-[clamp(7px,0.56vw,9px)] tracking-[0.08em] ${
+      className={`grid min-h-0 grid-rows-[auto_auto_1fr_auto_auto_auto_auto_auto] gap-[3px] border px-[3px] py-[4px] text-center text-[length:var(--lcd-2xs)] tracking-[0.08em] ${
         selected ? "border-amber-100 bg-amber-100/10 text-amber-100" : "border-[#46533b] text-[#d8e3b7]"
       } ${audible ? "" : "opacity-45"}`}
     >

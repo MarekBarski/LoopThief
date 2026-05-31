@@ -71,7 +71,7 @@ export function DiskScreen() {
           style={{ gridTemplateRows: "minmax(0, 1fr)" }}
         >
           <section className="grid min-h-0 grid-rows-[auto_1fr] border border-[#46533b] bg-black/20">
-            <div className="grid grid-cols-[1fr_0.58fr_0.72fr_0.72fr_0.7fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
+            <div className="grid grid-cols-[1fr_0.58fr_0.72fr_0.72fr_0.7fr] border-b border-[#46533b] px-[3%] py-[2%] text-[length:var(--lcd-xs)] tracking-[0.16em] text-[#91a477]">
               <span>NAME</span>
               <span>TYPE</span>
               <span>LENGTH</span>
@@ -80,7 +80,7 @@ export function DiskScreen() {
             </div>
             <div className="grid content-start min-h-0 overflow-y-auto">
               {memoryRows.length === 0 ? (
-                <div className="px-[3%] py-[5%] text-[clamp(9px,0.7vw,11px)] tracking-[0.14em] text-[#91a477]">
+                <div className="px-[3%] py-[5%] text-[length:var(--lcd-sm)] tracking-[0.14em] text-[#91a477]">
                   IMPORT WAV FILES TO MEMORY
                 </div>
               ) : memoryRows.map((item, index) => (
@@ -88,7 +88,7 @@ export function DiskScreen() {
                   key={item.id}
                   type="button"
                   onClick={() => selectDiskItem(index)}
-                  className={`grid grid-cols-[1fr_0.58fr_0.72fr_0.72fr_0.7fr] px-[3%] py-[2%] text-left text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
+                  className={`grid grid-cols-[1fr_0.58fr_0.72fr_0.72fr_0.7fr] px-[3%] py-[2%] text-left text-[length:var(--lcd-xs)] tracking-[0.12em] ${
                     index === selectedDiskItemIndex
                       ? "bg-amber-200/15 text-amber-100"
                       : "text-[#d8e3b7]"
@@ -104,7 +104,7 @@ export function DiskScreen() {
             </div>
           </section>
 
-          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(10px,0.8vw,13px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-lg)] tracking-[0.14em]">
             <p className="text-[#91a477]">PROJECT I/O</p>
             <button
               type="button"
@@ -191,7 +191,7 @@ export function DiskScreen() {
                 if (button === "F5 EXPORT") onExportSample();
                 if (button === "F6 EXIT") setActiveScreen("MAIN");
               }}
-              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
             >
               {button}
             </button>

@@ -25,7 +25,7 @@ export function TopBar() {
   ];
 
   return (
-    <header className="flex h-full w-full items-center justify-between border border-black/60 bg-black/35 px-[1.4%] text-[clamp(10px,0.9vw,14px)] font-semibold uppercase tracking-[0.18em] text-[#d6d0c2] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
+    <header className="flex h-full w-full items-center justify-between border border-black/60 bg-black/35 px-[1.4%] text-[length:var(--lcd-xl)] font-semibold uppercase tracking-[0.18em] text-[#d6d0c2] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
       <div className="flex items-center gap-[1.1vw]">
         {statusItems.map((item) => (
           <span key={item}>{item}</span>

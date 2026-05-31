@@ -99,7 +99,7 @@ export function StepScreen() {
             <button
               type="button"
               onClick={armAddEvent}
-              className={`border-b border-[#46533b] px-[3%] py-[2%] text-left text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] hover:bg-black/40 ${
+              className={`border-b border-[#46533b] px-[3%] py-[2%] text-left text-[length:var(--lcd-xs)] tracking-[0.16em] hover:bg-black/40 ${
                 addEventArmed ? "bg-amber-200/20 text-amber-100" : "bg-black/30 text-[#d8e3b7]"
               }`}
             >
@@ -115,7 +115,7 @@ export function StepScreen() {
                       key={padId}
                       type="button"
                       onClick={() => createStepEventForPad(padId)}
-                      className="border border-[#46533b] bg-black/20 px-[6%] py-[12%] text-center text-[clamp(8px,0.66vw,10px)] text-[#d8e3b7] hover:bg-amber-200/15"
+                      className="border border-[#46533b] bg-black/20 px-[6%] py-[12%] text-center text-[length:var(--lcd-xs)] text-[#d8e3b7] hover:bg-amber-200/15"
                     >
                       {padId}
                     </button>
@@ -123,7 +123,7 @@ export function StepScreen() {
                 })}
               </div>
             )}
-            <div className="grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] border-b border-[#46533b] px-[3%] py-[2%] text-[clamp(8px,0.66vw,10px)] tracking-[0.16em] text-[#91a477]">
+            <div className="grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] border-b border-[#46533b] px-[3%] py-[2%] text-[length:var(--lcd-xs)] tracking-[0.16em] text-[#91a477]">
               <span>BAR.STEP.TICK</span>
               <span>PAD</span>
               <span>VEL</span>
@@ -142,7 +142,7 @@ export function StepScreen() {
             </div>
           </section>
 
-          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-md)] tracking-[0.14em]">
             <p className="text-[#91a477]">SELECTED EVENT {selectedEventId ?? "---"}</p>
             <StepNav label="EVENT" value={selectedEvent ? String(selectedTrackEventIndex + 1).padStart(3, "0") : "---"} onPrevious={previousStepEvent} onNext={nextStepEvent} />
             <StepNav label="TRACK" value={activeTrack} onPrevious={() => cycleStepTrack(-1)} onNext={() => cycleStepTrack(1)} />
@@ -233,7 +233,7 @@ export function StepScreen() {
             />
           </section>
 
-          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[clamp(9px,0.74vw,12px)] tracking-[0.14em]">
+          <section className="grid min-h-0 content-start gap-[8px] overflow-y-auto border border-[#46533b] bg-black/20 p-[4%] text-[length:var(--lcd-md)] tracking-[0.14em]">
             <Info label="BAR" value={barLabel} />
             <Info label="TC" value={timingCorrect} />
             <Info label="SWING" value={`${swing}%`} />
@@ -245,14 +245,14 @@ export function StepScreen() {
               <button
                 type="button"
                 onClick={openBarEditor}
-                className="border border-[#46533b] bg-black/30 px-[4%] py-[6%] text-center text-[clamp(9px,0.74vw,11px)] tracking-[0.12em] text-[#d8e3b7] hover:border-amber-300"
+                className="border border-[#46533b] bg-black/30 px-[4%] py-[6%] text-center text-[length:var(--lcd-sm)] tracking-[0.12em] text-[#d8e3b7] hover:border-amber-300"
               >
                 BAR
               </button>
               <button
                 type="button"
                 onClick={openTimeSigWindow}
-                className="border border-[#46533b] bg-black/30 px-[4%] py-[6%] text-center text-[clamp(9px,0.74vw,11px)] tracking-[0.12em] text-[#d8e3b7] hover:border-amber-300"
+                className="border border-[#46533b] bg-black/30 px-[4%] py-[6%] text-center text-[length:var(--lcd-sm)] tracking-[0.12em] text-[#d8e3b7] hover:border-amber-300"
               >
                 TS
               </button>
@@ -261,7 +261,7 @@ export function StepScreen() {
               <button
                 type="button"
                 onClick={toggleStepInputAutoAdvance}
-                className={`mt-[3%] border px-[4%] py-[6%] text-center text-[clamp(9px,0.74vw,11px)] tracking-[0.12em] ${
+                className={`mt-[3%] border px-[4%] py-[6%] text-center text-[length:var(--lcd-sm)] tracking-[0.12em] ${
                   stepInputAutoAdvance
                     ? "border-amber-300 bg-amber-200/15 text-amber-100"
                     : "border-[#46533b] bg-black/30 text-[#d8e3b7] hover:border-amber-300"
@@ -350,7 +350,7 @@ const EventRow = memo(function EventRow({
 
   return (
     <div
-      className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] items-center px-[3%] py-[1.35%] text-[clamp(8px,0.66vw,10px)] tracking-[0.12em] ${
+      className={`grid grid-cols-[1fr_0.55fr_0.42fr_0.32fr_0.28fr] items-center px-[3%] py-[1.35%] text-[length:var(--lcd-xs)] tracking-[0.12em] ${
         dimmed
           ? "text-[#556046]"
           : selected
@@ -474,7 +474,7 @@ function Softkey({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[clamp(8px,0.7vw,11px)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+      className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
     >
       {label}
     </button>
