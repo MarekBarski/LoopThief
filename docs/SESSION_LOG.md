@@ -99,6 +99,48 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 49 — 2026-05-31 — Build 1.1.2 PC release
+
+### What was attempted
+
+Cut the 1.1.2 Windows release: bump version, clean rebuild, produce installers, verify.
+
+### What worked
+
+- Confirmed clean tree + in sync with origin before starting.
+- Bumped 1.1.1 → 1.1.2 in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` (edited the lock's `loopthief` entry directly). Committed as `2cfd9d5 release: bump version to 1.1.2`.
+- `cargo clean` (removed 6.4 GB) → fresh build with all 1.1.x fixes baked in.
+- `npm run tauri build` — release profile (fat LTO, opt-level 3, codegen-units 1, strip, panic=abort) compiled in 3m38s, exit 0.
+- Bundles produced + verified on disk:
+  - `src-tauri/target/release/bundle/nsis/LoopThief_1.1.2_x64-setup.exe` (16.7 MB)
+  - `src-tauri/target/release/bundle/msi/LoopThief_1.1.2_x64_en-US.msi` (17.5 MB)
+- `loopthief.exe` metadata verified: ProductVersion 1.1.2, FileVersion 1.1.2, CompanyName "Marek Barski", ProductName "LoopThief".
+- Pushed `c2b1ca3..2cfd9d5` to origin/main after Marek's smoke-test OK.
+
+### What didn't work / pitfalls hit
+
+- **Portable zip NOT produced** — `bundle.targets` is `["msi","nsis"]` only; no `portable` target configured. (Prompt listed it "if configured" — it isn't.) Add `"portable"` to targets if a portable build is wanted in future.
+- A compound `ls` on the (nonexistent) portable dir aborted a chained version-check command (exit 2) — re-ran the metadata check standalone. Minor.
+- **Push friction:** auto-mode permission classifier blocked the first `git push` because an earlier turn said "wait for smoke test"; the terse "git add commit push" wasn't read as lifting that boundary. Pushed after Marek re-confirmed explicitly. Note for future: a mid-flow conditional ("wait until X") can make the classifier block a later terse push until re-confirmed.
+- Interactive installer smoke test (run elevated NSIS, click-through, launch, visual screen checks, Add/Remove UI, uninstall) is Marek's manual step — can't be driven headlessly / no eyes. Feature presence confirmed at source level (all commits in build); Marek did the hands-on verdict.
+
+### Decisions made
+
+- F12-dead in release is structural: Cargo.toml deliberately omits the `devtools` feature, so release builds compile no devtools regardless of `tauri.conf.json` `devtools: true`. No change needed.
+- Held push until Marek's explicit go (smoke test gated).
+
+### Open issues / followups
+
+- Add `"portable"` to `bundle.targets` if a portable distribution is desired.
+- Real T410 (native 1366×768, WebKitGTK) test still pending for the Session 46 font fix + Session 48 blur question — the earlier "blur" was a Windows fake-downscale double-scaling artifact, not a LoopThief bug (per Marek). Revisit only if native T410 shows real single-transform blur.
+
+### Files modified
+
+- `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` (version bump — committed `2cfd9d5`, pushed).
+- `docs/SESSION_LOG.md` (this entry).
+
+---
+
 ## Session 48 — 2026-05-31 — Canvas blur: transform:scale vs CSS zoom audit, NO code
 
 ### What was attempted
