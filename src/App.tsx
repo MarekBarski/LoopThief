@@ -155,6 +155,7 @@ export function App() {
           sequenceLengthBars: state.sequenceLengthBars,
           metronomeEnabled: state.metronomeEnabled,
           metronomeDuringRecord: state.metronomeDuringRecord,
+          metronomeDuringPlay: state.metronomeDuringPlay,
           metronomeCountInBars: state.metronomeCountInBars,
           metronomeVolume: state.metronomeVolume,
         },

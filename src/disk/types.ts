@@ -36,6 +36,8 @@ export type GlobalSettings = {
   sequenceLengthBars: number;
   metronomeEnabled: boolean;
   metronomeDuringRecord: boolean;
+  /** Added later — optional so pre-existing .lthief files still type-check. */
+  metronomeDuringPlay?: boolean;
   metronomeCountInBars: number;
   metronomeVolume: number;
 };

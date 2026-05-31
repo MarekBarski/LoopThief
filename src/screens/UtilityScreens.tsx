@@ -179,7 +179,15 @@ function PanelRow({ label, value, onClick, highlighted = false }: { label: strin
   return <div>{content}</div>;
 }
 
-function StatusRow({ label, value }: { label: string; value: string }) {
+function StatusRow({ label, value, onClick }: { label: string; value: string; onClick?: () => void }) {
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className="grid content-start gap-[2px] text-left hover:opacity-80">
+        <p className="text-[#91a477]">{label}</p>
+        <p className="text-center text-[#eef6d8]">{value}</p>
+      </button>
+    );
+  }
   return (
     <div className="grid content-start gap-[2px]">
       <p className="text-[#91a477]">{label}</p>
@@ -578,6 +586,7 @@ export function TimingCorrectUtilityScreen() {
 export function CountInUtilityScreen() {
   const metronomeEnabled = useAppStore((s) => s.metronomeEnabled);
   const metronomeDuringRecord = useAppStore((s) => s.metronomeDuringRecord);
+  const metronomeDuringPlay = useAppStore((s) => s.metronomeDuringPlay);
   const metronomeCountInBars = useAppStore((s) => s.metronomeCountInBars);
   const metronomeVolume = useAppStore((s) => s.metronomeVolume);
   const timingCorrectionCountEnabled = useAppStore((s) => s.timingCorrectionCountEnabled);
@@ -586,6 +595,7 @@ export function CountInUtilityScreen() {
   const transportCountInBeatsRemaining = useAppStore((s) => s.transportCountInBeatsRemaining);
   const toggleMetronomeEnabled = useAppStore((s) => s.toggleMetronomeEnabled);
   const toggleMetronomeDuringRecord = useAppStore((s) => s.toggleMetronomeDuringRecord);
+  const toggleMetronomeDuringPlay = useAppStore((s) => s.toggleMetronomeDuringPlay);
   const adjustMetronomeCountInBars = useAppStore((s) => s.adjustMetronomeCountInBars);
   const adjustMetronomeVolume = useAppStore((s) => s.adjustMetronomeVolume);
   const setMetronomeCountInBars = useAppStore((s) => s.setMetronomeCountInBars);
@@ -607,6 +617,11 @@ export function CountInUtilityScreen() {
             <p className="text-[#91a477]">SETTINGS</p>
             <StatusRow label="METRONOME" value={metronomeEnabled ? "ON" : "OFF"} />
             <StatusRow label="DURING REC" value={metronomeDuringRecord ? "ON" : "OFF"} />
+            <StatusRow
+              label="DURING PLAY"
+              value={metronomeDuringPlay ? "ON" : "OFF"}
+              onClick={toggleMetronomeDuringPlay}
+            />
             <ArrowRow
               label="COUNT BARS"
               value={String(metronomeCountInBars)}
@@ -627,7 +642,7 @@ export function CountInUtilityScreen() {
               editable={{
                 numericValue: metronomeVolume,
                 min: 0,
-                max: 100,
+                max: 200,
                 onCommit: (v) => setMetronomeVolume(Math.round(v)),
               }}
             />
@@ -660,7 +675,7 @@ export function CountInUtilityScreen() {
         [
           { label: "F1 COUNT", onClick: () => adjustMetronomeCountInBars(1) },
           { label: "F2 CLICK", onClick: toggleMetronomeEnabled },
-          { label: "F3 VOL", onClick: () => adjustMetronomeVolume(metronomeVolume >= 100 ? -100 : 10) },
+          { label: "F3 VOL", onClick: () => adjustMetronomeVolume(metronomeVolume >= 200 ? -200 : 10) },
           { label: "F4 TC", onClick: toggleTimingCorrectionCount },
           { label: "F5 REC", onClick: toggleMetronomeDuringRecord },
           { label: "F6 EXIT", onClick: exitToMain },

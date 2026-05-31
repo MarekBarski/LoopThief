@@ -196,6 +196,7 @@ type AppState = {
   countInClickVolume: number;
   metronomeEnabled: boolean;
   metronomeDuringRecord: boolean;
+  metronomeDuringPlay: boolean;
   metronomeCountInBars: number;
   metronomeVolume: number;
   timingCorrectionCountEnabled: boolean;
@@ -405,6 +406,7 @@ type AppState = {
   adjustCountInClickVolume: (delta: number) => void;
   toggleMetronomeEnabled: () => void;
   toggleMetronomeDuringRecord: () => void;
+  toggleMetronomeDuringPlay: () => void;
   adjustMetronomeCountInBars: (delta: number) => void;
   setMetronomeCountInBars: (value: number) => void;
   adjustMetronomeVolume: (delta: number) => void;
@@ -921,6 +923,7 @@ type SettingsValues = {
   midiClock: "OFF" | "IN" | "OUT";
   metronomeEnabled: boolean;
   metronomeDuringRecord: boolean;
+  metronomeDuringPlay: boolean;
   metronomeCountInBars: number;
   metronomeVolume: number;
   padCurve: "SOFT" | "LINEAR" | "HARD";
@@ -1044,6 +1047,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   countInClickVolume: 70,
   metronomeEnabled: true,
   metronomeDuringRecord: true,
+  metronomeDuringPlay: false,
   metronomeCountInBars: 1,
   metronomeVolume: 70,
   timingCorrectionCountEnabled: true,
@@ -1161,6 +1165,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     midiClock: "OUT",
     metronomeEnabled: true,
     metronomeDuringRecord: true,
+    metronomeDuringPlay: false,
     metronomeCountInBars: 1,
     metronomeVolume: 70,
     padCurve: "LINEAR",
@@ -2014,7 +2019,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   adjustCountInClickVolume: (delta) =>
     set((state) => {
-      const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 100);
+      const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 200);
       return {
         countInClickVolume: metronomeVolume,
         metronomeVolume,
@@ -2030,6 +2035,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       metronomeDuringRecord: !state.metronomeDuringRecord,
       settingsValues: { ...state.settingsValues, metronomeDuringRecord: !state.metronomeDuringRecord },
+    })),
+  toggleMetronomeDuringPlay: () =>
+    set((state) => ({
+      metronomeDuringPlay: !state.metronomeDuringPlay,
+      settingsValues: { ...state.settingsValues, metronomeDuringPlay: !state.metronomeDuringPlay },
     })),
   adjustMetronomeCountInBars: (delta) =>
     set((state) => {
@@ -2051,7 +2061,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   adjustMetronomeVolume: (delta) =>
     set((state) => {
-      const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 100);
+      const metronomeVolume = clamp(state.metronomeVolume + delta, 0, 200);
       return {
         metronomeVolume,
         countInClickVolume: metronomeVolume,
@@ -2060,7 +2070,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   setMetronomeVolume: (value) =>
     set((state) => {
-      const metronomeVolume = clamp(Math.round(value), 0, 100);
+      const metronomeVolume = clamp(Math.round(value), 0, 200);
       return {
         metronomeVolume,
         countInClickVolume: metronomeVolume,
@@ -5234,7 +5244,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tickTransport: (deltaMs) => {
     set((state) => {
       if (state.transportPhase !== "COUNT_IN" || state.transportCountInBeatsRemaining <= 0) {
-        if (state.isPlaying && (state.isSequenceRecording || state.overdubEnabled) && shouldClickDuringRecord(state)) {
+        if (state.isPlaying && shouldClickDuringTransport(state)) {
           // Pulse rate depends on current bar's TS denominator. 4/4 → quarter pulse,
           // 6/8 → eighth pulse, etc. Accent on first step of bar.
           const sequence = getCurrentSequence(state);
@@ -5771,6 +5781,7 @@ function collectGlobalSettings(state: AppState): GlobalSettings {
     sequenceLengthBars: state.sequenceLengthBars,
     metronomeEnabled: state.metronomeEnabled,
     metronomeDuringRecord: state.metronomeDuringRecord,
+    metronomeDuringPlay: state.metronomeDuringPlay,
     metronomeCountInBars: state.metronomeCountInBars,
     metronomeVolume: state.metronomeVolume,
   };
@@ -5786,6 +5797,8 @@ function applyGlobalSettings(settings: GlobalSettings): Partial<AppState> {
     sequenceLengthBars: settings.sequenceLengthBars,
     metronomeEnabled: settings.metronomeEnabled,
     metronomeDuringRecord: settings.metronomeDuringRecord,
+    // Backward-compat: older .lthief files predate this field → default OFF.
+    metronomeDuringPlay: settings.metronomeDuringPlay ?? false,
     metronomeCountInBars: settings.metronomeCountInBars,
     metronomeVolume: settings.metronomeVolume,
   };
@@ -6108,6 +6121,7 @@ function recordUndo(state: AppState, label: string, bucket: string): Pick<AppSta
 function metronomeSettingPatch(key: keyof SettingsValues, value: SettingsValues[keyof SettingsValues]): Partial<AppState> {
   if (key === "metronomeEnabled" && typeof value === "boolean") return { metronomeEnabled: value };
   if (key === "metronomeDuringRecord" && typeof value === "boolean") return { metronomeDuringRecord: value };
+  if (key === "metronomeDuringPlay" && typeof value === "boolean") return { metronomeDuringPlay: value };
   if (key === "metronomeCountInBars" && typeof value === "number") {
     return { metronomeCountInBars: value, countInMode: countInBarsToMode(value) };
   }
@@ -8611,8 +8625,18 @@ function isFirstBeatOfBar(stepIndex: number, state: Pick<AppState, "timeSignatur
   return stepIndex % (beatsPerBar(state) * 4) === 0;
 }
 
-function shouldClickDuringRecord(state: Pick<AppState, "metronomeEnabled" | "metronomeDuringRecord">) {
-  return state.metronomeEnabled && state.metronomeDuringRecord;
+// Whether the metronome should click on the current transport tick (after
+// count-in). REC/overdub uses DURING REC; plain PLAY uses DURING PLAY. If the
+// relevant flag is off the metronome stays silent even when enabled.
+function shouldClickDuringTransport(
+  state: Pick<
+    AppState,
+    "metronomeEnabled" | "metronomeDuringRecord" | "metronomeDuringPlay" | "isSequenceRecording" | "overdubEnabled"
+  >,
+) {
+  if (!state.metronomeEnabled) return false;
+  const recording = state.isSequenceRecording || state.overdubEnabled;
+  return recording ? state.metronomeDuringRecord : state.metronomeDuringPlay;
 }
 
 function playMetronomeClick(state: Pick<AppState, "metronomeEnabled" | "metronomeVolume">, accented = false) {
