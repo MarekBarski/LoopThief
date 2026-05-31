@@ -5613,6 +5613,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     const programs = syncCurrentProgram(state);
     const sanitized = sanitizeProjectName(name);
+    // In-progress indicator — serialize + zip of a big project (many CHOPs)
+    // can take a few seconds; show activity so it doesn't read as frozen.
+    set({ lastAudioMessage: "SAVING…" });
     // serializeProject + writeProjectZip can now throw (strict buffer +
     // integrity guard). Wrap so the failure surfaces as a clean status
     // message instead of an unhandled rejection (DiskScreen calls this with
@@ -5663,8 +5666,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       return result;
     }
+    const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
     set((current) => ({
-      lastAudioMessage: `SAVED: ${sanitized}.lthief`,
+      lastAudioMessage: `SAVED: ${sanitized}.lthief (${state.recordedSamples.length} samples, ${sizeMb} MB)`,
       lastSavedProjectVersion: current.projectVersion,
     }));
     void (await import("../disk")).clearAutosave();
@@ -6784,6 +6788,8 @@ async function performFileBrowserWrite(
   try {
     const state = get();
     let bytes: Uint8Array;
+    // Extra detail appended to the SAVED status line (project mode only).
+    let savedSummary = "";
     if (mode === "SAVE_PROJECT") {
       const sequence = getCurrentSequence(state);
       const { manifest, sampleEntries } = serializeProject({
@@ -6814,6 +6820,8 @@ async function performFileBrowserWrite(
       void sequence;
       const blob = await writeProjectZip(manifest, sampleEntries);
       bytes = new Uint8Array(await blob.arrayBuffer());
+      const sizeMb = (bytes.byteLength / (1024 * 1024)).toFixed(1);
+      savedSummary = ` (${state.recordedSamples.length} samples, ${sizeMb} MB)`;
     } else if (mode === "SAVE_SAMPLE") {
       const sample = state.recordedSamples[state.selectedDiskItemIndex];
       if (!sample) throw new Error("No sample selected");
@@ -6843,7 +6851,7 @@ async function performFileBrowserWrite(
     // only on success; overwrite-cancel / error paths don't reach here.
     persistFileBrowserPath(get, set, mode, get().fileBrowserPath);
     set({
-      lastAudioMessage: `SAVED: ${fullPath}`,
+      lastAudioMessage: `SAVED: ${fullPath}${savedSummary}`,
       lastSavedProjectVersion: get().projectVersion,
     });
     get().closeFileBrowser();
