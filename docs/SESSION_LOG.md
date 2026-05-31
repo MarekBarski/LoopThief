@@ -99,6 +99,123 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 40 — 2026-05-31 — Sample-WAV save data-loss fixes (4 commits, from Session 39 audit)
+
+### What was attempted
+
+Apply the four fixes scoped by Marek from the Session 39 audit, one commit each. Goal: turn the silent sample-WAV data-loss into a loud, atomic failure; shrink chop-slice ZIP bloat; surface save status.
+
+### What worked
+
+Four commits, each `npm run build` clean, plus a separate docs commit for this log.
+
+| Hash | Subject | Files |
+|---|---|---|
+| `c50b4f6` | Fix 1 — strict buffer check + integrity guard | `disk/serializers/project.ts`, `useAppStore.ts` |
+| `aa1789b` | Fix 2 — DiskScreen catches loadFile errors | `screens/DiskScreen.tsx` |
+| `0536315` | Fix 3 — dedupe chop slice WAV writes | `disk/serializers/project.ts` |
+| `1d1aa75` | Fix 4 — visible save status | `useAppStore.ts` |
+
+**Fix 1 (`project.ts:42` serializeProject):** if `resolveAudioBuffer` returns null, throw `Cannot save project: sample '<name>' has no audio buffer...` — matches the SAVE_SAMPLE strictness (`useAppStore.ts:6825`). Added a pre-finalize integrity guard: every serialized sample's `path` must exist in the written `sampleEntries` set, else throw listing the dangling names. `saveProjectFile` now wraps serialize+zip in try/catch → `SAVE FAILED: <msg>` (was an unhandled rejection because DiskScreen calls it with `void`).
+
+**Fix 2 (`DiskScreen.tsx`):** the browser-dev project `<input>` `onChange` now `.catch`es `loadFile` and writes the error to `importStatus`/`importMessage`. Was the only remaining load-side swallow; all Tauri load paths already catch.
+
+**Fix 3 (`project.ts` serializeProject):** dedupe-by-reference. Maintain `pathByBufferId: Map<audioBufferId, path>`; write each unique buffer once, point every sample sharing that `audioBufferId` at the same archive path. Chop slices share the parent `audioBufferId`, so 30 slices of one loop now write 1 WAV, not 31. Loader needs NO change — it re-reads + decodes per manifest entry, so repeated paths just resolve to the same bytes.
+
+**Fix 4 (`useAppStore.ts`):** used existing LCD status channels (no new toast component, per UI sacred-zone rules). `saveProjectFile`: `SAVING…` before serialize, success line `SAVED: x.lthief (N samples, X.X MB)`. `performFileBrowserWrite` (Tauri): `fileBrowserLoading` already gives in-progress; appended ` (N samples, X.X MB)` to the SAVED line for SAVE_PROJECT only; failures already surface via `fileBrowserError`.
+
+### What didn't work / pitfalls hit
+
+- **Spec self-conflict between Fix 1 and Fix 3.** Fix 1 asked for the integrity check `manifest samples[] count === files in samples/ count`. Fix 3 (dedupe) deliberately makes that count UNEQUAL. Implemented the correct, forward-compatible invariant instead: **every manifest sample `path` has bytes in the archive** (no dangling reference). Flagged to Marek before coding. Fix 1's guard therefore needed no change in the Fix 3 commit.
+- **Fix 4 "toast" terminology.** LoopThief has no toast system. Used the existing `lastAudioMessage` / `fileBrowserError` / `fileBrowserLoading` LCD channels rather than introducing a new component (would violate the "ask before UI" + hardware-shell rules). Flagged; a dedicated overlay would be a separate UI change pending Marek's visual call.
+- **Autosave now throws on missing buffer too** (same `serializeProject`). `autosaveScheduler.runOnce` already wraps `produceBlob` in try/catch → logs a warning and skips that cycle. So a missing-buffer state silently skips autosave instead of writing a corrupt one — acceptable (autosave is best-effort) and strictly safer than before.
+- **Manual save during active recording is NOT blocked.** The in-progress (un-KEPT) take isn't a `recordedSample` yet, so a manual save just serializes the existing samples — all of which have buffers → clean save. Only the not-yet-kept take is excluded, by design. No new guard added.
+
+### Decisions made
+
+- **Fix 3 approach = dedupe-by-reference, not the full slices-reference-parent refactor.** Cleaner, zero loader/schema change, zero migration, same round-trip behaviour, achieves the size goal. The invasive "store only range, reconstruct at load" option was rejected on YAGNI/risk grounds.
+- **Integrity invariant = path-existence, not count-equality** (see pitfall above).
+- **No new toast/overlay UI** — existing status channels only.
+- Committed on `main` locally per Marek's workflow ("lokalny commit jako safety", he pushes himself). Not pushed.
+
+### Open issues / followups
+
+- **Manual runtime validation pending Marek (I have no ears/eyes / can't run the Tauri build):**
+  1. New project, 3-5 samples on pads → save → reopen → samples load.
+  2. 1 CHOP'd sample (8 slices) → save → `.lthief` size ≈ parent WAV, not 8×.
+  3. Simulate missing buffer (clear `sampleAudioRefs` for one sample) → save → error thrown, no file written.
+  4. Save during active recording → clean (saves existing samples, omits the un-KEPT take).
+  5. If friend's broken `.lthief` arrives: unzip, compare `manifest.json` `samples[]` count vs files in `samples/`.
+- **Dedicated save toast/overlay** — only if Marek wants more than the LCD status line.
+- Two untracked build logs still in the tree (`tauri-build-1.1.1.log`, `src-tauri/tauri-build-1.1.1.log`) — unrelated clutter.
+
+### Files modified
+
+- `src/disk/serializers/project.ts` (Fix 1 + Fix 3)
+- `src/store/useAppStore.ts` (Fix 1 catch + Fix 4)
+- `src/screens/DiskScreen.tsx` (Fix 2)
+- `docs/SESSION_LOG.md` (this entry — separate docs commit)
+
+---
+
+## Session 39 — 2026-05-31 — Sample-WAV save/load data-loss audit (.lthief), NO code
+
+### What was attempted
+
+Marek's friend reported a `.lthief` that loaded back without its WAV files. Marek cannot reproduce locally — saves always work on his machine. Scoped a save→load trace focused ONLY on sample WAV files inside the ZIP (FX/MIX/sequence/program already cleared in Session 38). Goal: find any failure mode that drops samples from the archive WITHOUT a user-visible error.
+
+### What worked
+
+Full end-to-end trace, both project-save entry points + autosave + load + Rust write side.
+
+**Save flow (JS builds the whole ZIP; Rust just writes the blob):**
+- Two independent project-save entry points: `performFileBrowserWrite` SAVE_PROJECT (`useAppStore.ts:6776`, Tauri F1 SAVE) and `saveProjectFile` (`useAppStore.ts:5612`, browser-dev DiskScreen + shortcuts). Autosave producer is a third (`App.tsx:131`). All three enumerate `state.recordedSamples` and resolve buffers via `resolveAudioBuffer: (id) => getSampleBuffer(id)`.
+- `serializeProject` (`disk/serializers/project.ts:42`) → `encodeAudioBufferToWav` (`disk/wavCodec.ts:1`, 16-bit PCM, synchronous) → `writeProjectZip` (`disk/zipContainer.ts:4`, JSZip) → `saveBlobAsync` → Rust `fs_write_file_bytes` (`fs_browser.rs:232`).
+- Sample memory = in-memory module Map `sampleAudioRefs` in `audio/sampleLibrary.ts:7`. Confirmed by grep: only ever `.set` — **never `.delete`/`.clear`, never persisted**.
+
+**THE SMOKING GUN — `disk/serializers/project.ts:44-63`:** for every sample it records a `path` in the manifest, but only pushes WAV bytes `if (buffer)`. If `resolveAudioBuffer` returns null, the manifest references a file that was never written. Save reports `SAVED` (`useAppStore.ts:5656`) with no warning. **No integrity check** that `sampleEntries.length === recordedSamples.length` at either save site. Asymmetry: single-sample export DOES guard (`useAppStore.ts:6810` throws "Sample PCM buffer missing"); project save does not.
+
+**Why Marek can't reproduce:** in a single process the Map is consistent. Every sample creator registers the buffer BEFORE adding to `recordedSamples` — `keepSampling:2197`, `importWavFile:2236`, `applySampleEdit:4896`, `overwriteEditedSample:4971`, `keepChops` (reuses parent's audioBufferId), `hydrateSamples:5782` — and the Map is never cleared. Same-session save always resolves. The bug only fires when state and Map diverge (restart, partially-failed restore, OOM, or a future regression).
+
+**Load side:** `loader.ts:60` THROWS `ZIP missing sample bytes for path "..."` when a manifest path has no WAV — so missing bytes is a LOUD error in all Tauri load paths (`fileBrowserOpenSelected:1740`→fileBrowserError, `acceptBootResume:1468`, `loadLatestAutosave:1492`). The ONLY silent load path is the browser-dev HTML input `DiskScreen.tsx:142` `void loadFile(file)` — no `.catch` → unhandled rejection → old/blank state persists → looks like "loaded but samples gone."
+
+### What didn't work / pitfalls hit
+
+- Could NOT pinpoint the exact trigger from code alone, because the in-memory buffer path is internally consistent. The honest conclusion: the silent skip at `project.ts:48` + absent integrity guard is a latent landmine that detonates on ANY buffer-resolution miss regardless of cause. That's the fix target.
+- `createProjectSnapshot` (`useAppStore.ts:5588`) looked like a metadata-only persistence path (samples without buffers) — chased it, but grep confirms it's **dead code** (no consumer; undo/redo uses a different `UndoSnapshot`/`restoreSnapshot`). Not a vector.
+- Initially suspected non-ASCII/Polish filenames — cleared. `sanitizeFilename` (`project.ts:38`) strips them from the ZIP path, 3-digit index prefix guarantees uniqueness, and `sample.name` is stored raw in the manifest so pad→sample name matching survives. Not a loss vector.
+- CHOP slices reuse the parent `audioBufferId` (`keepChops:3885`) and `serializeProject` ignores `editState` region trimming → each slice writes the ENTIRE parent WAV. Not data loss, but severe ZIP bloat (31 full copies for 30 slices of one loop) that can make save hang / OOM / truncate on weak hardware. Flagged MEDIUM.
+
+### Findings (ranked)
+
+1. **CRITICAL** — silent partial save → unloadable/sample-less project. `project.ts:48`. Trigger: any `recordedSample` whose buffer isn't in the Map at save time (post-restart save, truncated autosave restored+resaved, OOM, regression). Fix: `serializeProject` returns unresolved ids; caller aborts/warns loudly; mirror the SAVE_SAMPLE guard.
+2. **HIGH** — browser-dev load error swallowed. `DiskScreen.tsx:142` no `.catch`. Fix: try/catch + surface.
+3. **HIGH** — no save-side integrity assertion (root enabler of #1). Fix: assert `sampleEntries.length === input.samples.length`.
+4. **MEDIUM** — CHOP slice ZIP bloat (`keepChops:3885` + region not trimmed at encode). Fix: trim slice to region, or dedupe shared buffers + store offsets.
+5. **LOW** — SAVE during active sampling loses only the un-KEPT take (by design).
+6. **LOW** — large-project OOM at `blob.arrayBuffer()` (`useAppStore.ts:6805`), amplified by #4; throws, surfaced in Tauri.
+
+Cleared (not vectors): non-ASCII filenames, cross-platform path separators / Rust write, in-session buffer eviction.
+
+### Decisions made
+
+None — audit only. Marek picks fixes.
+
+**Recommended next step before any code:** get the friend's broken `.lthief`, unzip, compare `manifest.json` `samples[]` length vs file count in `samples/`. `samples[] > files` ⇒ save omitted WAVs (mode #1 confirmed). Counts equal but empty after load ⇒ enumeration/name-mismatch, different bug. This disambiguates which half of the pipeline to fix.
+
+### Open issues / followups
+
+- CRITICAL fix #1 (loud save-time integrity check / abort on unresolved buffer) — defer or apply per Marek.
+- HIGH #2 (browser-dev load `.catch`) — trivial, do alongside #1 if touching load UX.
+- MEDIUM #4 (slice bloat) — separate decision; touches CHOP keep + serializer region handling.
+- Two untracked build logs still in the working tree (`tauri-build-1.1.1.log`, `src-tauri/tauri-build-1.1.1.log`) — unrelated clutter.
+
+### Files modified
+
+- None (audit only). Report delivered inline + this SESSION_LOG entry.
+
+---
+
 ## Session 38 — 2026-05-26 — FX + MIX persistence audit (.lthief save/load), NO code
 
 ### What was attempted
