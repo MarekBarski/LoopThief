@@ -3527,7 +3527,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         { sequenceId: state.currentSequence, repeats: 1 },
         ...state.songSteps.slice(state.selectedSongStepIndex + 1),
       ],
-      selectedSongStepIndex: state.selectedSongStepIndex + 1,
+      // From an empty list, clamp the new selection to the single created step
+      // (index 0) instead of running past it.
+      selectedSongStepIndex: Math.min(state.selectedSongStepIndex + 1, state.songSteps.length),
       ...recordUndo(state, "INSERT SONG STEP", `song-insert:${Date.now()}`),
     })),
   deleteSelectedSongStep: () =>
@@ -5754,7 +5756,7 @@ function createBlankProjectState(): Partial<AppState> {
     padAssignments: createPadAssignments(),
     padMixer: createPadMixer(),
     recordedSamples: [],
-    songSteps: [],
+    songSteps: [{ sequenceId: "01", repeats: 1 }],
     currentSongStepIndex: 0,
     selectedSongStepIndex: 0,
     fxBuses: createDefaultFxBuses(),
@@ -5849,7 +5851,10 @@ function hydrateProjectBundle(
   const samples = hydrateSamples(bundle.samples);
   const programs = (bundle.manifest.programs as Program[]).map(ensureProgramFxFields);
   const sequences = (bundle.manifest.sequences as Sequence[]).map(ensureTimeSignatureChanges);
-  const songSteps = bundle.manifest.songs as SongStep[];
+  // Defensive: older / hand-edited v5 projects may carry an empty or missing
+  // songs[] (e.g. Marek's "łotak.lthief"). Keep it as-is here — SongScreen now
+  // renders an empty-state and F1 INSERT seeds the first step. No crash.
+  const songSteps = (bundle.manifest.songs as SongStep[] | undefined) ?? [];
   const firstProgram = programs[0];
   const firstSequence = sequences[0];
   const firstTrackId = firstSequence?.tracks[0]?.id ?? "TRACK01";

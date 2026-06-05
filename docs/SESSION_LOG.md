@@ -99,6 +99,72 @@ Keep entries factual, concise, and useful for the next session. Don't write essa
 
 <!-- Real entries start below this line -->
 
+## Session 50 — 2026-06-05 — BUG 1 fix: SONG empty-songs[] crash · BUG 2 audit: ONE SHOT truncation
+
+### What was attempted
+
+Two bugs from Marek's 1.1.2 testing. Bug 1: implement fix (single commit). Bug 2: audit only, no code.
+
+### BUG 1 — SONG screen crash on empty `songs[]` (FIXED)
+
+**Diagnosis confirmed.** Marek's "łotak.lthief" has `songs: []`; "test3.lthief" has one step and works. Runtime state field is `songSteps` (the saved manifest key is `songs`). `SongScreen.tsx` assumed ≥1 step:
+- `:72` `currentStep.sequenceId` and `:146` `selectedStep.sequenceId` — both `?? songSteps[0]`, which is `undefined` when empty → crash.
+- Also `:73` `(currentSongStepIndex + 1) % songSteps.length` → `% 0` = NaN.
+
+**Bonus root cause found:** the NEW PROJECT path (`useAppStore.ts:5757`) initialized `songSteps: []` — so *every* freshly-created project would crash SongScreen too, not just the hand-edited file. The default boot state (`:1140`) had one step, which masked it until you made a new project.
+
+**Fix (3 store edits + 1 screen edit):**
+- `useAppStore.ts` NEW PROJECT (~5757): `songSteps: [{ sequenceId: "01", repeats: 1 }]` — matches Sequence01/Track01/Program01 auto-creation pattern, sequenceId "01" matches the created sequence.
+- `useAppStore.ts` `hydrateProjectBundle` (~5852): `(bundle.manifest.songs as SongStep[] | undefined) ?? []` — defensive load; empty/missing songs[] no longer becomes `undefined`.
+- `useAppStore.ts` `insertSongStep` (~3530): new selection clamped `Math.min(selectedSongStepIndex + 1, songSteps.length)` so inserting from empty selects index 0, not 1.
+- `SongScreen.tsx`: early-return empty-state UI before any `songSteps[index]` access — "NO SONG STEPS / Press F1 INSERT…". Softkey row preserved; F1 INSERT seeds the first step, F6 EXIT works, F2/F3/F4/F5 no-op while empty.
+
+**Validation:** `npm run build` clean (only pre-existing chunk-size warning). Marek to verify in-app: load łotak.lthief → empty state (no crash); NEW PROJECT → SongScreen shows Song01 one step; load test3.lthief → unchanged (regression check).
+
+### BUG 2 — ONE SHOT truncation (AUDIT ONLY, no code)
+
+**Confirmed real, deterministic-per-event (not random).** ONE SHOT pads truncate on sequencer playback because the duration gate is applied without consulting pad mode.
+
+**Mechanism / file:line:**
+- Engine gate is `sustainMs` → `samplerEngine.ts:234-239`: when `options.sustainMs > 0`, a `setTimeout` calls `softStopVoice` after that time. This is the truncation. (Correct mechanism, not the bug.)
+- **VIOLATION — `useAppStore.ts:7305-7306`** (`playStepEventFromState`):
+  ```
+  const eventDuration = event.duration ?? 0;
+  const sustainMs = eventDuration > 0 ? (eventDuration / 96) * (60_000 / state.bpm) : undefined;
+  ```
+  `sustainMs` is computed from `event.duration` **unconditionally — pad mode never consulted** — then passed via context to `playAssignedPadWithContext:7111` → `play({ sustainMs })`.
+- `playAssignedPadWithContext` (`:7090-7114`): `assignment.mode` is used **only** for `envelope.holdMode` (`:7097`, shapes decay ramp), never to gate `sustainMs`. So ONE SHOT events with a recorded duration get cut at duration end.
+- **Two-path asymmetry (Marek's Q3):** they DIFFER.
+  - Live pad press: `triggerPad`→`playAssignedPadFromState`→`playAssignedPadWithContext` with **no** `sustainMs` → ONE SHOT plays full. NOTE ON stops on `releasePad` (`:2663`, mode-aware). ✓ correct.
+  - Sequencer fire: ignores mode for the gate. ✗
+- **Recording path (Marek's Q2/Q4):** `useAppStore.ts:2684-2688` (releasePad) sets `duration = release tick − press tick` (real key-hold, snapped, `Math.max(1, …)`). Quick tap → tiny duration → tiny `sustainMs` → truncates if shorter than the sample; long hold → big `sustainMs` → sample finishes first → "ONE SHOT respected." The "~50%" is per-event: gate < sample length truncates, gate ≥ sample length doesn't. Not timing-random — tracks hold-time vs sample-length. Confirms Marek's hypothesis #4.
+- **Offline export has the same bug:** `useAppStore.ts:9256` `if (sustainSec !== undefined)` schedules a gate-off regardless of mode. ONE SHOT-with-duration also truncates in rendered WAV. The mode-aware branch (`:9263 else if assignment.mode === "ONE SHOT"`) only runs when there is NO recorded duration.
+
+**Correct semantic (Marek's Q5):** ONE SHOT must ignore `event.duration` entirely; NOTE ON respects it as the gate. Code currently treats both identically on the sequencer/export paths.
+
+**Proposed fix (awaiting Marek's go — NO code written):**
+1. Real-time, single chokepoint — `playAssignedPadWithContext` (`:7111`): `sustainMs: assignment.mode === "ONE SHOT" ? undefined : context.sustainMs`. Assignment is already resolved here; one line; covers both the sequencer fire and any future caller. (Alternative: gate at `:7306`, but that path lacks the assignment lookup — chokepoint is cleaner.)
+2. Offline export — `:9256`: change guard to `if (sustainSec !== undefined && assignment.mode === "NOTE ON")`. ONE SHOT-with-duration then falls through to natural end (`source.start(…, duration)` at `:9284`), mirroring the real-time fix.
+Both leave NOTE ON gating untouched. Low risk, no schema change.
+
+### Decisions made
+
+- Bug 1 fix committed this session (single commit). Bug 2 fix deferred — Marek decides after this audit.
+- NEW PROJECT now seeds Song01 (one step → Sequence01, repeats=1); empty-state guard kept as defensive layer for existing/hand-edited projects.
+
+### Open issues / followups
+
+- Bug 2 fix pending Marek approval (2 one-line edits above).
+- In-app verification of Bug 1 pending (Marek has eyes).
+
+### Files modified
+
+- `src/screens/SongScreen.tsx` (empty-state guard)
+- `src/store/useAppStore.ts` (NEW PROJECT default song, defensive load, insertSongStep index clamp)
+- `docs/SESSION_LOG.md` (this entry)
+
+---
+
 ## Session 49 — 2026-05-31 — Build 1.1.2 PC release
 
 ### What was attempted

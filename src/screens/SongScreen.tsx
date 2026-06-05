@@ -63,6 +63,42 @@ export function SongScreen() {
     setExportMessage("");
   };
 
+  // Empty song list (e.g. a project saved with songs: []). Guard before any
+  // songSteps[index] access — the full view below assumes at least one step.
+  // F1 INSERT seeds the first step; F6 EXIT leaves; other F-keys no-op.
+  if (songSteps.length === 0) {
+    return (
+      <ScreenFrame title="SONG" subtitle="MPC-style song mode">
+        <div className="relative flex h-full min-h-0 flex-col gap-[12px]">
+          <div className="grid min-h-0 flex-1 place-items-center border border-[#46533b] bg-black/20 p-[6%] text-center">
+            <div className="grid gap-[10px]">
+              <p className="text-[length:var(--lcd-xl)] tracking-[0.16em] text-[#eef6d8]">NO SONG STEPS</p>
+              <p className="text-[length:var(--lcd-md)] text-[#91a477]">
+                Press F1 INSERT to create the first song step.
+              </p>
+            </div>
+          </div>
+          <div className="grid flex-none grid-cols-6 gap-[1.4%]" style={{ height: lcdSoftkeyHeight }}>
+            {softButtons.map((button) => (
+              <button
+                key={button}
+                type="button"
+                onClick={() => {
+                  if (button === "F1 INSERT") insertSongStep();
+                  if (button === "F6 EXIT") setActiveScreen("MAIN");
+                  // F2 DELETE / F3 REPEAT / F4 MOVE / F5 CONVERT: no-op while empty.
+                }}
+                className="border border-[#46533b] bg-black/25 px-[3%] py-[7%] text-center text-[length:var(--lcd-sm)] font-semibold tracking-[0.14em] text-[#d8e3b7]"
+              >
+                {button}
+              </button>
+            ))}
+          </div>
+        </div>
+      </ScreenFrame>
+    );
+  }
+
   const selectedStep = songSteps[selectedSongStepIndex] ?? songSteps[0];
   const currentStep = songSteps[currentSongStepIndex] ?? songSteps[0];
   const totalBars = songSteps.reduce((sum, step) => {
