@@ -121,7 +121,11 @@ Two bugs from Marek's 1.1.2 testing. Bug 1: implement fix (single commit). Bug 2
 
 **Validation:** `npm run build` clean (only pre-existing chunk-size warning). Marek to verify in-app: load łotak.lthief → empty state (no crash); NEW PROJECT → SongScreen shows Song01 one step; load test3.lthief → unchanged (regression check).
 
-### BUG 2 — ONE SHOT truncation (AUDIT ONLY, no code)
+### BUG 2 — ONE SHOT truncation (AUDITED, then FIXED on Marek's go)
+
+> **Update (same session):** Marek approved the proposed fix. Applied both one-line edits below + verified build clean. Edge case documented: **ONE SHOT + LOOP now loops indefinitely** (the recorded-duration gate no longer stops it — logical consequence of ignoring duration; loop ends only via choke / mute-group / mono-retrigger / voice-steal). ATTACK/DECAY envelope unchanged (gate is separate from envelope). Committed separately from Bug 1.
+
+#### Original audit
 
 **Confirmed real, deterministic-per-event (not random).** ONE SHOT pads truncate on sequencer playback because the duration gate is applied without consulting pad mode.
 

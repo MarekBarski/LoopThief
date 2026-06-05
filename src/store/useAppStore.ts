@@ -7113,7 +7113,10 @@ function playAssignedPadWithContext(
       typeOverride: context.filterTypeOverride,
     }),
     envelope,
-    sustainMs: context.sustainMs,
+    // ONE SHOT ignores event duration entirely (sample plays to its end);
+    // NOTE ON respects the recorded duration as a gate. Without this, a quick
+    // tap recorded on a ONE SHOT pad would truncate playback at the hold time.
+    sustainMs: assignment.mode === "ONE SHOT" ? undefined : context.sustainMs,
     fxRouting,
     loop: context.loopOverride ?? assignment.loop,
   });
@@ -9258,9 +9261,11 @@ function scheduleSongEvent(
   }
 
   let scheduledStopTime: number | null = null;
-  if (sustainSec !== undefined) {
-    // Event has a recorded duration → gate off at duration end. Release ramp
-    // length matches real-time samplerEngine softStop semantics.
+  if (sustainSec !== undefined && assignment.mode === "NOTE ON") {
+    // NOTE ON with a recorded duration → gate off at duration end. Release ramp
+    // length matches real-time samplerEngine softStop semantics. ONE SHOT falls
+    // through to its natural-end branch below, mirroring the real-time fix
+    // (sustainMs is suppressed for ONE SHOT in playAssignedPadWithContext).
     const releaseStart = startTime + Math.max(attackSec, sustainSec);
     envelopeGain.gain.setValueAtTime(1, releaseStart);
     envelopeGain.gain.linearRampToValueAtTime(0, releaseStart + releaseRampSec);
